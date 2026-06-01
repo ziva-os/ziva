@@ -1,0 +1,7 @@
+id: tool.write_file
+type: tool
+version: 0.1.0
+entry: impl.py:WriteFileTool
+permissions:
+  fs: [write]
+enabled_by_default: true

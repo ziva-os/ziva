@@ -1,0 +1,7 @@
+id: tool.ask_user
+type: tool
+version: 0.1.0
+entry: impl.py:AskUserTool
+permissions:
+  agent: [ask]
+enabled_by_default: true

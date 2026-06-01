@@ -1,0 +1,557 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import shlex
+import time
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict
+
+from aiohttp import web
+
+from ziva_runtime.permissions import get_permission_manager
+from ziva_runtime.runtime import Runtime
+from ziva_runtime.shared_types import CancellationToken, ChatMessage, ToolCallItem
+from ziva_runtime.storage.file_storage import FileStorage
+
+
+@dataclass
+class Automation:
+    id: str
+    name: str
+    prompt: str
+    interval_seconds: int
+    session_id: str
+    enabled: bool = True
+    last_run: float | None = None
+    last_result: str | None = None
+
+
+@dataclass
+class SessionStore:
+    runtime: Runtime
+    _loaded_sessions: Dict[str, Dict] = field(default_factory=dict)
+
+    def create(self) -> str:
+        sid = str(uuid.uuid4())
+        self._loaded_sessions[sid] = {"id": sid, "messages": [], "turns": []}
+        # Initialize in file storage
+        FileStorage.create_session(self.runtime.project_id, {
+            "id": sid,
+            "time": {"created": int(time.time() * 1000), "updated": int(time.time() * 1000)},
+        })
+        return sid
+
+    def _ensure_loaded(self, sid: str) -> Dict:
+        """Ensure session is loaded from storage."""
+        if sid not in self._loaded_sessions:
+            # Load from file storage
+            session = FileStorage.get_session(self.runtime.project_id, sid)
+            if session:
+                messages = []
+                for msg_data in FileStorage.get_messages(self.runtime.project_id, sid):
+                    messages.append(msg_data)
+                self._loaded_sessions[sid] = {
+                    "id": sid,
+                    "messages": messages,
+                    "turns": [],
+                }
+            else:
+                # Create new in-memory session
+                self._loaded_sessions[sid] = {"id": sid, "messages": [], "turns": []}
+        return self._loaded_sessions.get(sid, {})
+
+    def get_session(self, sid: str) -> Dict | None:
+        """Get session data, loading from storage if needed."""
+        session = self._ensure_loaded(sid)
+        if not session:
+            return None
+        return session
+
+    def add_message(self, sid: str, role: str, content: str) -> None:
+        """Add a message to session and persist to storage."""
+        session = self._ensure_loaded(sid)
+        session["messages"].append({"role": role, "content": content})
+        # Persist to file storage
+        FileStorage.append_message(self.runtime.project_id, sid, {"role": role, "content": content})
+
+    def list_all(self) -> list[Dict]:
+        """List all sessions from file storage."""
+        return FileStorage.list_sessions(self.runtime.project_id)
+
+    def exists(self, sid: str) -> bool:
+        """Check if session exists."""
+        return FileStorage.get_session(self.runtime.project_id, sid) is not None
+
+
+class DesktopAPIServer:
+    def __init__(self, runtime: Runtime) -> None:
+        self.runtime = runtime
+        self.store = SessionStore(runtime=runtime)
+        self.automations: Dict[str, Automation] = {}
+        self._automation_tasks: Dict[str, asyncio.Task] = {}
+        self._cancel_tokens: Dict[str, CancellationToken] = {}
+        self._turn_tasks: Dict[str, asyncio.Task] = {}
+        self._runner: web.AppRunner | None = None
+        self.app = web.Application()
+        self.app.router.add_get("/", self.index)
+        self.app.router.add_get("/sessions", self.list_sessions)
+        self.app.router.add_post("/sessions", self.create_session)
+        self.app.router.add_get("/sessions/{sid}/messages", self.get_messages)
+        self.app.router.add_get("/sessions/{sid}/turns", self.get_turns)
+        self.app.router.add_post("/sessions/{sid}/turns", self.create_turn)
+        self.app.router.add_post("/sessions/{sid}/compact", self.compact_session)
+        self.app.router.add_post("/sessions/{sid}/cancel", self.cancel_turn)
+        self.app.router.add_get("/sessions/{sid}/events", self.events)
+        self.app.router.add_get("/sessions/{sid}/tools", self.get_tools_status)
+        self.app.router.add_get("/sessions/{sid}/plan", self.get_plan)
+        self.app.router.add_get("/sessions/{sid}/diff", self.get_diff)
+        self.app.router.add_post("/sessions/{sid}/revert", self.revert_files)
+        self.app.router.add_patch("/sessions/{sid}", self.update_session)
+        self.app.router.add_post("/automations", self.create_automation)
+        self.app.router.add_get("/automations", self.list_automations)
+        self.app.router.add_delete("/automations/{aid}", self.delete_automation)
+        self.app.router.add_post("/api/permissions/{request_id}/reply", self.permission_reply)
+        self.app.router.add_delete("/sessions/{sid}", self.delete_session)
+        self.app.router.add_get("/status", self.get_status)
+        self.app.router.add_get("/mcp-status", self.get_mcp_status)
+        self.app.router.add_get("/config", self.get_config)
+        self.app.router.add_patch("/config", self.update_config)
+        # Serve static assets from build output
+        static_dir = Path(__file__).resolve().parent / "static"
+        self.app.router.add_static("/assets", static_dir / "assets")
+
+    async def index(self, _request: web.Request) -> web.Response:
+        html = (Path(__file__).resolve().parent / "static" / "index.html").read_text(encoding="utf-8")
+        return web.Response(text=html, content_type="text/html")
+
+    async def create_session(self, request: web.Request) -> web.Response:
+        sid = self.store.create()
+        return web.json_response({"id": sid})
+
+    async def list_sessions(self, request: web.Request) -> web.Response:
+        sessions = self.store.list_all()
+        items = [{"id": s["id"]} for s in sessions if "id" in s]
+        return web.json_response({"sessions": items})
+
+    async def get_messages(self, request: web.Request) -> web.Response:
+        sid = request.match_info["sid"]
+        session = self.store.get_session(sid)
+        if not session:
+            return web.json_response({"error": "session_not_found"}, status=404)
+        # Also include last_usage from session metadata for context ring
+        meta = FileStorage.get_session(self.runtime.project_id, sid) or {}
+        return web.json_response({
+            "messages": list(session.get("messages", [])),
+            "last_usage": meta.get("last_usage"),
+        })
+
+    async def get_turns(self, request: web.Request) -> web.Response:
+        sid = request.match_info["sid"]
+        session = self.store.get_session(sid)
+        if not session:
+            return web.json_response({"error": "session_not_found"}, status=404)
+        
+        turns = []
+        for turn in session.get("turns", []):
+            t = turn.copy()
+            if t.get("status") == "running":
+                t["events"] = self.runtime.event_bus.history(sid)
+            turns.append(t)
+            
+        return web.json_response({"turns": turns})
+
+    async def create_turn(self, request: web.Request) -> web.Response:
+        sid = request.match_info["sid"]
+        if not self.store.exists(sid):
+            return web.json_response({"error": "session_not_found"}, status=404)
+        payload = await request.json()
+        messages = payload.get("messages") or []
+        chat_messages = [ChatMessage(role=str(m.get("role", "user")), content=str(m.get("content", ""))) for m in messages]
+        turn_id = str(uuid.uuid4())
+        turn = {"id": turn_id, "status": "running", "events": [], "result": None}
+        session = self.store._ensure_loaded(sid)
+        session["turns"].append(turn)
+        
+        if "messages" not in session:
+            session["messages"] = []
+        for m in chat_messages:
+            session["messages"].append({"role": m.role, "content": m.content})
+
+        async def runner() -> None:
+            try:
+                # Only pass the new user messages — runtime.chat() manages history internally
+                _, result, events = await self.runtime.chat_with_events(chat_messages, session_id=sid)
+                # Reload messages from disk since runtime.chat() persisted them via FileStorage
+                fresh_messages = []
+                for msg_data in FileStorage.get_messages(self.runtime.project_id, sid):
+                    fresh_messages.append(msg_data)
+                self.store._loaded_sessions[sid]["messages"] = fresh_messages
+                turn["events"] = events
+                turn["result"] = {"role": result.role, "content": result.content, "finish_reason": result.finish_reason}
+                turn["status"] = "done"
+            except asyncio.CancelledError:
+                turn["status"] = "cancelled"
+            except Exception as exc:
+                turn["status"] = "failed"
+                turn["error"] = {"message": str(exc), "class": exc.__class__.__name__}
+            finally:
+                self._cancel_tokens.pop(sid, None)
+                self._turn_tasks.pop(sid, None)
+
+        task = asyncio.create_task(runner())
+        self._turn_tasks[sid] = task
+        return web.json_response({"accepted": True, "turn_id": turn_id})
+
+    async def compact_session(self, request: web.Request) -> web.Response:
+        sid = request.match_info["sid"]
+        if not self.store.exists(sid):
+            return web.json_response({"error": "session_not_found"}, status=404)
+
+        # Load current messages from storage
+        messages = []
+        for msg_data in FileStorage.get_messages(self.runtime.project_id, sid):
+            messages.append(ChatMessage(
+                role=msg_data.get("role", "user"),
+                content=msg_data.get("content", ""),
+                tool_call_id=msg_data.get("tool_call_id"),
+                name=msg_data.get("name"),
+                tool_calls=[
+                    ToolCallItem(id=tc.get("id", ""), name=tc.get("name", ""), arguments=tc.get("arguments", {}))
+                    for tc in msg_data.get("tool_calls", [])
+                ],
+                _compaction_summary=msg_data.get("_compaction_summary", False),
+            ))
+
+        model_cfg = self.runtime.config.get("model", {})
+        model_name = model_cfg.get("name", "")
+        context_window = int(self.runtime.config.get("memory", {}).get("context_window_tokens", 200000) or 200000)
+
+        try:
+            from ziva_runtime.session.compaction import compact_messages
+            compacted = await compact_messages(messages, context_window, model_name, self.runtime.model_adapter)
+        except Exception as exc:
+            return web.json_response({"error": "compact_failed", "message": str(exc)}, status=500)
+
+        # Append compacted summary messages to storage (full history is preserved)
+        for m in compacted:
+            record = {
+                "role": m.role,
+                "content": m.content,
+                "tool_call_id": m.tool_call_id,
+                "name": m.name,
+                "tool_calls": [{"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in m.tool_calls],
+            }
+            if m._compaction_summary:
+                record["_compaction_summary"] = True
+            FileStorage.append_message(self.runtime.project_id, sid, record)
+
+        # Update in-memory store with full history
+        session = self.store._ensure_loaded(sid)
+        fresh_messages = []
+        for msg_data in FileStorage.get_messages(self.runtime.project_id, sid):
+            fresh_messages.append(msg_data)
+        session["messages"] = fresh_messages
+
+        # Sync runtime's internal session cache so next turn uses compacted view
+        if hasattr(self.runtime, "_session_history"):
+            # Build filtered working messages (same logic as _load_session_from_disk)
+            filtered = []
+            last_summary_idx = None
+            for i in range(len(compacted) - 1, -1, -1):
+                if compacted[i]._compaction_summary:
+                    last_summary_idx = i
+                    break
+            if last_summary_idx is not None:
+                filtered = compacted[last_summary_idx:]
+            else:
+                filtered = compacted
+            self.runtime._session_history[sid] = filtered
+
+        # Update session timestamp
+        FileStorage.update_session(self.runtime.project_id, sid, {
+            "id": sid,
+            "time": {"updated": int(time.time() * 1000)}
+        })
+
+        return web.json_response({"success": True, "message_count": len(compacted)})
+
+    async def events(self, request: web.Request) -> web.StreamResponse:
+        sid = request.match_info["sid"]
+        if not self.store.exists(sid):
+            return web.json_response({"error": "session_not_found"}, status=404)
+
+        resp = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
+        await resp.prepare(request)
+        queue = self.runtime.event_bus.subscribe(sid)
+        try:
+            while True:
+                event = await queue.get()
+                await resp.write(f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n".encode("utf-8"))
+        except (asyncio.CancelledError, ConnectionResetError):
+            pass
+        finally:
+            self.runtime.event_bus.unsubscribe(sid, queue)
+        return resp
+
+    async def get_tools_status(self, request: web.Request) -> web.Response:
+        sid = request.match_info["sid"]
+        session = self.store.get_session(sid)
+        if not session:
+            return web.json_response({"error": "session_not_found"}, status=404)
+
+        tool_events = []
+        for turn in session.get("turns", []):
+            for ev in turn.get("events", []):
+                if ev.get("type") in ("tool_start", "tool_end"):
+                    tool_events.append(ev)
+        return web.json_response({"tools": tool_events})
+
+    async def get_plan(self, request: web.Request) -> web.Response:
+        sid = request.match_info["sid"]
+        session = self.store.get_session(sid)
+        if not session:
+            return web.json_response({"error": "session_not_found"}, status=404)
+
+        plan_steps = []
+        for turn in session.get("turns", []):
+            for ev in turn.get("events", []):
+                if ev.get("type") == "tool_end" and isinstance(ev.get("output"), dict):
+                    output = ev["output"]
+                    if "plan" in output:
+                        plan_steps = output["plan"]
+        return web.json_response({"plan": plan_steps})
+
+    async def get_diff(self, request: web.Request) -> web.Response:
+        sid = request.match_info["sid"]
+        if not self.store.exists(sid):
+            return web.json_response({"error": "session_not_found"}, status=404)
+
+        workspace = self.runtime.workspace_root
+        diff_content = ""
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                "git diff HEAD",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(workspace),
+            )
+            stdout, _ = await proc.communicate()
+            diff_content = stdout.decode("utf-8", errors="replace")
+        except Exception:
+            diff_content = ""
+        return web.json_response({"diff": diff_content})
+
+    async def create_automation(self, request: web.Request) -> web.Response:
+        payload = await request.json()
+        name = payload.get("name", "unnamed")
+        prompt = payload.get("prompt", "")
+        interval = int(payload.get("interval_seconds", 300))
+
+        if not prompt:
+            return web.json_response({"error": "prompt is required"}, status=400)
+
+        aid = str(uuid.uuid4())
+        sid = self.store.create()
+        automation = Automation(id=aid, name=name, prompt=prompt, interval_seconds=interval, session_id=sid)
+        self.automations[aid] = automation
+
+        async def runner() -> None:
+            while automation.enabled:
+                try:
+                    messages = [ChatMessage(role="user", content=automation.prompt)]
+                    result = await self.runtime.chat(messages, session_id=automation.session_id)
+                    automation.last_run = time.time()
+                    automation.last_result = result.content[:500]
+                except Exception:
+                    automation.last_run = time.time()
+                await asyncio.sleep(automation.interval_seconds)
+
+        self._automation_tasks[aid] = asyncio.create_task(runner())
+        return web.json_response({"id": aid, "session_id": sid})
+
+    async def list_automations(self, _request: web.Request) -> web.Response:
+        items = []
+        for a in self.automations.values():
+            items.append({
+                "id": a.id, "name": a.name, "interval_seconds": a.interval_seconds,
+                "enabled": a.enabled, "last_run": a.last_run, "last_result": a.last_result,
+            })
+        return web.json_response({"automations": items})
+
+    async def delete_automation(self, request: web.Request) -> web.Response:
+        aid = request.match_info["aid"]
+        automation = self.automations.get(aid)
+        if not automation:
+            return web.json_response({"error": "not_found"}, status=404)
+        automation.enabled = False
+        task = self._automation_tasks.pop(aid, None)
+        if task:
+            task.cancel()
+        del self.automations[aid]
+        return web.json_response({"deleted": True})
+
+    async def permission_reply(self, request: web.Request) -> web.Response:
+        """Handle permission approval/rejection."""
+        request_id = request.match_info["request_id"]
+        payload = await request.json()
+        action = payload.get("action", "once")
+        message = payload.get("message")
+
+        perm_manager = get_permission_manager()
+        perm_manager.reply(request_id, action, message)
+
+        return web.json_response({"ok": True})
+
+    async def delete_session(self, request: web.Request) -> web.Response:
+        sid = request.match_info["sid"]
+        FileStorage.delete_session(self.runtime.project_id, sid)
+        if sid in self.store._loaded_sessions:
+            del self.store._loaded_sessions[sid]
+        # Cancel running turn if any
+        task = self._turn_tasks.pop(sid, None)
+        if task:
+            task.cancel()
+        self._cancel_tokens.pop(sid, None)
+        return web.json_response({"deleted": True})
+
+    async def cancel_turn(self, request: web.Request) -> web.Response:
+        sid = request.match_info["sid"]
+        token = self._cancel_tokens.get(sid)
+        if token:
+            token.cancel()
+        task = self._turn_tasks.pop(sid, None)
+        if task:
+            task.cancel()
+        return web.json_response({"cancelled": True})
+
+    async def update_session(self, request: web.Request) -> web.Response:
+        sid = request.match_info["sid"]
+        if not self.store.exists(sid):
+            return web.json_response({"error": "session_not_found"}, status=404)
+        payload = await request.json()
+        updates = {}
+        if "name" in payload:
+            updates["name"] = payload["name"]
+        if updates:
+            FileStorage.update_session(self.runtime.project_id, sid, updates)
+        return web.json_response({"ok": True})
+
+    async def revert_files(self, request: web.Request) -> web.Response:
+        sid = request.match_info["sid"]
+        if not self.store.exists(sid):
+            return web.json_response({"error": "session_not_found"}, status=404)
+        payload = await request.json()
+        files = payload.get("files", [])
+        workspace = self.runtime.workspace_root
+        reverted = []
+        for f in files:
+            try:
+                proc = await asyncio.create_subprocess_shell(
+                    f"git checkout -- {shlex.quote(f)}",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=str(workspace),
+                )
+                await proc.communicate()
+                reverted.append(f)
+            except Exception:
+                pass
+        return web.json_response({"reverted": reverted})
+
+    async def get_mcp_status(self, _request: web.Request) -> web.Response:
+        mcp_client = getattr(self.runtime, "_mcp_client", None)
+        if not mcp_client:
+            return web.json_response({"servers": [], "connected": False, "tools": []})
+
+        servers = []
+        for name in mcp_client.connected_servers:
+            tool_count = sum(1 for t in mcp_client._tools if True)
+            servers.append({"name": name, "status": "connected", "tool_count": tool_count})
+
+        mcp_tools = []
+        for rec in self.runtime.registry.list_kind("tool"):
+            if rec.id.startswith("mcp."):
+                spec = rec.instance.spec()
+                mcp_tools.append({"name": spec["name"], "description": spec.get("description", "")})
+
+        return web.json_response({
+            "servers": servers,
+            "connected": self.runtime._mcp_connected,
+            "tools": mcp_tools,
+        })
+
+    async def get_config(self, _request: web.Request) -> web.Response:
+        model_cfg = self.runtime.config.get("model", {})
+        return web.json_response({
+            "model": {
+                "current": model_cfg.get("name", "unknown"),
+                "available": [model_cfg.get("name", "unknown")],
+            },
+            "approval": {
+                "current": self.runtime.config.get("approval", {}).get("policy", "suggest"),
+                "options": ["suggest", "auto-edit", "full-auto"],
+            },
+        })
+
+    async def update_config(self, request: web.Request) -> web.Response:
+        payload = await request.json()
+        if "model" in payload:
+            if "model" not in self.runtime.config:
+                self.runtime.config["model"] = {}
+            self.runtime.config["model"].update(payload["model"])
+        if "approval" in payload:
+            if "approval" not in self.runtime.config:
+                self.runtime.config["approval"] = {}
+            self.runtime.config["approval"].update(payload["approval"])
+        return web.json_response({"ok": True})
+
+    async def get_status(self, _request: web.Request) -> web.Response:
+        model = self.runtime.config.get("model", {})
+        return web.json_response({
+            "model": model.get("name", "unknown"),
+            "workspace": str(self.runtime.workspace_root),
+            "tools": [t["name"] for t in self.runtime.list_tools()],
+            "approval_policy": self.runtime.config.get("approval", {}).get("policy", "suggest"),
+        })
+
+    async def start(self, host: str = "127.0.0.1", port: int = 4097) -> None:
+        """Start the server (call stop() to shut down)."""
+        self._runner = web.AppRunner(self.app)
+        await self._runner.setup()
+        site = web.TCPSite(self._runner, host=host, port=port)
+        await site.start()
+
+    async def stop(self) -> None:
+        """Gracefully stop the server."""
+        for task in self._automation_tasks.values():
+            task.cancel()
+        try:
+            await self.runtime.shutdown()
+        except Exception:
+            pass
+        if self._runner:
+            try:
+                await self._runner.cleanup()
+            except Exception:
+                pass
+
+    async def run_async(self, host: str = "127.0.0.1", port: int = 4097) -> None:
+        """Start and block until cancelled."""
+        await self.start(host=host, port=port)
+        try:
+            while True:
+                await asyncio.sleep(3600)
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            pass
+        finally:
+            await self.stop()

@@ -1,0 +1,7 @@
+id: tool.shell
+type: tool
+version: 0.1.0
+entry: impl.py:ShellTool
+permissions:
+  shell: [execute]
+enabled_by_default: true

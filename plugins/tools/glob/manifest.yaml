@@ -1,0 +1,7 @@
+id: tool.glob
+type: tool
+version: 0.1.0
+entry: impl.py:GlobTool
+permissions:
+  fs: [read]
+enabled_by_default: true

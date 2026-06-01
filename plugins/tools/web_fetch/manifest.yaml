@@ -1,0 +1,7 @@
+id: tool.web_fetch
+type: tool
+version: 0.1.0
+entry: impl.py:WebFetchTool
+permissions:
+  network: [http]
+enabled_by_default: true

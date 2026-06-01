@@ -1,0 +1,7 @@
+id: tool.read_skill
+type: tool
+version: 0.1.0
+entry: impl.py:ReadSkillTool
+permissions:
+  agent: [read]
+enabled_by_default: true

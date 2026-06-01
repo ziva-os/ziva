@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ziva-runtime"
+version = "0.1.0"
+description = "Ziva runtime with extension API, OpenAI Agents adapter, and ACP protocol"
+requires-python = ">=3.10"
+dependencies = [
+  "pyyaml>=6.0.1",
+  "aiohttp>=3.9.0",
+  "rich>=13.0.0",
+  "prompt_toolkit>=3.0.0",
+  "openai>=1.30.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+]
+openai_agents = [
+  "openai-agents>=0.14.0",
+]
+
+[project.scripts]
+ziva = "ziva_runtime.app.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ziva_runtime"]

@@ -1,0 +1,7 @@
+id: tool.update_plan
+type: tool
+version: 0.1.0
+entry: impl.py:UpdatePlanTool
+permissions:
+  fs: []
+enabled_by_default: true

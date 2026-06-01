@@ -1,0 +1,20 @@
+:root[data-theme="dark"] {
+  --bg: #0f0f0f;
+  --surface: #141414;
+  --surface-alt: #1e1e1e;
+  --surface-hover: #2a2a2a;
+  --ink: #ffffff;
+  --ink-secondary: #e0e0e0;
+  --muted: #8e8e8e;
+  --line: #262626;
+  --line-strong: #333333;
+  --accent: #8ab4f8;
+  --accent-light: rgba(138, 180, 248, 0.12);
+  --blue: #8ab4f8;
+  --green: #81c995;
+  --orange: #fcad70;
+  --red: #f28b82;
+  --purple: #c58af9;
+  --code-bg: #1a1a1a;
+  --code-fg: #d4d4d4;
+}

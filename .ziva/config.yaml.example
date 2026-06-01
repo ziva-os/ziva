@@ -1,0 +1,60 @@
+model:
+  provider: openai_agents
+  name: MiniMax-M2.7
+  api_key: "YOUR_API_KEY_HERE"
+  base_url: "https://api.minimaxi.com/v1"
+  options: {}
+prompt:
+  profile: default
+  variables: {}
+tool:
+  allow: []
+  deny: []
+  max_rounds: 0
+skill:
+  enabled: []
+hooks:
+  before_turn: []
+  after_turn: []
+  before_tool: []
+  after_tool: []
+memory:
+  backend: inmemory
+  context_window_tokens: 200000
+plugin:
+  paths:
+    - ./plugins
+  trust:
+    unsigned: low
+approval:
+  policy: full-auto
+  allow_without_prompt: []
+sandbox:
+  mode: "off"
+  writable_dirs: []
+  blocked_commands: []
+mcp:
+  enabled: true
+  servers:
+    MiniMax:
+      type: local
+      command:
+        - uvx
+        - minimax-coding-plan-mcp
+        - "-y"
+      environment:
+        MINIMAX_API_KEY: "YOUR_API_KEY_HERE"
+        MINIMAX_API_HOST: "https://api.minimaxi.com"
+      enabled: true
+    chrome-devtools:
+      type: local
+      command:
+        - npx
+        - "-y"
+        - chrome-devtools-mcp@latest
+        - "--autoConnect"
+      environment: {}
+      enabled: true
+  extra_skill_paths:
+    - "~/.ziva/skills"
+    - "~/.agents/skills"

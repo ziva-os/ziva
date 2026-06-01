@@ -1,0 +1,7 @@
+id: tool.apply_patch
+type: tool
+version: 0.1.0
+entry: impl.py:ApplyPatchTool
+permissions:
+  fs: [read, write]
+enabled_by_default: true

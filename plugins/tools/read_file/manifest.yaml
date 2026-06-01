@@ -1,0 +1,7 @@
+id: tool.read_file
+type: tool
+version: 0.1.0
+entry: impl.py:ReadFileTool
+permissions:
+  fs: [read]
+enabled_by_default: true

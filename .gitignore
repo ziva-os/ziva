@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+dist/
+build/
+
+# Node / Vite
+node_modules/
+.vite/
+*.tsbuildinfo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+
+# Logs
+*.log
+
+# Secrets & local config (contain API keys — do not commit)
+.ziva/config.yaml
+scripts/test_real_api.py
+scripts/test_real_desktop.py
+
+# Temp / debug artifacts
+tmp/
+solar_system.html
+weibo_snapshot.txt
+
+# Ad-hoc screenshots in repo root
+/screenshot-*.png
+/douyin_*.png

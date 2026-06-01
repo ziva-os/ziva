@@ -1,0 +1,5 @@
+id: memory.inmemory
+type: memory
+version: 0.1.0
+entry: impl.py:InMemoryStore
+enabled_by_default: true

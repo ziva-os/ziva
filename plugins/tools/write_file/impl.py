@@ -1,0 +1,74 @@
+import os
+from pathlib import Path
+from plugins.tools._shared.diff_utils import create_diff
+
+
+class WriteFileTool:
+    """Enhanced write file tool with diff output."""
+
+    def spec(self):
+        return {
+            "name": "write_file",
+            "description": "Write content to a file. Returns diff of changes for existing files.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["file_path", "content"],
+            },
+        }
+
+    async def run(self, input_data, ctx):
+        file_path = input_data.get("file_path")
+        content = input_data.get("content", "")
+
+        if not file_path:
+            return {"error": "invalid_input", "message": "file_path is required"}
+
+        try:
+            path = Path(file_path)
+
+            # Create parent directories if they don't exist
+            parent_dir = path.parent
+            if parent_dir and not parent_dir.exists():
+                parent_dir.mkdir(parents=True, exist_ok=True)
+
+            # Read old content for diff
+            old_content = ""
+            file_existed = path.exists()
+            if file_existed:
+                with open(path, "r", encoding="utf-8") as f:
+                    old_content = f.read()
+
+            # Generate diff
+            diff = create_diff(old_content, content, str(path))
+
+            # Write content to file
+            with open(path, "w", encoding="utf-8") as f:
+                bytes_written = f.write(content)
+
+            result = {
+                "status": "ok",
+                "file_path": str(path),
+                "bytes_written": bytes_written,
+                "file_existed": file_existed,
+            }
+
+            # Include diff for existing files
+            if file_existed:
+                result["diff"] = diff
+
+            return result
+
+        except PermissionError:
+            return {
+                "error": "permission_denied",
+                "message": f"Permission denied writing to {file_path}",
+            }
+        except OSError as e:
+            return {
+                "error": "write_failed",
+                "message": f"Failed to write file: {e}",
+            }
