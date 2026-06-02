@@ -120,6 +120,8 @@ class DesktopAPIServer:
         self.app.router.add_get("/mcp-status", self.get_mcp_status)
         self.app.router.add_get("/config", self.get_config)
         self.app.router.add_patch("/config", self.update_config)
+        self.app.router.add_get("/skills", self.list_skills)
+        self.app.router.add_get("/skills/file", self.read_skill_file)
         # Serve static assets from build output
         static_dir = Path(__file__).resolve().parent / "static"
         self.app.router.add_static("/assets", static_dir / "assets")
@@ -636,6 +638,69 @@ class DesktopAPIServer:
             "tools": [t["name"] for t in self.runtime.list_tools()],
             "approval_policy": self.runtime.config.get("approval", {}).get("policy", "suggest"),
         })
+
+    async def list_skills(self, _request: web.Request) -> web.Response:
+        """Return the list of skills the runtime loaded at startup.
+
+        The runtime scans the configured `extra_skill_paths` (defaulting to
+        `~/.ziva/skills` and `~/.agents/skills`) for `SKILL.md` files and
+        parses the YAML frontmatter for `name` and `description`. The
+        sidebar Skills panel uses this list; clicking a skill resolves to
+        `/skills/file?path=<SKILL.md>` for the markdown body.
+        """
+        skill_index = self.runtime.config.get("_skill_index", [])
+        return web.json_response({"skills": skill_index})
+
+    async def read_skill_file(self, request: web.Request) -> web.Response:
+        """Read a file from inside one of the configured skill directories.
+
+        The UI navigates relative links inside a `SKILL.md` (e.g.
+        `references/snapshot-refs.md`) by re-rooting them at the skill's
+        directory. To prevent that endpoint from being abused as a generic
+        file reader, the requested path is rejected unless it lives under
+        one of the configured `extra_skill_paths` directories.
+        """
+        raw = request.query.get("path", "")
+        if not raw:
+            return web.json_response({"error": "path_required"}, status=400)
+        target = Path(raw).expanduser().resolve()
+        allowed_roots = self._skill_root_paths()
+        if not any(self._is_within(target, root) for root in allowed_roots):
+            return web.json_response(
+                {"error": "path_outside_skill_roots", "path": str(target)},
+                status=403,
+            )
+        if not target.is_file():
+            return web.json_response({"error": "not_a_file", "path": str(target)}, status=404)
+        try:
+            content = target.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            return web.json_response({"error": "read_failed", "message": str(exc)}, status=500)
+        return web.json_response({
+            "path": str(target),
+            "content": content,
+            "name": target.stem,
+            "size": target.stat().st_size,
+        })
+
+    def _skill_root_paths(self) -> List[Path]:
+        """Compute the absolute paths of the skill directories the runtime
+        scanned, so the file endpoint can confine reads to those roots."""
+        config_paths = self.runtime.config.get("mcp", {}).get("extra_skill_paths", [])
+        roots: List[Path] = []
+        for sp in config_paths:
+            p = Path(sp).expanduser().resolve()
+            if p.exists():
+                roots.append(p)
+        return roots
+
+    @staticmethod
+    def _is_within(path: Path, root: Path) -> bool:
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            return False
 
     async def start(self, host: str = "127.0.0.1", port: int = 4097) -> None:
         """Start the server (call stop() to shut down)."""

@@ -154,6 +154,28 @@ export async function listAutomations(): Promise<Automation[]> {
   return data.automations || [];
 }
 
+export interface Skill {
+  name: string;
+  description: string;
+  path: string;
+}
+
+export interface SkillFile {
+  path: string;
+  content: string;
+  name: string;
+  size: number;
+}
+
+export async function listSkills(): Promise<Skill[]> {
+  const data = await api<{ skills: Skill[] }>("GET", "/skills");
+  return data.skills || [];
+}
+
+export async function readSkillFile(path: string): Promise<SkillFile> {
+  return api<SkillFile>("GET", `/skills/file?path=${encodeURIComponent(path)}`);
+}
+
 export async function createAutomation(name: string, prompt: string, intervalSeconds: number): Promise<{ id: string }> {
   return api("POST", "/automations", { name, prompt, interval_seconds: intervalSeconds });
 }

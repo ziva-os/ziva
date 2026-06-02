@@ -190,9 +190,12 @@ def _is_compacted_msg(m: Any) -> bool:
 def _llm_context(messages: List[Any]) -> List[Any]:
     """Return the messages that should be sent to the LLM as context.
 
-    On-disk layout after /compact is `[summary, ...compacted_originals]`.
-    The LLM should only see `[summary]` — the originals are kept on disk
-    for the UI's collapse bar but should not bloat the context window
+    On-disk layout after /compact is
+    `[summary, ...compacted_originals, ...new_messages_after_compact]`.
+    The LLM should see the summary plus any new messages (user prompts
+    and their assistant responses from after the compact) but NOT the
+    compacted originals — those are kept on disk only for the UI's
+    collapse bar expand affordance and would bloat the context window
     (codex CLI / claude code style: summary replaces the history, no
     "recent tail" is preserved).
 
@@ -200,27 +203,19 @@ def _llm_context(messages: List[Any]) -> List[Any]:
     Accepts ChatMessage objects or plain dicts; the dict form is what the
     server reads from the session store / JSONL on disk.
     """
-    for m in messages:
-        if _is_summary_msg(m):
-            return [m]
-    return list(messages)
+    return [m for m in messages if not _is_compacted_msg(m)]
 
 
 def _summary_only(messages: List[Any]) -> List[Any]:
-    """Return just the last compaction summary message, or the full list if
-    the session has never been compacted.
+    """Return the messages the UI should show by default after /compact.
 
-    Used by the server's `get_messages` endpoint to give the UI a clean
-    post-/compact view: only the summary is shown, the compacted originals
-    are folded into the collapse bar. The runtime's LLM context uses the
-    same view via `_llm_context` — these two filters return the same
-    thing, but keeping them as separate helpers makes the intent clearer
-    at each call site.
+    Same shape as `_llm_context`: summary + any new messages after the
+    compact, with the compacted originals excluded. This way the live
+    chat shows the same conversation that the LLM sees, while the
+    collapse bar (driven by the `include_dropped=true` view) can still
+    expand to reveal the folded history.
     """
-    for m in messages:
-        if _is_summary_msg(m):
-            return [m]
-    return list(messages)
+    return [m for m in messages if not _is_compacted_msg(m)]
 
 
 def _format_history(messages: List[ChatMessage]) -> str:

@@ -60,15 +60,17 @@ function formatRelativeTime(ts?: number): string {
   return `${Math.floor(days / 30)}mo`;
 }
 
-// ---- DOM Bootstrap — Antigravity Agent Manager layout ----
+// ---- DOM Bootstrap — Ziva layout ----
 function init() {
   const app = $("app");
   app.innerHTML = `
     <div class="ziva-layout">
       <aside class="ziva-sidebar" id="sidebar">
         <div class="sidebar-header">
-          <span class="sidebar-title">Agent Manager</span>
-          <span class="sidebar-badge">Preview</span>
+          <span class="sidebar-title">Ziva</span>
+          <button class="sidebar-toggle-btn" id="btnToggleSidebar" title="Toggle sidebar" aria-label="Toggle sidebar">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+          </button>
         </div>
         <div class="sidebar-top">
           <button id="btnNewSession" class="sidebar-btn">
@@ -77,15 +79,16 @@ function init() {
           </button>
         </div>
         <div class="sidebar-nav">
-          <button class="sidebar-nav-item" id="btnHistory">
-            <span class="nav-icon">↺</span>
-            <span>Conversation History</span>
+          <button class="sidebar-nav-item" id="btnSkills">
+            <span class="nav-icon">📚</span>
+            <span>Skills</span>
           </button>
           <button class="sidebar-nav-item" id="btnScheduled">
             <span class="nav-icon">⏰</span>
             <span>Scheduled Tasks</span>
           </button>
         </div>
+        <div class="skills-list" id="skillsList" style="display:none"></div>
         <div class="sidebar-section-header">
           <span>Projects</span>
           <div class="section-actions">
@@ -112,12 +115,11 @@ function init() {
             <span class="nav-icon">⊡</span>
             <span>Changes</span>
           </button>
-          <button class="sidebar-nav-item" id="btnFeedback">
-            <span class="nav-icon">?</span>
-            <span>Feedback</span>
-          </button>
         </div>
       </aside>
+      <button class="sidebar-open-btn" id="btnOpenSidebar" title="Open sidebar" aria-label="Open sidebar">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+      </button>
       <main class="ziva-center">
         <div class="empty-state" id="emptyState">
           <div class="workspace-context show" id="workspaceContext">
@@ -229,6 +231,9 @@ function bindEvents() {
   $("btnRightPanel").onclick = toggleDiff;
   $("btnCloseRight").onclick = toggleDiff;
 
+  $("btnSkills").onclick = () => toggleSkillsPanel();
+  $("btnScheduled").onclick = () => openAutomationsModal();
+
   $("btnTheme").onclick = () => {
     const current = store.get().theme;
     const next = current === "dark" ? "light" : "dark";
@@ -236,10 +241,6 @@ function bindEvents() {
     document.documentElement.setAttribute("data-theme", next);
     $("themeIcon").textContent = next === "dark" ? "◐" : "◑";
     localStorage.setItem("ziva-theme", next);
-  };
-
-  $("btnFeedback").onclick = () => {
-    window.open("https://github.com/anthropics/claude-code/issues", "_blank");
   };
 
   $("btnFilterSessions").onclick = () => {
@@ -303,10 +304,38 @@ function bindEvents() {
     store.set({ config: { ...store.get().config, approval: policy } });
   };
 
+  // Sidebar collapse/expand — driven by toggling `.sidebar-collapsed` on
+  // the layout container. The CSS hides the sidebar's contents and
+  // reveals the small `.sidebar-open-btn` floating at the sidebar's old
+  // position so the user can re-open it. Cmd/Ctrl+B is the keyboard
+  // shortcut; the click handlers below mirror it for the two buttons.
+  const toggleSidebar = () => {
+    const layout = document.querySelector(".ziva-layout") as HTMLElement | null;
+    if (!layout) return;
+    layout.classList.toggle("sidebar-collapsed");
+    const collapsed = layout.classList.contains("sidebar-collapsed");
+    localStorage.setItem("ziva-sidebar-collapsed", collapsed ? "1" : "0");
+  };
+  $("btnToggleSidebar").onclick = toggleSidebar;
+  $("btnOpenSidebar").onclick = toggleSidebar;
+  // Restore previous state
+  if (localStorage.getItem("ziva-sidebar-collapsed") === "1") {
+    document.querySelector(".ziva-layout")?.classList.add("sidebar-collapsed");
+  }
+
   document.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "d") { e.preventDefault(); toggleDiff(); }
-    if ((e.metaKey || e.ctrlKey) && e.key === "b") { e.preventDefault(); $("sidebar").classList.toggle("show"); }
+    if ((e.metaKey || e.ctrlKey) && e.key === "b") { e.preventDefault(); toggleSidebar(); }
     if ((e.metaKey || e.ctrlKey) && e.key === "n") { e.preventDefault(); createSession(); }
+    if (e.key === "Escape") {
+      if (document.getElementById("skillsModalBackdrop")) {
+        e.preventDefault();
+        closeSkillViewer();
+      } else if (document.getElementById("automationsModalBackdrop")) {
+        e.preventDefault();
+        closeAutomationsModal();
+      }
+    }
   });
 
   $("messages").addEventListener("scroll", () => {
@@ -320,6 +349,248 @@ function bindEvents() {
     document.documentElement.setAttribute("data-theme", savedTheme);
     $("themeIcon").textContent = savedTheme === "dark" ? "◐" : "◑";
   }
+}
+
+// ---- Skills panel + viewer modal ----
+// The sidebar has a "Skills" button that toggles a panel listing the
+// skills the runtime loaded at startup. Clicking a skill opens a modal
+// with the SKILL.md body rendered as markdown. Relative file links
+// inside the rendered markdown (e.g. `references/snapshot-refs.md`)
+// are intercepted and re-loaded into the same modal, so users can
+// navigate the skill's reference tree without leaving the chat surface.
+
+let skillsCache: api.Skill[] | null = null;
+let skillsPanelOpen = false;
+
+async function toggleSkillsPanel() {
+  const list = $("skillsList");
+  skillsPanelOpen = !skillsPanelOpen;
+  if (skillsPanelOpen) {
+    list.style.display = "flex";
+    await loadSkillsPanel();
+  } else {
+    list.style.display = "none";
+  }
+}
+
+async function loadSkillsPanel() {
+  const list = $("skillsList");
+  list.innerHTML = '<div class="skills-loading">Loading skills...</div>';
+  try {
+    if (!skillsCache) skillsCache = await api.listSkills();
+    renderSkillsPanel(skillsCache);
+  } catch (e) {
+    list.innerHTML = `<div class="skills-empty">Failed to load skills: ${esc((e as Error).message)}</div>`;
+  }
+}
+
+function renderSkillsPanel(skills: api.Skill[]) {
+  const list = $("skillsList");
+  if (skills.length === 0) {
+    list.innerHTML = '<div class="skills-empty">No skills loaded. Add SKILL.md files to ~/.ziva/skills or ~/.agents/skills.</div>';
+    return;
+  }
+  list.innerHTML = skills
+    .map(
+      (s) => `
+        <div class="skill-item" data-skill-path="${esc(s.path)}" data-skill-name="${esc(s.name)}">
+          <div class="skill-item-name">${esc(s.name)}</div>
+          ${s.description ? `<div class="skill-item-desc">${esc(s.description)}</div>` : ""}
+        </div>`,
+    )
+    .join("");
+  list.querySelectorAll<HTMLElement>(".skill-item").forEach((el) => {
+    el.onclick = () => {
+      const path = el.dataset.skillPath!;
+      const name = el.dataset.skillName!;
+      openSkillViewer(name, path);
+    };
+  });
+}
+
+// Open the skill viewer modal. The modal supports two states:
+//   - "list" mode: shows the list of skills (used as a navigation fallback)
+//   - "file" mode: shows a single skill file with rendered markdown, and
+//     intercepts relative links so the user can navigate the skill's tree.
+function openSkillViewer(skillName: string, skillPath: string) {
+  closeSkillViewer();
+  const backdrop = document.createElement("div");
+  backdrop.className = "skills-modal-backdrop";
+  backdrop.id = "skillsModalBackdrop";
+  const modal = document.createElement("div");
+  modal.className = "skills-modal";
+  modal.innerHTML = `
+    <div class="skills-modal-header">
+      <button class="skills-modal-back" id="skillsModalBack" style="display:none">← Back</button>
+      <div class="skills-modal-title" id="skillsModalTitle">${esc(skillName)}</div>
+      <button class="skills-modal-close" id="skillsModalClose" aria-label="Close">×</button>
+    </div>
+    <div class="skills-breadcrumb" id="skillsBreadcrumb" style="display:none"></div>
+    <div class="skills-modal-body" id="skillsModalBody">
+      <div class="skills-modal-loading">Loading ${esc(skillName)}...</div>
+    </div>`;
+  backdrop.appendChild(modal);
+  document.body.appendChild(backdrop);
+
+  (modal.querySelector("#skillsModalClose") as HTMLElement).onclick = closeSkillViewer;
+  backdrop.onclick = (e) => { if (e.target === backdrop) closeSkillViewer(); };
+  (modal.querySelector("#skillsModalBack") as HTMLElement).onclick = () => {
+    openSkillListViewer();
+  };
+
+  loadSkillFileIntoModal(skillName, skillPath, /*pushHistory*/ true);
+}
+
+function openSkillListViewer() {
+  closeSkillViewer();
+  if (!skillsCache) {
+    api.listSkills().then((s) => {
+      skillsCache = s;
+      renderSkillListModal(s);
+    }).catch(() => renderSkillListModal([]));
+  } else {
+    renderSkillListModal(skillsCache);
+  }
+}
+
+function renderSkillListModal(skills: api.Skill[]) {
+  const backdrop = document.createElement("div");
+  backdrop.className = "skills-modal-backdrop";
+  backdrop.id = "skillsModalBackdrop";
+  const modal = document.createElement("div");
+  modal.className = "skills-modal";
+  let body = "";
+  if (skills.length === 0) {
+    body = '<div class="skills-modal-empty">No skills loaded.</div>';
+  } else {
+    body = '<div class="skills-modal-list">' + skills
+      .map(
+        (s) => `
+          <div class="skills-modal-list-item" data-skill-path="${esc(s.path)}" data-skill-name="${esc(s.name)}">
+            <div class="skills-modal-list-name">${esc(s.name)}</div>
+            ${s.description ? `<div class="skills-modal-list-desc">${esc(s.description)}</div>` : ""}
+          </div>`,
+      )
+      .join("") + "</div>";
+  }
+  modal.innerHTML = `
+    <div class="skills-modal-header">
+      <div class="skills-modal-title">Skills</div>
+      <button class="skills-modal-close" id="skillsModalClose" aria-label="Close">×</button>
+    </div>
+    <div class="skills-modal-body">${body}</div>`;
+  backdrop.appendChild(modal);
+  document.body.appendChild(backdrop);
+
+  (modal.querySelector("#skillsModalClose") as HTMLElement).onclick = closeSkillViewer;
+  backdrop.onclick = (e) => { if (e.target === backdrop) closeSkillViewer(); };
+  modal.querySelectorAll<HTMLElement>(".skills-modal-list-item").forEach((el) => {
+    el.onclick = () => {
+      const path = el.dataset.skillPath!;
+      const name = el.dataset.skillName!;
+      openSkillViewer(name, path);
+    };
+  });
+}
+
+function closeSkillViewer() {
+  document.getElementById("skillsModalBackdrop")?.remove();
+}
+
+// Fetch a skill file and render its markdown body into the modal.
+// Relative `.md`/`.markdown`/text links in the rendered HTML are
+// re-wired to a click handler that re-enters this function with the
+// resolved absolute path, so users can navigate within a skill's
+// reference tree without leaving the chat surface.
+async function loadSkillFileIntoModal(displayName: string, filePath: string, pushHistory: boolean) {
+  const body = document.getElementById("skillsModalBody");
+  const title = document.getElementById("skillsModalTitle");
+  const back = document.getElementById("skillsModalBack");
+  const crumb = document.getElementById("skillsBreadcrumb");
+  if (!body || !title) return;
+  body.innerHTML = '<div class="skills-modal-loading">Loading...</div>';
+  if (title) title.textContent = displayName;
+  if (back) back.style.display = pushHistory ? "flex" : "none";
+  if (crumb) {
+    crumb.style.display = "block";
+    crumb.innerHTML = `<span class="skills-breadcrumb-path">${esc(filePath)}</span>`;
+  }
+  try {
+    const data = await api.readSkillFile(filePath);
+    // Strip the YAML frontmatter for display — the sidebar list already
+    // shows the description, and the raw frontmatter adds noise.
+    const content = stripFrontmatter(data.content);
+    body.innerHTML = `<div class="md">${renderMarkdown(content)}</div>`;
+    addCopyButtons(body);
+    highlightCode(body);
+    interceptSkillLinks(body, data.path);
+    // Scroll the modal to the top whenever a new file is loaded
+    body.scrollTop = 0;
+  } catch (e) {
+    const msg = (e as any)?.error || (e as Error).message;
+    body.innerHTML = `<div class="skills-modal-error">Failed to load: ${esc(msg)}</div>`;
+  }
+}
+
+// Walk the rendered markdown container and turn any relative link
+// pointing to a file under the same skill directory into a click
+// handler that loads that file inline. External / absolute links
+// remain normal `<a>` elements (still openable in a new tab, etc.).
+function interceptSkillLinks(container: HTMLElement, currentFilePath: string) {
+  const links = container.querySelectorAll<HTMLAnchorElement>("a[href]");
+  const baseDir = currentFilePath.replace(/[^/]+$/, "");
+  for (const a of links) {
+    const href = a.getAttribute("href") || "";
+    // Skip external links, anchors, mailto, etc.
+    if (!href || href.startsWith("http") || href.startsWith("https") ||
+        href.startsWith("mailto:") || href.startsWith("#") ||
+        href.startsWith("/")) {
+      // For absolute paths that point into the skill roots, still intercept
+      if (href.startsWith("/") && isPathInSkillRoots(href)) {
+        a.classList.add("skill-file-link");
+        a.onclick = (e) => {
+          e.preventDefault();
+          const name = href.split("/").pop() || href;
+          loadSkillFileIntoModal(name, href, true);
+        };
+      }
+      continue;
+    }
+    // Strip any anchor fragment for the file resolution
+    const [rel] = href.split("#");
+    if (!rel) continue;
+    // Only intercept .md / .markdown / .txt / no-extension references —
+    // everything else (images, binaries) is left as a plain link.
+    const isLikelyDoc = /\.(md|markdown|txt)$/i.test(rel) || !/\.[a-z0-9]+$/i.test(rel);
+    if (!isLikelyDoc) continue;
+    const resolved = baseDir + rel;
+    a.classList.add("skill-file-link");
+    a.onclick = (e) => {
+      e.preventDefault();
+      const name = rel.split("/").pop() || rel;
+      loadSkillFileIntoModal(name, resolved, true);
+    };
+  }
+}
+
+function isPathInSkillRoots(p: string): boolean {
+  // Best-effort client-side check — the server is the final authority.
+  // We don't know the skill roots here, so allow anything that looks
+  // like a markdown file and let the server reject if it's outside.
+  return /\.(md|markdown|txt)$/i.test(p);
+}
+
+function stripFrontmatter(content: string): string {
+  // YAML frontmatter is delimited by `---` lines at the very top of the
+  // file. We strip it for display so the user sees only the body of
+  // the skill, not its metadata block.
+  if (!content.startsWith("---")) return content;
+  const end = content.indexOf("\n---", 3);
+  if (end < 0) return content;
+  // Skip past the closing `---` and any trailing newline
+  let rest = content.slice(end + 4);
+  if (rest.startsWith("\n")) rest = rest.slice(1);
+  return rest;
 }
 
 // ---- Config ----
@@ -1068,21 +1339,19 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     appendApprovalCard(requestId, toolName, args);
     if (updateScroll) scrollBottom();
   } else if (t === "turn_end") {
+    // Trust the live streaming events to have already rendered the new
+    // user / assistant / tool messages. We previously called `loadHistory`
+    // here to "reconcile" with disk, but that wiped the entire message
+    // container and re-rendered from scratch on every turn — a jarring
+    // "flash" of the full conversation. We only refresh lightweight
+    // sidebar / context surfaces that don't drive the chat display.
     removeTyping();
     store.set({ isRunning: false });
     currentAssistantEl = null;
     updateSendStopButton();
-    pendingTools.forEach(c => c.remove());
-    pendingTools.clear();
     refreshPlan();
     refreshSessions();
     if ($("rightPanel").classList.contains("show")) refreshDiff();
-    if (store.get().activeSid) {
-      $("messages").innerHTML = "";
-      currentAssistantEl = null;
-      currentTextParts = { thinking: "", main: "" };
-      loadHistory(store.get().activeSid!);
-    }
   } else if (t === "round_complete") {
     currentAssistantEl = null;
     const usage = ev.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
@@ -1226,12 +1495,149 @@ async function refreshPlan() {
 }
 
 // ---- Automations ----
-async function refreshAutomations() {
-  try { await api.listAutomations(); } catch { /* automations UI removed */ }
+// The "Scheduled Tasks" nav button opens a modal with a list of running
+// automations (name, interval, last run, last result) and a "+ New
+// automation" affordance. New automations take a name, a prompt, and
+// an interval (in seconds) — the server schedules a background task
+// that re-sends the prompt to the runtime every `interval` seconds.
+async function openAutomationsModal() {
+  closeAutomationsModal();
+  const backdrop = document.createElement("div");
+  backdrop.className = "skills-modal-backdrop";
+  backdrop.id = "automationsModalBackdrop";
+  const modal = document.createElement("div");
+  modal.className = "skills-modal";
+  modal.innerHTML = `
+    <div class="skills-modal-header">
+      <div class="skills-modal-title">Scheduled Tasks</div>
+      <button class="skills-modal-close" id="automationsModalClose" aria-label="Close">×</button>
+    </div>
+    <div class="skills-modal-body" id="automationsModalBody">
+      <div class="skills-modal-loading">Loading automations...</div>
+    </div>`;
+  backdrop.appendChild(modal);
+  document.body.appendChild(backdrop);
+
+  (modal.querySelector("#automationsModalClose") as HTMLElement).onclick = closeAutomationsModal;
+  backdrop.onclick = (e) => { if (e.target === backdrop) closeAutomationsModal(); };
+
+  await loadAutomationsIntoModal();
 }
 
-async function createAutomation() {
-  /* automations UI removed from sidebar */
+function closeAutomationsModal() {
+  document.getElementById("automationsModalBackdrop")?.remove();
+}
+
+async function loadAutomationsIntoModal() {
+  const body = document.getElementById("automationsModalBody");
+  if (!body) return;
+  let automations: api.Automation[] = [];
+  try {
+    automations = await api.listAutomations();
+  } catch (e) {
+    body.innerHTML = `<div class="skills-modal-error">Failed to load: ${esc((e as Error).message)}</div>`;
+    return;
+  }
+  let html = "";
+  if (automations.length === 0) {
+    html = '<div class="automations-empty">No scheduled tasks yet. Add one below to have the agent re-run a prompt on a timer.</div>';
+  } else {
+    html = '<div class="automations-list">' + automations
+      .map((a) => renderAutomationRow(a))
+      .join("") + '</div>';
+  }
+  html += `
+    <div class="automation-create-form" id="automationCreateForm">
+      <div class="automation-create-header">+ New scheduled task</div>
+      <label class="automation-label">Name<input type="text" class="automation-input" id="automationNameInput" placeholder="Daily standup summary" /></label>
+      <label class="automation-label">Prompt<textarea class="automation-input automation-textarea" id="automationPromptInput" placeholder="What should the agent do each time the timer fires?"></textarea></label>
+      <div class="automation-label-row">
+        <label class="automation-label">Interval
+          <select class="automation-input" id="automationIntervalInput">
+            <option value="60">Every 1 minute</option>
+            <option value="300" selected>Every 5 minutes</option>
+            <option value="900">Every 15 minutes</option>
+            <option value="3600">Every hour</option>
+            <option value="21600">Every 6 hours</option>
+            <option value="86400">Once a day</option>
+            <option value="604800">Once a week</option>
+          </select>
+        </label>
+      </div>
+      <div class="automation-form-actions">
+        <button class="automation-submit-btn" id="automationSubmitBtn">Create</button>
+        <span class="automation-form-status" id="automationFormStatus"></span>
+      </div>
+    </div>`;
+  body.innerHTML = html;
+
+  // Wire row-level delete buttons
+  body.querySelectorAll<HTMLElement>(".automation-row-delete").forEach((btn) => {
+    btn.onclick = async () => {
+      const aid = btn.dataset.aid!;
+      const name = btn.dataset.name || aid;
+      if (!confirm(`Delete "${name}"?`)) return;
+      try {
+        await api.deleteAutomation(aid);
+        await loadAutomationsIntoModal();
+      } catch (e) {
+        alert(`Delete failed: ${(e as Error).message}`);
+      }
+    };
+  });
+
+  // Wire the form submit
+  (body.querySelector("#automationSubmitBtn") as HTMLElement).onclick = async () => {
+    const name = (body.querySelector("#automationNameInput") as HTMLInputElement).value.trim();
+    const prompt = (body.querySelector("#automationPromptInput") as HTMLTextAreaElement).value.trim();
+    const interval = parseInt((body.querySelector("#automationIntervalInput") as HTMLSelectElement).value, 10);
+    const statusEl = body.querySelector("#automationFormStatus") as HTMLElement;
+    if (!prompt) {
+      statusEl.textContent = "Prompt is required";
+      statusEl.className = "automation-form-status error";
+      return;
+    }
+    statusEl.textContent = "Creating...";
+    statusEl.className = "automation-form-status";
+    try {
+      await api.createAutomation(name || "Untitled task", prompt, interval);
+      statusEl.textContent = "Created";
+      statusEl.className = "automation-form-status success";
+      // Brief success flash, then re-render the list
+      setTimeout(() => loadAutomationsIntoModal(), 400);
+    } catch (e) {
+      statusEl.textContent = (e as Error).message || "Failed to create";
+      statusEl.className = "automation-form-status error";
+    }
+  };
+}
+
+function renderAutomationRow(a: api.Automation): string {
+  const intervalLabel = formatInterval(a.interval_seconds);
+  const lastRunLabel = a.last_run ? formatRelativeTime(Math.floor(a.last_run)) || "just now" : "never";
+  const lastResult = a.last_result
+    ? `<div class="automation-row-result" title="${esc(a.last_result)}">${esc(a.last_result.slice(0, 140))}${a.last_result.length > 140 ? "…" : ""}</div>`
+    : '<div class="automation-row-result muted">No runs yet</div>';
+  return `
+    <div class="automation-row">
+      <div class="automation-row-main">
+        <div class="automation-row-name">${esc(a.name)}</div>
+        <div class="automation-row-meta">
+          <span class="automation-row-interval">⏰ ${esc(intervalLabel)}</span>
+          <span class="automation-row-lastrun">Last run: ${esc(lastRunLabel)}</span>
+          <span class="automation-row-status ${a.enabled ? "on" : "off"}">${a.enabled ? "● running" : "○ stopped"}</span>
+        </div>
+        ${lastResult}
+      </div>
+      <button class="automation-row-delete" data-aid="${esc(a.id)}" data-name="${esc(a.name)}" title="Delete">🗑</button>
+    </div>`;
+}
+
+function formatInterval(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
+  return `${Math.round(seconds / 86400)}d`;
 }
 
 // ---- Diff ----
