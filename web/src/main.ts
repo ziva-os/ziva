@@ -573,8 +573,16 @@ async function deleteSession(sid: string) {
 }
 
 async function loadHistory(sid: string) {
-  const data = await api.getMessages(sid);
-  const msgs = data.messages || [];
+  // Always load the full history (include_dropped=true) so the collapse bar
+  // can count how many pre-compact messages were dropped. The filtered view
+  // (post-/compact) returns only the summary message, which is what we want
+  // to render at the top of the chat.
+  const [filteredData, fullData] = await Promise.all([
+    api.getMessages(sid),
+    api.getMessages(sid, { includeDropped: true }),
+  ]);
+  const msgs = filteredData.messages || [];
+  const fullMsgs = fullData.messages || [];
   const hasContent = msgs.length > 0;
   showEmptyState(!hasContent);
 
@@ -586,22 +594,43 @@ async function loadHistory(sid: string) {
   pendingTools.clear();
 
   // Restore context ring from persisted usage
-  if (data.last_usage?.prompt_tokens) {
-    const pct = Math.min(data.last_usage.prompt_tokens / 200000, 1);
-    updateContextProgress(pct, data.last_usage.prompt_tokens);
+  if (filteredData.last_usage?.prompt_tokens) {
+    const pct = Math.min(filteredData.last_usage.prompt_tokens / 200000, 1);
+    updateContextProgress(pct, filteredData.last_usage.prompt_tokens);
   } else {
     updateContextProgress(0, 0);
   }
 
-  // Rebuild UI from persisted messages in original order
-  // Track tool_calls from assistant messages to pair with tool results
+  // If the session has been compacted, the on-disk layout is
+  //   [summary, u1, a1, u2, a2, ...]  (summary at index 0, originals after)
+  // and the filtered view returns just the summary. We render a collapse
+  // bar above it counting ALL pre-/compact messages (the compacted
+  // originals), so the visible UI shows only the summary until the user
+  // expands the bar.
+  const firstSummaryIdx = fullMsgs.findIndex(m => (m as any)._compaction_summary);
+  if (firstSummaryIdx >= 0) {
+    const droppedCount = fullMsgs.length - 1;
+    appendCompactBoundary(sid, droppedCount, firstSummaryIdx);
+  }
+
+  renderMessages($("messages"), msgs);
+  scrollBottom();
+}
+
+// Render a list of messages into a target container using the same DOM
+// construction as the live chat (user / assistant / tool cards). Used
+// both by `loadHistory` (target = #messages) and by the compact-history
+// expand affordance (target = .compact-dropped inside the collapse bar),
+// so the folded messages look identical to the live chat — just visually
+// scaled down via the wrapper's CSS.
+function renderMessages(target: HTMLElement, msgs: any[]): void {
   let pendingToolCalls: { id: string; name: string; arguments: Record<string, unknown> }[] = [];
 
   for (const m of msgs) {
     const isSub = (m as any)._subagent === true;
 
     if (m.role === "user") {
-      appendUserMsg(m.content);
+      appendUserMsg(m.content, target);
     } else if (m.role === "assistant") {
       if (isSub) {
         continue;
@@ -614,10 +643,10 @@ async function loadHistory(sid: string) {
           const thinkDiv = document.createElement("div");
           thinkDiv.className = "thinking-card-inline";
           thinkDiv.innerHTML = `<details class="thinking-card"><summary>Thinking</summary><div class="thinking-card-content">${esc(thinking)}</div></details>`;
-          $("messages").appendChild(thinkDiv);
+          target.appendChild(thinkDiv);
         }
       } else {
-        appendAssistantMsg(m.content);
+        appendAssistantMsg(m.content, target);
         pendingToolCalls = [];
       }
     } else if (m.role === "tool") {
@@ -634,31 +663,88 @@ async function loadHistory(sid: string) {
         if (match) args = match.arguments;
       }
       let output: unknown = m.content;
-      try { output = JSON.parse(m.content); } catch {}
+      // Pruned tool messages keep the call structure but collapse the payload
+      // to a placeholder string. Render them as a special state rather than
+      // trying to parse "[pruned]" as JSON.
+      const isPruned = typeof m.content === "string" && m.content === "[pruned]";
+      if (!isPruned) {
+        try { output = JSON.parse(m.content); } catch {}
+      }
 
       let subagentTools: string[] | undefined;
-      if (toolName === "spawn_agent" && typeof output === "object" && output !== null) {
+      if (!isPruned && toolName === "spawn_agent" && typeof output === "object" && output !== null) {
         subagentTools = (output as any).tools;
       }
 
-      appendToolCard(toolName, args, "success", output, subagentTools);
+      appendToolCard(toolName, args, "success", output, subagentTools, isPruned, target);
     }
   }
-  scrollBottom();
+}
+
+// Render a collapse bar above a compaction summary message. On expand,
+// it fetches the full history (with include_dropped=true) and renders
+// the compacted originals inline above the bar using the same DOM as
+// the live chat (renderMessages → appendUserMsg / appendAssistantMsg /
+// appendToolCard), so the folded messages look identical to the live
+// chat — just visually scaled down via the wrapper's CSS. The summary
+// itself stays in its own bubble below the bar.
+function appendCompactBoundary(
+  sid: string,
+  droppedCount: number,
+  summaryIdx: number,
+): void {
+  const wrapper = document.createElement("div");
+  wrapper.className = "compact-boundary";
+
+  const bar = document.createElement("details");
+  bar.className = "compact-collapse";
+  const sum = document.createElement("summary");
+  sum.textContent = `📚 之前 ${droppedCount} 条消息已压缩为摘要`;
+  bar.appendChild(sum);
+
+  const dropZone = document.createElement("div");
+  dropZone.className = "compact-dropped";
+  dropZone.textContent = "展开以查看原文…";
+  bar.appendChild(dropZone);
+
+  bar.addEventListener("toggle", async () => {
+    if (!bar.open || dropZone.dataset.loaded === "1") return;
+    try {
+      const data = await api.getMessages(sid, { includeDropped: true });
+      const fullMsgs = data.messages || [];
+      // On-disk layout is [summary, ...compacted_originals]. Skip the
+      // summary at summaryIdx and render every compacted original using
+      // the same DOM as the live chat. The wrapper's CSS makes them
+      // slightly indented and smaller so they're visually distinct.
+      dropZone.innerHTML = "";
+      const originals = fullMsgs.filter((_, i) => i !== summaryIdx);
+      renderMessages(dropZone, originals);
+      dropZone.dataset.loaded = "1";
+    } catch (e) {
+      dropZone.textContent = `加载失败: ${(e as Error).message}`;
+    }
+  });
+
+  wrapper.appendChild(bar);
+  $("messages").appendChild(wrapper);
 }
 
 // ---- Chat Rendering ----
-function appendUserMsg(text: string) {
+// `target` defaults to `#messages` for the live streaming path. The
+// compact-history expand affordance passes a different container so the
+// folded messages reuse the same DOM (and styling) as the live chat,
+// just visually scaled down via a wrapper class.
+function appendUserMsg(text: string, target: HTMLElement = $("messages")) {
   showEmptyState(false);
   const div = document.createElement("div");
   div.className = "msg user";
   div.innerHTML = `<div class="msg-inner"><div class="role-label"><span class="dot"></span> You</div><div class="md">${renderMarkdown(text)}</div></div>`;
-  $("messages").appendChild(div);
+  target.appendChild(div);
   currentAssistantEl = null;
   highlightCode(div);
 }
 
-function appendAssistantMsg(text: string) {
+function appendAssistantMsg(text: string, target: HTMLElement = $("messages")) {
   const div = document.createElement("div");
   div.className = "msg assistant";
   const { thinking, main } = extractThinking(text);
@@ -668,7 +754,7 @@ function appendAssistantMsg(text: string) {
   }
   content += `<div class="md">${renderMarkdown(main)}</div>`;
   div.innerHTML = `<div class="msg-inner"><div class="role-label"><span class="dot"></span> Assistant</div>${content}</div>`;
-  $("messages").appendChild(div);
+  target.appendChild(div);
   addCopyButtons(div);
   highlightCode(div);
   currentAssistantEl = null;
@@ -722,11 +808,13 @@ function appendToolCard(
   status: string,
   output?: unknown,
   subagentTools?: string[],
+  isPruned: boolean = false,
+  target: HTMLElement = $("messages"),
 ): HTMLElement {
   const card = document.createElement("div");
-  card.className = "tool-card" + (status === "running" ? " open" : "");
-  const statusClass = status === "error" ? "error" : status === "running" ? "running" : "success";
-  const statusText = status === "error" ? "error" : status === "running" ? "running..." : "done";
+  card.className = "tool-card" + (status === "running" ? " open" : "") + (isPruned ? " pruned" : "");
+  const statusClass = isPruned ? "pruned" : (status === "error" ? "error" : status === "running" ? "running" : "success");
+  const statusText = isPruned ? "pruned" : (status === "error" ? "error" : status === "running" ? "running..." : "done");
   const abbrevArg = getAbbreviatedArg(args);
 
   let body = "";
@@ -734,7 +822,10 @@ function appendToolCard(
     body += `<div class="section-label">Input</div>`;
     body += `<div class="section-content"><code>${esc(JSON.stringify(args, null, 2))}</code></div>`;
   }
-  if (output !== undefined) {
+  if (isPruned) {
+    body += `<div class="section-label">Output</div>`;
+    body += `<div class="section-content pruned-output">Output pruned to save context — re-run the tool to see fresh results.</div>`;
+  } else if (output !== undefined) {
     if (toolName === "spawn_agent" && typeof output === "object" && output !== null && (output as any).result) {
       const resultText = String((output as any).result);
       body += `<div class="section-label">Output</div>`;
@@ -767,7 +858,7 @@ function appendToolCard(
     navigator.clipboard.writeText(copyText);
   };
 
-  $("messages").appendChild(card);
+  target.appendChild(card);
   currentAssistantEl = null;
   return card;
 }
@@ -845,6 +936,46 @@ function appendError(msg: string) {
   div.textContent = "Error: " + msg;
   $("messages").appendChild(div);
   currentAssistantEl = null;
+}
+
+// ---- Compact progress toast (aicoder-aligned) ----
+// Fixed-position popup with circular spinner shown while /compact runs.
+// Replaces the previous in-flow `.msg.compacting` element.
+function ensureCompactToast(): HTMLElement {
+  let toast = document.getElementById("compact-toast");
+  if (toast) {
+    toast.classList.remove("hidden");
+    return toast;
+  }
+  toast = document.createElement("div");
+  toast.id = "compact-toast";
+  toast.className = "compact-toast";
+  toast.innerHTML = `
+    <div class="compact-spinner"></div>
+    <span class="compact-toast-message"></span>
+  `;
+  // Append inside the message column so `position: absolute` centers the
+  // toast over the chat area instead of the whole viewport (which would
+  // put it on top of the sidebar).
+  const host = document.querySelector(".ziva-center") || document.body;
+  host.appendChild(toast);
+  return toast;
+}
+
+function setCompactToastState(state: "loading" | "success" | "error", message: string): void {
+  const toast = ensureCompactToast();
+  const spinner = toast.querySelector(".compact-spinner") as HTMLElement | null;
+  const msg = toast.querySelector(".compact-toast-message") as HTMLElement | null;
+  if (spinner) {
+    spinner.classList.remove("success", "error");
+    if (state !== "loading") spinner.classList.add(state);
+  }
+  if (msg) msg.textContent = message;
+}
+
+function hideCompactToast(): void {
+  const toast = document.getElementById("compact-toast");
+  if (toast) toast.classList.add("hidden");
 }
 
 function scrollBottom() {
@@ -1023,40 +1154,55 @@ async function sendMessage() {
   if (!store.get().activeSid) await createSession();
   const sid = store.get().activeSid!;
 
-  // Intercept /compact command
-  if (text.trim() === "/compact") {
+  // Intercept /compact and /prune commands — both use the same toast UI,
+  // just hit different endpoints. /prune is a cheap no-model operation;
+  // /compact always calls the model to generate a summary.
+  const trimmedCmd = text.trim();
+  if (trimmedCmd === "/compact" || trimmedCmd === "/prune") {
     ($("prompt") as HTMLTextAreaElement).value = "";
     ($("prompt") as HTMLTextAreaElement).style.height = "auto";
     $("charCount").textContent = "";
 
-    showEmptyState(false);
-    const compactEl = document.createElement("div");
-    compactEl.className = "msg compacting";
-    compactEl.id = "compactingIndicator";
-    compactEl.innerHTML = `<div class="msg-inner"><div class="role-label"><span class="dot"></span> System</div><div class="compact-body">Compacting context...</div></div>`;
-    $("messages").appendChild(compactEl);
-    scrollBottom();
+    const isPrune = trimmedCmd === "/prune";
+    const loadingMsg = isPrune ? "Pruning tool outputs..." : "Compacting context...";
+    const successMsg = isPrune ? "Tool outputs pruned" : "Context compacted successfully";
+    const errorLabel = isPrune ? "Prune" : "Compaction";
+
+    ensureCompactToast();
+    setCompactToastState("loading", loadingMsg);
 
     try {
       const startTime = Date.now();
-      await api.compactSession(sid);
-      // Ensure indicator is visible for at least 600ms
+      const result = isPrune
+        ? await api.pruneSession(sid)
+        : await api.compactSession(sid);
+      // /prune is essentially instant; /compact may take seconds. The
+      // minimum-display-threshold keeps the spinner visible long enough
+      // to read on fast operations.
+      const minMs = isPrune ? 300 : 600;
       const elapsed = Date.now() - startTime;
-      if (elapsed < 600) await new Promise(r => setTimeout(r, 600 - elapsed));
-      compactEl.remove();
-      await loadHistory(sid);
-      // Show success toast with dismiss button (aligned with aicoder's showInfo pattern)
-      const toast = document.createElement("div");
-      toast.className = "msg compacting";
-      toast.innerHTML = `<div class="msg-inner"><div class="role-label"><span class="dot"></span> System</div><div class="compact-body">Context compacted successfully <button class="toast-dismiss" style="margin-left:8px;padding:2px 8px;font-size:12px;border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:4px;cursor:pointer;">Dismiss</button></div></div>`;
-      $("messages").appendChild(toast);
-      const dismissBtn = toast.querySelector(".toast-dismiss") as HTMLButtonElement;
-      if (dismissBtn) {
-        dismissBtn.onclick = () => toast.remove();
+      if (elapsed < minMs) await new Promise(r => setTimeout(r, minMs - elapsed));
+
+      if (result.last_usage?.prompt_tokens !== undefined) {
+        const contextWindow = 200000;
+        const pct = Math.min(result.last_usage.prompt_tokens / contextWindow, 1);
+        updateContextProgress(pct, result.last_usage.prompt_tokens);
       }
-      setTimeout(() => toast.remove(), 5000);
+      await loadHistory(sid);
+
+      // /compact can come back as a no-op when there's nothing to compress
+      // (e.g. only 1 user message in the session, or the model returned
+      // empty). Treat it as success but show a clear "nothing to compact"
+      // message instead of pretending the context shrank.
+      if (!isPrune && (result as any).noop) {
+        setCompactToastState("success", "Nothing to compact — context is already minimal");
+      } else {
+        setCompactToastState("success", successMsg);
+      }
+      setTimeout(() => hideCompactToast(), 3000);
     } catch (e: any) {
-      compactEl.innerHTML = `<div class="msg-inner"><div class="role-label"><span class="dot"></span> System</div><div class="error-card">Compaction failed: ${esc(e.message || "unknown error")}</div></div>`;
+      setCompactToastState("error", `${errorLabel} failed: ${e.message || "unknown error"}`);
+      setTimeout(() => hideCompactToast(), 5000);
     }
     return;
   }
@@ -1201,7 +1347,8 @@ async function refreshStatus() {
 
 // ---- Slash Commands ----
 const SLASH_COMMANDS = [
-  { name: "/compact", description: "Compact context window" },
+  { name: "/compact", description: "Compact context window (model summary)" },
+  { name: "/prune", description: "Strip old tool outputs (no model call)" },
 ];
 
 let slashMenuIndex = -1;
@@ -1265,8 +1412,8 @@ function insertSlashCommand(cmd: string) {
   promptEl.value = cmd + " ";
   promptEl.focus();
   hideSlashMenu();
-  // Auto-send no-argument commands like /compact
-  if (cmd === "/compact") {
+  // Auto-send no-argument commands like /compact and /prune
+  if (cmd === "/compact" || cmd === "/prune") {
     sendMessage();
   }
 }

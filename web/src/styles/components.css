@@ -280,6 +280,7 @@
   flex-direction: column;
   overflow: hidden;
   background: var(--bg);
+  position: relative;
 }
 
 /* Workspace context — "New conversation in ⌄ workspace-name" */
@@ -364,6 +365,142 @@
 .msg.assistant .role-label .dot { background: var(--accent); }
 .msg.compacting .role-label .dot { background: var(--muted); animation: pulse-dot 1.5s infinite; }
 .compact-body { font-size: 14px; color: var(--muted); padding: 4px 0; }
+
+/* Compact progress toast — centered over the message area with circular
+   spinner, matching aicoder's loading-toast pattern (commit 0b6a1743).
+   Absolute-positioned so it stays inside the message column and does
+   not bleed into the sidebar. */
+.compact-toast {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  z-index: 200;
+  animation: compact-toast-slide 0.3s ease;
+  max-width: 420px;
+  pointer-events: auto;
+}
+.compact-toast.hidden { display: none; }
+.compact-toast-message { font-size: 13px; color: var(--ink); }
+.compact-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: compact-spin 0.6s linear infinite;
+  flex-shrink: 0;
+}
+.compact-spinner.success {
+  border-color: var(--green);
+  border-top-color: var(--green);
+  animation: none;
+  background: var(--green);
+  /* mask the rotating border into a checkmark by hiding the disc and showing a glyph */
+  position: relative;
+}
+.compact-spinner.success::after {
+  content: "✓";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--bg);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+.compact-spinner.error {
+  border-color: var(--red);
+  border-top-color: var(--red);
+  animation: none;
+  background: var(--red);
+  position: relative;
+}
+.compact-spinner.error::after {
+  content: "✕";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--bg);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+@keyframes compact-spin { to { transform: rotate(360deg); } }
+@keyframes compact-toast-slide {
+  from { transform: translate(-50%, calc(-50% + 12px)); opacity: 0; }
+  to   { transform: translate(-50%, -50%);              opacity: 1; }
+}
+
+/* Compact collapse bar — sits above the summary message in the chat
+   stream. The user can expand it to see the dropped earlier messages
+   (read-only) on demand. */
+.compact-boundary { max-width: 720px; margin: 16px auto 8px; }
+.compact-collapse {
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 0;
+  overflow: hidden;
+}
+.compact-collapse > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+  transition: color 0.15s;
+}
+.compact-collapse > summary::-webkit-details-marker { display: none; }
+.compact-collapse > summary::before {
+  content: "▸";
+  font-size: 9px;
+  color: var(--muted);
+  transition: transform 0.15s;
+}
+.compact-collapse[open] > summary::before { content: "▾"; }
+.compact-collapse > summary:hover { color: var(--ink); }
+.compact-dropped {
+  padding: 0 14px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+.compact-dropped:empty { padding: 0; border-top: none; }
+/* Folded-history scale: the dropped messages reuse the same .msg /
+   .tool-card DOM as the live chat, but the wrapper makes them slightly
+   indented and visually smaller so the user can tell at a glance that
+   they're reading compacted history, not the live conversation. */
+.compact-dropped .msg-inner { padding: 8px 12px; font-size: 12.5px; }
+.compact-dropped .msg .role-label { font-size: 10px; color: var(--muted); }
+.compact-dropped .msg .md { font-size: 12.5px; line-height: 1.55; }
+.compact-dropped .msg + .msg,
+.compact-dropped .msg + .tool-card,
+.compact-dropped .tool-card + .msg,
+.compact-dropped .tool-card + .tool-card { margin-top: 6px; }
+.compact-dropped .tool-card { font-size: 11.5px; }
+.compact-dropped .tool-card-header { padding: 6px 10px; }
+.compact-dropped .tool-card-body { padding: 6px 10px 8px; }
+.compact-dropped .thinking-card { font-size: 11.5px; }
+.compact-dropped .msg,
+.compact-dropped .tool-card { opacity: 0.85; }
+.msg.dropped { opacity: 0.65; padding: 6px 0; font-size: 13px; }
+.msg.dropped .role-label { font-size: 10px; color: var(--muted); opacity: 0.8; }
 @keyframes pulse-dot {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
@@ -427,6 +564,14 @@
 .tool-card-header .status-dot.running { background: var(--blue); animation: pulse-dot 1s infinite; }
 .tool-card-header .status-dot.success { background: var(--green); }
 .tool-card-header .status-dot.error { background: var(--red); }
+.tool-card-header .status-dot.pruned { background: var(--muted); opacity: 0.6; }
+.tool-card.pruned { opacity: 0.7; border-style: dashed; }
+.tool-card.pruned .tool-name { color: var(--muted); }
+.tool-card-body .section-content.pruned-output {
+  color: var(--muted);
+  font-style: italic;
+  font-size: 12px;
+}
 @keyframes pulse-dot {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.5; transform: scale(0.8); }

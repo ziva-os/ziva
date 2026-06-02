@@ -7,7 +7,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from aiohttp import web
 
@@ -103,6 +103,7 @@ class DesktopAPIServer:
         self.app.router.add_get("/sessions/{sid}/turns", self.get_turns)
         self.app.router.add_post("/sessions/{sid}/turns", self.create_turn)
         self.app.router.add_post("/sessions/{sid}/compact", self.compact_session)
+        self.app.router.add_post("/sessions/{sid}/prune", self.prune_session)
         self.app.router.add_post("/sessions/{sid}/cancel", self.cancel_turn)
         self.app.router.add_get("/sessions/{sid}/events", self.events)
         self.app.router.add_get("/sessions/{sid}/tools", self.get_tools_status)
@@ -143,8 +144,19 @@ class DesktopAPIServer:
             return web.json_response({"error": "session_not_found"}, status=404)
         # Also include last_usage from session metadata for context ring
         meta = FileStorage.get_session(self.runtime.project_id, sid) or {}
+        all_msgs = list(session.get("messages", []))
+        # By default, return the post-compact view (matches what the runtime
+        # sees). With ?include_dropped=true, return the full history so the
+        # UI's "expand earlier messages" affordance can render what was
+        # compressed away.
+        include_dropped = request.query.get("include_dropped") == "true"
+        if include_dropped:
+            msgs = all_msgs
+        else:
+            from ziva_runtime.session.compaction import _summary_only
+            msgs = _summary_only(all_msgs)
         return web.json_response({
-            "messages": list(session.get("messages", [])),
+            "messages": msgs,
             "last_usage": meta.get("last_usage"),
         })
 
@@ -205,13 +217,59 @@ class DesktopAPIServer:
         self._turn_tasks[sid] = task
         return web.json_response({"accepted": True, "turn_id": turn_id})
 
-    async def compact_session(self, request: web.Request) -> web.Response:
-        sid = request.match_info["sid"]
-        if not self.store.exists(sid):
-            return web.json_response({"error": "session_not_found"}, status=404)
+    def _apply_post_compact(self, sid: str, working_set: List[ChatMessage]) -> Dict[str, Any]:
+        """Rewrite disk + sync in-memory + runtime cache + refresh last_usage.
 
-        # Load current messages from storage
-        messages = []
+        Used by /prune (working_set is the pruned list) and /compact
+        (working_set is `[summary, ...compacted_originals]`). Either way,
+        the on-disk file and the in-memory store are replaced with the
+        same content. `_compacted` flags are persisted so the UI's
+        collapse bar can identify which messages are folded.
+
+        `last_usage.prompt_tokens` is computed from the LLM-visible
+        subset (`_llm_context(working_set)`) — that's the actual cost
+        of the next turn, not the on-disk size which includes the
+        compacted originals that won't be sent to the model.
+        """
+        records = []
+        for m in working_set:
+            record = {
+                "role": m.role,
+                "content": m.content,
+                "tool_call_id": m.tool_call_id,
+                "name": m.name,
+                "tool_calls": [{"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in m.tool_calls],
+            }
+            if m._compaction_summary:
+                record["_compaction_summary"] = True
+            if m._compacted:
+                record["_compacted"] = True
+            records.append(record)
+        FileStorage.replace_messages(self.runtime.project_id, sid, records)
+
+        session = self.store._ensure_loaded(sid)
+        session["messages"] = list(records)
+        if hasattr(self.runtime, "_session_history"):
+            # Runtime cache holds ONLY the LLM-visible context — the
+            # compacted originals are kept on disk for the UI but should
+            # not bloat the next chat() call's prompt.
+            from ziva_runtime.session.compaction import _llm_context
+            self.runtime._session_history[sid] = _llm_context(working_set)
+
+        from ziva_runtime.session.compaction import estimate_tokens, _llm_context
+        llm_visible = _llm_context(working_set)
+        new_prompt_tokens = estimate_tokens(llm_visible)
+        new_usage = {"prompt_tokens": new_prompt_tokens, "completion_tokens": 0, "total_tokens": new_prompt_tokens}
+        FileStorage.update_session(self.runtime.project_id, sid, {
+            "id": sid,
+            "time": {"updated": int(time.time() * 1000)},
+            "last_usage": new_usage,
+        })
+        return new_usage
+
+    def _load_session_messages(self, sid: str) -> List[ChatMessage]:
+        """Read messages from disk as ChatMessage objects."""
+        messages: List[ChatMessage] = []
         for msg_data in FileStorage.get_messages(self.runtime.project_id, sid):
             messages.append(ChatMessage(
                 role=msg_data.get("role", "user"),
@@ -223,60 +281,115 @@ class DesktopAPIServer:
                     for tc in msg_data.get("tool_calls", [])
                 ],
                 _compaction_summary=msg_data.get("_compaction_summary", False),
+                _compacted=msg_data.get("_compacted", False),
             ))
+        return messages
 
+    def _append_summary_to_disk(self, sid: str, summary: ChatMessage) -> None:
+        """Append a single compaction-summary record to the session's message file.
+
+        Kept for back-compat with external callers, but /compact now uses
+        `_apply_post_compact` to slot the summary between the older and
+        recent halves of the message list (so the runtime's filter view
+        keeps the recent tail).
+        """
+        record = {
+            "role": summary.role,
+            "content": summary.content,
+            "tool_call_id": summary.tool_call_id,
+            "name": summary.name,
+            "tool_calls": [{"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in summary.tool_calls],
+            "_compaction_summary": True,
+        }
+        FileStorage.append_message(self.runtime.project_id, sid, record)
+
+    async def prune_session(self, request: web.Request) -> web.Response:
+        """POST /sessions/{sid}/prune — strip old tool outputs, no model call.
+
+        Rewrites the on-disk message file with the pruned list, since the
+        pruned tool outputs are genuinely gone. There is no "summary"
+        marker — the pruned tail is the new working set directly.
+        """
+        sid = request.match_info["sid"]
+        if not self.store.exists(sid):
+            return web.json_response({"error": "session_not_found"}, status=404)
+
+        messages = self._load_session_messages(sid)
+        from ziva_runtime.session.compaction import prune_messages
+        pruned = prune_messages(messages)
+
+        new_usage = self._apply_post_compact(sid, pruned)
+        return web.json_response({
+            "success": True,
+            "message_count": len(pruned),
+            "last_usage": new_usage,
+        })
+
+    async def compact_session(self, request: web.Request) -> web.Response:
+        """POST /sessions/{sid}/compact — generate a model summary.
+
+        Replaces the LLM-visible history with `[summary]` while preserving
+        the original messages on disk (stamped with `_compacted=True`).
+        Aligned with codex CLI / claude code semantics: no "recent tail"
+        is preserved in the LLM context, the summary is the new starting
+        point. The UI's collapse bar can still expand to show the
+        originals, so the user never loses their history — it just gets
+        folded.
+
+        /prune is a separate user-driven operation; /compact is a pure
+        summary and does NOT collapse tool outputs.
+
+        On-disk layout becomes `[summary, ...compacted_originals]`.
+
+        Returns a 200 with `noop=true` if there is nothing meaningful to
+        compress (e.g. fewer than 3 messages or the model + fallback both
+        produced no summary). The UI can treat this the same as a
+        successful no-op.
+        """
+        sid = request.match_info["sid"]
+        if not self.store.exists(sid):
+            return web.json_response({"error": "session_not_found"}, status=404)
+
+        messages = self._load_session_messages(sid)
         model_cfg = self.runtime.config.get("model", {})
         model_name = model_cfg.get("name", "")
         context_window = int(self.runtime.config.get("memory", {}).get("context_window_tokens", 200000) or 200000)
 
         try:
             from ziva_runtime.session.compaction import compact_messages
-            compacted = await compact_messages(messages, context_window, model_name, self.runtime.model_adapter)
+            summary_list, compacted_originals = await compact_messages(
+                messages, context_window, model_name, self.runtime.model_adapter
+            )
         except Exception as exc:
             return web.json_response({"error": "compact_failed", "message": str(exc)}, status=500)
 
-        # Append compacted summary messages to storage (full history is preserved)
-        for m in compacted:
-            record = {
-                "role": m.role,
-                "content": m.content,
-                "tool_call_id": m.tool_call_id,
-                "name": m.name,
-                "tool_calls": [{"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in m.tool_calls],
-            }
-            if m._compaction_summary:
-                record["_compaction_summary"] = True
-            FileStorage.append_message(self.runtime.project_id, sid, record)
+        summary_msg = summary_list[0] if summary_list else None
+        if summary_msg is None:
+            # Nothing to compact — too few messages or the model + fallback
+            # both produced no summary. Surface a graceful noop rather than
+            # a 500 so the UI can show a clear "nothing to compact" toast.
+            from ziva_runtime.session.compaction import estimate_tokens
+            current_tokens = estimate_tokens(messages)
+            return web.json_response({
+                "success": True,
+                "noop": True,
+                "reason": "nothing_to_compact",
+                "message_count": len(messages),
+                "last_usage": {
+                    "prompt_tokens": current_tokens,
+                    "completion_tokens": 0,
+                    "total_tokens": current_tokens,
+                },
+            })
 
-        # Update in-memory store with full history
-        session = self.store._ensure_loaded(sid)
-        fresh_messages = []
-        for msg_data in FileStorage.get_messages(self.runtime.project_id, sid):
-            fresh_messages.append(msg_data)
-        session["messages"] = fresh_messages
-
-        # Sync runtime's internal session cache so next turn uses compacted view
-        if hasattr(self.runtime, "_session_history"):
-            # Build filtered working messages (same logic as _load_session_from_disk)
-            filtered = []
-            last_summary_idx = None
-            for i in range(len(compacted) - 1, -1, -1):
-                if compacted[i]._compaction_summary:
-                    last_summary_idx = i
-                    break
-            if last_summary_idx is not None:
-                filtered = compacted[last_summary_idx:]
-            else:
-                filtered = compacted
-            self.runtime._session_history[sid] = filtered
-
-        # Update session timestamp
-        FileStorage.update_session(self.runtime.project_id, sid, {
-            "id": sid,
-            "time": {"updated": int(time.time() * 1000)}
+        on_disk = [summary_msg] + list(compacted_originals)
+        new_usage = self._apply_post_compact(sid, on_disk)
+        return web.json_response({
+            "success": True,
+            "message_count": 1,
+            "original_count": len(compacted_originals),
+            "last_usage": new_usage,
         })
-
-        return web.json_response({"success": True, "message_count": len(compacted)})
 
     async def events(self, request: web.Request) -> web.StreamResponse:
         sid = request.match_info["sid"]

@@ -63,8 +63,9 @@ export async function deleteSession(sid: string): Promise<void> {
   await api("DELETE", `/sessions/${sid}`);
 }
 
-export async function getMessages(sid: string): Promise<{ messages: Record<string, any>[]; last_usage?: { prompt_tokens?: number; completion_tokens?: number } }> {
-  return api("GET", `/sessions/${sid}/messages`);
+export async function getMessages(sid: string, opts?: { includeDropped?: boolean }): Promise<{ messages: Record<string, any>[]; last_usage?: { prompt_tokens?: number; completion_tokens?: number } }> {
+  const qs = opts?.includeDropped ? "?include_dropped=true" : "";
+  return api("GET", `/sessions/${sid}/messages${qs}`);
 }
 
 export async function getTurns(sid: string): Promise<Turn[]> {
@@ -76,8 +77,17 @@ export async function createTurn(sid: string, content: string): Promise<{ accept
   return api("POST", `/sessions/${sid}/turns`, { messages: [{ role: "user", content }] });
 }
 
-export async function compactSession(sid: string): Promise<{ success: boolean; message_count?: number }> {
+export async function compactSession(sid: string): Promise<{ success: boolean; message_count?: number; last_usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } }> {
   const r = await fetch(`/sessions/${sid}/compact`, { method: "POST", headers: JSON_HEADERS });
+  if (!r.ok) {
+    const text = await r.text();
+    throw new Error(text || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function pruneSession(sid: string): Promise<{ success: boolean; message_count?: number; last_usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } }> {
+  const r = await fetch(`/sessions/${sid}/prune`, { method: "POST", headers: JSON_HEADERS });
   if (!r.ok) {
     const text = await r.text();
     throw new Error(text || `HTTP ${r.status}`);

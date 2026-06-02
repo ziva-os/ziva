@@ -7,8 +7,10 @@ Aligned with aicoder's SessionCompaction approach:
 
 from __future__ import annotations
 
+import copy as _copy
+import dataclasses
 from dataclasses import dataclass
-from typing import Any, List
+from typing import Any, List, Tuple
 
 from ziva_runtime.shared_types import ChatMessage
 
@@ -97,6 +99,8 @@ def prune(messages: List[ChatMessage], keep_last: int = 2) -> List[ChatMessage]:
     A "turn" boundary is a user message. We keep the last `keep_last` user
     messages and everything after them. For earlier turns, we keep user
     and assistant messages but strip tool role messages to save space.
+
+    Public alias: `prune_messages`. Cheap operation, no model call.
     """
     if not messages:
         return messages
@@ -111,28 +115,112 @@ def prune(messages: List[ChatMessage], keep_last: int = 2) -> List[ChatMessage]:
     before = messages[:cutoff]
     after = messages[cutoff:]
 
-    # Strip tool messages from earlier part, but protect certain tools
+    # Replace tool output content with a placeholder for earlier turns so the
+    # conversation structure (which tool was called, when) stays visible in
+    # the UI, but the bulky payload is reclaimed. Protected tools keep their
+    # output intact because their content is expensive to refetch.
     pruned_before = []
     for m in before:
-        if m.role == "tool" and m.name in PRUNE_PROTECTED_TOOLS:
-            pruned_before.append(m)
-        elif m.role != "tool":
+        if m.role == "tool":
+            if m.name in PRUNE_PROTECTED_TOOLS:
+                pruned_before.append(m)
+            else:
+                pruned_before.append(_pruned_tool_message(m))
+        else:
             pruned_before.append(m)
 
     return pruned_before + after
 
 
-def _skip_before_summary(messages: List[ChatMessage]) -> List[ChatMessage]:
-    """Return messages starting from the last compaction summary (inclusive).
-    All messages before the last summary are dropped — they've been compacted."""
-    last_summary_idx = None
-    for i in range(len(messages) - 1, -1, -1):
-        if messages[i]._compaction_summary:
-            last_summary_idx = i
-            break
-    if last_summary_idx is not None:
-        return messages[last_summary_idx:]
-    return messages
+def _pruned_tool_message(m: Any) -> Any:
+    """Return a copy of `m` whose content is collapsed to a placeholder.
+
+    The tool call structure (role, name, tool_call_id) is preserved so the UI
+    can still render "tool was called" rows in order. The content is replaced
+    with a fixed short string so the LLM doesn't see the full payload on the
+    next turn but does know something was returned for that tool call id.
+    """
+    placeholder = "[pruned]"
+    # Prefer dataclasses.replace so we get back the same type with a fresh
+    # __dict__. Fall back to a shallow copy, then to a fresh ChatMessage
+    # carrying just the identifying fields, then to a dict last resort.
+    if dataclasses.is_dataclass(m):
+        return dataclasses.replace(m, content=placeholder)
+    if hasattr(m, "model_copy"):
+        return m.model_copy(update={"content": placeholder})
+    try:
+        clone = _copy.copy(m)
+        clone.content = placeholder
+        return clone
+    except Exception:
+        pass
+    try:
+        return ChatMessage(
+            role=getattr(m, "role", "tool"),
+            content=placeholder,
+            tool_call_id=getattr(m, "tool_call_id", None),
+            name=getattr(m, "name", None),
+        )
+    except Exception:
+        return {"role": "tool", "name": None, "content": placeholder}
+
+
+# Public alias — matches the naming used by /prune slash command.
+prune_messages = prune
+
+
+def _is_summary_msg(m: Any) -> bool:
+    """Return True if the message is a compaction summary, supporting both
+    ChatMessage objects and plain dicts (the latter is how messages are stored
+    in session metadata and on disk)."""
+    if isinstance(m, dict):
+        return bool(m.get("_compaction_summary"))
+    return bool(getattr(m, "_compaction_summary", False))
+
+
+def _is_compacted_msg(m: Any) -> bool:
+    """Return True if the message has been folded into a summary and is
+    kept on disk only for the UI's expand affordance. Accepts ChatMessage
+    objects or plain dicts."""
+    if isinstance(m, dict):
+        return bool(m.get("_compacted"))
+    return bool(getattr(m, "_compacted", False))
+
+
+def _llm_context(messages: List[Any]) -> List[Any]:
+    """Return the messages that should be sent to the LLM as context.
+
+    On-disk layout after /compact is `[summary, ...compacted_originals]`.
+    The LLM should only see `[summary]` — the originals are kept on disk
+    for the UI's collapse bar but should not bloat the context window
+    (codex CLI / claude code style: summary replaces the history, no
+    "recent tail" is preserved).
+
+    If the session has never been compacted, the full list is returned.
+    Accepts ChatMessage objects or plain dicts; the dict form is what the
+    server reads from the session store / JSONL on disk.
+    """
+    for m in messages:
+        if _is_summary_msg(m):
+            return [m]
+    return list(messages)
+
+
+def _summary_only(messages: List[Any]) -> List[Any]:
+    """Return just the last compaction summary message, or the full list if
+    the session has never been compacted.
+
+    Used by the server's `get_messages` endpoint to give the UI a clean
+    post-/compact view: only the summary is shown, the compacted originals
+    are folded into the collapse bar. The runtime's LLM context uses the
+    same view via `_llm_context` — these two filters return the same
+    thing, but keeping them as separate helpers makes the intent clearer
+    at each call site.
+    """
+    for m in messages:
+        if _is_summary_msg(m):
+            return [m]
+    return list(messages)
 
 
 def _format_history(messages: List[ChatMessage]) -> str:
@@ -153,23 +241,69 @@ def _format_history(messages: List[ChatMessage]) -> str:
     return "\n\n".join(parts)
 
 
-def _simple_compact(messages: List[ChatMessage]) -> List[ChatMessage]:
-    """Fallback compaction: truncate each message to 200 chars."""
+async def compact_messages(
+    messages: List[ChatMessage],
+    context_window: int,
+    model_name: str,
+    model_adapter: Any,
+) -> Tuple[List[ChatMessage], List[ChatMessage]]:
+    """Compact message history into a summary, preserving originals on disk.
+
+    Aligned with codex CLI / claude code's `/compact` semantics: the LLM
+    context is replaced with a single model-generated summary, no "recent
+    tail" is preserved. Unlike those tools, ziva keeps the original
+    messages on disk (marked with `_compacted=True`) so the UI's collapse
+    bar can expand to show them on demand — this matches the user's mental
+    model of "compressed" rather than "destroyed".
+
+    Returns `(summary_list, compacted_originals)`:
+      - `summary_list` is `[summary]` — what the LLM context and the
+        default UI view should use as the post-compact state.
+      - `compacted_originals` is the original `messages` list with
+        `_compacted=True` stamped on each entry. The on-disk layout
+        becomes `[summary] + compacted_originals`.
+
+    Pure summary — does NOT pre-prune tool outputs. Pruning is a separate
+    user-driven operation (/prune); mixing the two would lose the original
+    tool call structure that the summary is meant to summarize over.
+    """
+    if not messages:
+        return ([], [])
+
     if len(messages) < 3:
-        return messages
+        return ([], [])
 
-    last_user_idx = None
-    for i in range(len(messages) - 1, -1, -1):
-        if messages[i].role == "user":
-            last_user_idx = i
-            break
+    try:
+        agent = CompactAgent()
+        summary = await agent.run(messages, model_name, model_adapter)
+    except Exception:
+        # Fall back to simple truncation on model failure
+        return _simple_compact(messages)
 
-    if last_user_idx is None or last_user_idx == 0:
-        return messages
+    if not summary.strip():
+        return _simple_compact(messages)
 
-    older = messages[:last_user_idx]
+    summary_msg = ChatMessage(
+        role="assistant",
+        content=summary,
+        _compaction_summary=True,
+    )
+    originals = [
+        dataclasses.replace(m, _compacted=True) for m in messages
+    ]
+    return ([summary_msg], originals)
+
+
+def _simple_compact(messages: List[ChatMessage]) -> Tuple[List[ChatMessage], List[ChatMessage]]:
+    """Fallback compaction: truncate each message to 200 chars into one summary.
+
+    Returns `(summary_list, originals_with_compacted_flag)` matching the
+    shape of `compact_messages`. The originals are stamped with
+    `_compacted=True` so the on-disk layout can preserve them while still
+    hiding them from the LLM context.
+    """
     summary_parts = []
-    for m in older:
+    for m in messages:
         if m.role == "user":
             summary_parts.append(f"User: {m.content[:200]}")
         elif m.role == "assistant":
@@ -178,69 +312,10 @@ def _simple_compact(messages: List[ChatMessage]) -> List[ChatMessage]:
                 summary_parts.append(f"Assistant: {content}")
 
     summary = "[Earlier conversation summary]\n" + "\n".join(summary_parts)
-    summary_msg = ChatMessage(role="system", content=summary)
-
-    recent = messages[last_user_idx:]
-    return [summary_msg] + recent
-
-
-async def compact_messages(
-    messages: List[ChatMessage],
-    context_window: int,
-    model_name: str,
-    model_adapter: Any,
-) -> List[ChatMessage]:
-    """Compact message history if it exceeds the context window.
-
-    Strategy:
-    1. First try pruning tool outputs from old turns
-    2. If still over limit, use the model to generate a structured summary
-       of older messages, framed as a user/assistant pair.
-    3. If the model call fails, fall back to simple truncation.
-    """
-    if not is_overflow(messages, context_window):
-        return messages
-
-    # Step 1: Prune old tool outputs
-    pruned = prune(messages)
-    if not is_overflow(pruned, context_window):
-        return pruned
-
-    # Step 2: Model-based compaction
-    if len(pruned) < 3:
-        return pruned
-
-    # Find the last user message
-    last_user_idx = None
-    for i in range(len(pruned) - 1, -1, -1):
-        if pruned[i].role == "user":
-            last_user_idx = i
-            break
-
-    if last_user_idx is None or last_user_idx == 0:
-        return pruned
-
-    older = pruned[:last_user_idx]
-
-    try:
-        agent = CompactAgent()
-        summary = await agent.run(older, model_name, model_adapter)
-    except Exception:
-        # Fall back to simple truncation on model failure
-        return _simple_compact(pruned)
-
-    if not summary.strip():
-        return _simple_compact(pruned)
-
-    # Frame summary as a user/assistant pair for better LLM continuity
-    framed_user = (
-        "[本次会话从之前的对话继续，之前的对话因上下文长度限制已被压缩。]\n\n"
-        f"以下是之前对话的摘要：\n\n{summary}"
+    summary_msg = ChatMessage(
+        role="assistant",
+        content=summary,
+        _compaction_summary=True,
     )
-    framed_assistant = "好的，我已了解之前的对话内容，将从中断处继续。"
-
-    recent = pruned[last_user_idx:]
-    return [
-        ChatMessage(role="user", content=framed_user, _compaction_summary=True),
-        ChatMessage(role="assistant", content=framed_assistant),
-    ] + recent
+    originals = [dataclasses.replace(m, _compacted=True) for m in messages]
+    return ([summary_msg], originals)

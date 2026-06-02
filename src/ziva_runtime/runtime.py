@@ -24,7 +24,7 @@ from ziva_runtime.permissions import (
     RejectedError,
 )
 from ziva_runtime.plugins.loader import load_plugins
-from ziva_runtime.session.compaction import compact_messages, is_overflow, _skip_before_summary
+from ziva_runtime.session.compaction import compact_messages, is_overflow, _llm_context
 from ziva_runtime.shared_types import ApprovalRequest, ApprovalPolicy, CancellationToken, ChatMessage, ChatResult, RuntimeContext, ToolCall, ToolCallItem
 from ziva_runtime.storage.file_storage import FileStorage, _project_hash
 
@@ -293,11 +293,24 @@ class Runtime:
 
         # Handle slash commands (e.g., /compact)
         if working and working[-1].role == "user" and working[-1].content.strip() == "/compact":
-            working = await compact_messages(working, context_window, model_cfg["name"], self.model_adapter)
+            summary_list, _compacted = await compact_messages(
+                working, context_window, model_cfg["name"], self.model_adapter
+            )
+            # LLM context is now just the summary — the originals are kept
+            # on disk (via the server's /compact endpoint) for the UI's
+            # expand affordance, but should not bloat this chat()'s prompt.
+            working = summary_list
+            had_summary = any(m._compaction_summary for m in working)
             event = {"type": "context_compacted", "round": 0, "note": "Manual compact triggered by /compact"}
             yield _flag(event)
             await self._emit(session_id, event)
-            content = "Context has been compacted."
+            # If compact_messages had nothing to compress (e.g. only one user
+            # message, or the model returned empty), surface a clear noop
+            # message instead of the misleading "Context has been compacted."
+            if had_summary:
+                content = "Context has been compacted."
+            else:
+                content = "Nothing to compact — context is already minimal."
             event = {"type": "model_response", "round": 0, "content": content, "usage": None, "finish_reason": "stop"}
             yield _flag(event)
             await self._emit(session_id, event)
@@ -317,7 +330,13 @@ class Runtime:
             if is_overflow(working, context_window):
                 yield _flag({"type": "status", "content": "compact", "round": round_idx})
                 await self._emit(session_id, {"type": "status", "content": "compact", "round": round_idx})
-                working = await compact_messages(working, context_window, model_cfg["name"], self.model_adapter)
+                summary_list, _compacted = await compact_messages(
+                    working, context_window, model_cfg["name"], self.model_adapter
+                )
+                # Drop the compacted originals from the in-flight LLM
+                # context; they're persisted to disk by the server's
+                # /compact endpoint (the runtime doesn't write here).
+                working = summary_list or working
                 event = {"type": "context_compacted", "round": round_idx}
                 yield _flag(event)
                 await self._emit(session_id, event)
@@ -715,8 +734,10 @@ class Runtime:
     def _load_session_from_disk(self, session_id: str) -> List[ChatMessage]:
         """Load messages from disk for a session.
 
-        If a compaction summary exists, only return messages from the last
-        summary onward. Full history remains on disk for UI display.
+        Returns the LLM-visible context: if a compaction summary exists,
+        return just `[summary]` (no recent tail, no compacted originals).
+        The originals remain on disk for the UI's expand affordance but
+        should not bloat the next chat() call's prompt.
         """
         messages = []
         for msg_data in FileStorage.get_messages(self.project_id, session_id):
@@ -734,8 +755,9 @@ class Runtime:
                     for tc in msg_data.get("tool_calls", [])
                 ],
                 _compaction_summary=msg_data.get("_compaction_summary", False),
+                _compacted=msg_data.get("_compacted", False),
             ))
-        return _skip_before_summary(messages)
+        return _llm_context(messages)
 
     def _persist_message(self, session_id: str, message: ChatMessage, is_subagent: bool = False, sub_call_id: str | None = None) -> None:
         """Persist a single message to disk."""
@@ -755,6 +777,8 @@ class Runtime:
             record["_subagent_call_id"] = sub_call_id
         if message._compaction_summary:
             record["_compaction_summary"] = True
+        if message._compacted:
+            record["_compacted"] = True
         FileStorage.append_message(self.project_id, session_id, record)
         FileStorage.update_session(self.project_id, session_id, {
             "id": session_id,

@@ -32,6 +32,10 @@ def test_compaction_detects_overflow():
 
 
 def test_compaction_prunes_tool_messages():
+    """Prune keeps the tool message structure but collapses the output content
+    to a placeholder, so the UI can still render the tool call but the LLM
+    doesn't see the full payload on the next turn.
+    """
     from ziva_runtime.session.compaction import prune
 
     msgs = [
@@ -43,9 +47,11 @@ def test_compaction_prunes_tool_messages():
         ChatMessage(role="assistant", content="a3"),
     ]
     pruned = prune(msgs, keep_last=1)
-    # Tool message from earlier turn should be removed
+    # Tool message structure is preserved (we still need to render it)
     tool_msgs = [m for m in pruned if m.role == "tool"]
-    assert len(tool_msgs) == 0
+    assert len(tool_msgs) == 1
+    # But its content has been replaced with a placeholder
+    assert tool_msgs[0].content == "[pruned]"
     # User messages preserved
     user_msgs = [m for m in pruned if m.role == "user"]
     assert len(user_msgs) == 2
@@ -66,11 +72,22 @@ def test_compaction_creates_summary():
     ]
 
     async def _run():
-        compacted = await compact_messages(msgs, context_window=100, model_name="gpt-4", model_adapter=MockAdapter())
-        # Should have framed user + assistant + last user + assistant
-        assert len(compacted) < len(msgs) + 2  # 2 extra for framing
-        # First message should be the framed user message with summary
-        assert "compact" in compacted[0].content.lower() or "summary" in compacted[0].content.lower()
+        summary_list, compacted_originals = await compact_messages(
+            msgs, context_window=100, model_name="gpt-4", model_adapter=MockAdapter()
+        )
+        # New contract: compact_messages returns `(summary_list, compacted_originals)`.
+        # The LLM context is just `[summary]` — no "recent tail" (codex CLI /
+        # claude code semantics). The originals are kept on disk (stamped with
+        # `_compacted=True`) so the UI's collapse bar can expand to show them.
+        assert len(summary_list) == 1
+        assert summary_list[0]._compaction_summary is True
+        assert "summary" in summary_list[0].content.lower() or "mock" in summary_list[0].content.lower()
+        # All original messages are preserved (just stamped `_compacted=True`).
+        assert len(compacted_originals) == len(msgs)
+        assert all(m._compacted for m in compacted_originals)
+        # The originals keep their original content; only the flag is added.
+        assert compacted_originals[0].content == msgs[0].content
+        assert compacted_originals[2].content == msgs[2].content
 
     asyncio.run(_run())
 
