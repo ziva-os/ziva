@@ -769,27 +769,23 @@ async function refreshSessions() {
   renderSessions();
 }
 
+// Background reconciliation. The SSE pool pushes turn_start / turn_end
+// for every session in real time, so this loop's only remaining job is
+// to fill in the bits the event payload doesn't carry: the user message
+// used as the sidebar title. Without it, a fresh session that just had
+// its first turn_start via the pool would keep showing the id stub until
+// the user manually switched to it. We re-query the messages endpoint
+// for any non-active session whose title is still the id-shaped stub.
+const ID_STUB_RE = /^[0-9a-f]{8}\.\.\.$/;
 setInterval(async () => {
   const { sessions, activeSid } = store.get();
-  const bgRunning = sessions.filter(s => s.status === "running" && s.id !== activeSid);
-  if (bgRunning.length === 0) return;
-  
-  let changed = false;
-  for (const s of bgRunning) {
-    try {
-      const turns = await api.getTurns(s.id);
-      const stillRunning = turns.some(t => t.status === "running");
-      if (!stillRunning) {
-         s.status = turns.length > 0 ? "done" : "idle";
-         changed = true;
-      }
-    } catch {}
+  const needTitle = sessions.filter(s =>
+    s.id !== activeSid && (!s.preview || ID_STUB_RE.test(s.preview))
+  );
+  for (const s of needTitle) {
+    await refreshSessionPreview(s.id);
   }
-  if (changed) {
-    store.set({ sessions: [...sessions] });
-    renderSessions();
-  }
-}, 3000);
+}, 5000);
 
 interface SessionGroup { label: string; sessions: api.Session[] }
 
@@ -1489,17 +1485,49 @@ function syncBackgroundSession(sid: string, ev: api.Event) {
 
   if (t === "turn_start") {
     s.status = "running";
-    s.preview = String((ev.user_message as string) || s.preview || "").slice(0, 60);
     const next = { ...runningSessions, [sid]: true };
     store.set({ sessions: [...sessions], runningSessions: next });
     renderSessions();
+    // The server's `turn_start` event doesn't carry the user message
+    // body, so we can't update the sidebar title from the event
+    // payload. Fetch the session's first user message and use it as
+    // the preview so the sidebar shows the actual question, not the
+    // session id stub.
+    refreshSessionPreview(sid);
   } else if (t === "turn_end" || t === "turn_cancelled" || t === "turn_failed") {
     s.status = t === "turn_failed" ? "failed" : (t === "turn_cancelled" ? "idle" : "done");
     const next = { ...runningSessions };
     delete next[sid];
-    store.set({ sessions: [...sessions], runningSessions: next });
+    // If the user queued a message in this background session, the
+    // active-session turn_end flush path can't reach it (we're not on
+    // its sid). Drop the queue chip here so the user doesn't see
+    // "排队中" persisting forever on a session they may have switched
+    // away from. The text is gone — they can re-type if they still
+    // need it after switching back.
+    const { pendingMessages } = store.get();
+    let nextPending = pendingMessages;
+    if (pendingMessages[sid] != null) {
+      nextPending = { ...pendingMessages };
+      delete nextPending[sid];
+    }
+    store.set({ sessions: [...sessions], runningSessions: next, pendingMessages: nextPending });
     renderSessions();
   }
+}
+
+async function refreshSessionPreview(sid: string) {
+  try {
+    const data = await api.getMessages(sid);
+    const userMsg = (data.messages || []).find(m => m.role === "user");
+    if (!userMsg) return;
+    const preview = userMsg.content.slice(0, 60);
+    const { sessions } = store.get();
+    const s = sessions.find(x => x.id === sid);
+    if (!s || s.preview === preview) return;
+    s.preview = preview;
+    store.set({ sessions: [...sessions] });
+    renderSessions();
+  } catch { /* ignore — preview is best-effort */ }
 }
 
 // Replay any persisted events from a still-running turn on switch
