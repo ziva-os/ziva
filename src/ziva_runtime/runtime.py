@@ -143,17 +143,12 @@ class Runtime:
         plugin_paths = [workspace_root / Path(p) for p in config.get("plugin", {}).get("paths", ["./plugins"])]
         load_plugins(plugin_paths, registry, config)
 
-        # Global skill paths: ~/.ziva/skills, ~/.agents/skills
-        # Skills live under their own `skill:` block (not `mcp:` —
-        # MCP is just one transport). Always scan the well-known
-        # global directories so canonical skills (agent-browser,
-        # find-skills, etc.) work without manual config wiring.
-        configured_skill_paths = config.get("skill", {}).get("extra_paths", [])
-        global_skill_paths = [
-            str(Path.home() / ".ziva" / "skills"),
-            str(Path.home() / ".agents" / "skills"),
-        ]
-        extra_skill_paths = list(dict.fromkeys(global_skill_paths + configured_skill_paths))
+        # Skills live under their own `skill:` block. Scan
+        # `skill.extra_paths` (which defaults to the well-known global
+        # directories `~/.ziva/skills` and `~/.agents/skills` so
+        # canonical skills like agent-browser work out of the box).
+        # Users can add or remove roots via `~/.ziva/config.yaml`.
+        extra_skill_paths = config.get("skill", {}).get("extra_paths", [])
         skill_index = []  # Only name + description + path for progressive loading
         for sp in extra_skill_paths:
             p = Path(sp).expanduser().resolve()

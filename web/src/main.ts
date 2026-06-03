@@ -18,15 +18,15 @@ function esc(s: string): string {
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 // ---- State ----
-const store = new Store({
+const store = new Store<AppState>({
   sessions: [],
   activeSid: null,
-  isRunning: false,
+  // See `AppState` — keyed by session id so a background session
+  // running its own turn doesn't taint the active session's input
+  // and queue bar.
+  runningSessions: {},
+  pendingMessages: {},
   questionPending: false,
-  // Text the user typed while a turn was running. Held until
-  // `turn_end`, then sent automatically — Codex-style. The user can
-  // clear it via the queue chip's × or by editing the prompt.
-  pendingMessage: null as string | null,
   config: { model: "unknown", models: [], approval: "suggest", workspace: "", tools: [] },
   connected: false,
   tokenUsage: null,
@@ -36,6 +36,39 @@ const store = new Store({
   theme: (document.documentElement.getAttribute("data-theme") as "dark" | "light") || "dark",
   autoScroll: true,
 });
+
+// ---- Per-session state helpers ----
+// Reading the running flag for the active session. Other sessions'
+// values are kept in the map but only matter for background turns
+// (e.g. when a question card is answered in a non-active session —
+// handled in the SSE event path).
+function isActiveRunning(): boolean {
+  const { activeSid, runningSessions } = store.get();
+  return !!activeSid && !!runningSessions[activeSid];
+}
+
+function getActivePending(): string | null {
+  const { activeSid, pendingMessages } = store.get();
+  if (!activeSid) return null;
+  return pendingMessages[activeSid] ?? null;
+}
+
+function setActivePending(text: string | null) {
+  const { activeSid, pendingMessages } = store.get();
+  if (!activeSid) return;
+  const next = { ...pendingMessages };
+  if (text == null) delete next[activeSid];
+  else next[activeSid] = text;
+  store.set({ pendingMessages: next });
+}
+
+function setActiveRunning(running: boolean) {
+  const { activeSid, runningSessions } = store.get();
+  if (!activeSid) return;
+  const next = { ...runningSessions, [activeSid]: running };
+  if (!running) delete next[activeSid];
+  store.set({ runningSessions: next });
+}
 
 const sse = new SSEConnection(handleEvent);
 const pendingTools = new Map<string, HTMLElement>();
@@ -224,18 +257,18 @@ function bindEvents() {
         return;
       }
       e.preventDefault();
-      if (store.get().isRunning) { queuePromptMessage(); } else { sendMessage(); }
+      if (isActiveRunning()) { queuePromptMessage(); } else { sendMessage(); }
     }
     if (e.key === "Escape") {
       hideSlashMenu();
-      if (store.get().isRunning) { cancelTurn(); }
+      if (isActiveRunning()) { cancelTurn(); }
     }
     if (e.key === "ArrowDown" && isSlashMenuVisible()) { e.preventDefault(); moveSlashSelection(1); }
     if (e.key === "ArrowUp" && isSlashMenuVisible()) { e.preventDefault(); moveSlashSelection(-1); }
   });
 
   $("btnSend").onclick = () => {
-    if (store.get().isRunning) { queuePromptMessage(); } else { sendMessage(); }
+    if (isActiveRunning()) { queuePromptMessage(); } else { sendMessage(); }
   };
   // Pending-message bar: clicking the text brings the queued content
   // back into the prompt for editing; the × button drops it.
@@ -289,7 +322,7 @@ function bindEvents() {
     for (const sid of ids) {
       await api.deleteSession(sid);
       if (sid === activeSid) {
-        store.set({ activeSid: null, isRunning: false });
+        store.set({ activeSid: null });
         $("messages").innerHTML = "";
         showEmptyState(true);
         sse.disconnect();
@@ -391,9 +424,16 @@ function bindEvents() {
 
 let skillsCache: api.Skill[] | null = null;
 let skillsBrowserState: { query: string; category: string | null } = { query: "", category: null };
+// Navigation history for the skill viewer. Pushing a page adds to the
+// stack; clicking back pops the top and renders the new top. The
+// stack is cleared whenever the user opens a different skill from
+// the list (so back from the first page of a skill returns to the
+// list, not to a previously viewed skill).
+let skillNavStack: { name: string; path: string }[] = [];
 
 async function openSkillsBrowser() {
   closeAllFullpageOverlays();
+  skillNavStack = [];
   const backdrop = document.createElement("div");
   backdrop.className = "fullpage-overlay";
   backdrop.id = "skillsModalBackdrop";
@@ -516,42 +556,56 @@ function renderSkillsBrowserBody() {
     el.onclick = () => {
       const path = el.dataset.skillPath!;
       const name = el.dataset.skillName!;
-      openSkillViewer(name, path, /*fromBrowser*/ true);
+      // Clear any prior skill's history so back from the first page
+      // goes to the list, not to a previously viewed skill.
+      skillNavStack = [];
+      openSkillViewer(name, path, /*pushToStack*/ true);
     };
   });
 }
 
-// Open the skill viewer modal. The modal supports two states:
-//   - "list" mode: shows the list of skills (used as a navigation fallback)
-//   - "file" mode: shows a single skill file with rendered markdown, and
-//     intercepts relative links so the user can navigate the skill's tree.
-function openSkillViewer(skillName: string, skillPath: string, fromBrowser: boolean = false) {
+// Open the skill viewer modal on a specific file. `pushToStack` controls
+// whether this navigation becomes a new history entry: true when the
+// user clicked forward (skill card, reference link), false when
+// restoring from the back stack.
+function openSkillViewer(displayName: string, filePath: string, pushToStack: boolean = true) {
+  if (pushToStack) {
+    skillNavStack.push({ name: displayName, path: filePath });
+  }
   closeSkillViewer();
   const backdrop = document.createElement("div");
   backdrop.className = "fullpage-overlay";
   backdrop.id = "skillsModalBackdrop";
+  const showBack = skillNavStack.length > 0;
   backdrop.innerHTML = `
     <div class="fullpage-shell">
       <div class="fullpage-topbar">
-        <button class="fullpage-back" id="skillsModalBack" style="display:${fromBrowser ? "flex" : "none"}">
+        <button class="fullpage-back" id="skillsModalBack" style="display:${showBack ? "flex" : "none"}">
           <span class="back-arrow">←</span>
-          <span>Back to Skills</span>
+          <span>back</span>
         </button>
-        <div class="fullpage-title" id="skillsModalTitle">${esc(skillName)}</div>
+        <div class="fullpage-title" id="skillsModalTitle">${esc(displayName)}</div>
         <div class="fullpage-topbar-spacer"></div>
       </div>
-      <div class="skills-breadcrumb" id="skillsBreadcrumb" style="display:none"></div>
       <div class="fullpage-body fullpage-body-wide" id="skillsModalBody">
-        <div class="skills-modal-loading">Loading ${esc(skillName)}...</div>
+        <div class="skills-modal-loading">Loading ${esc(displayName)}...</div>
       </div>
     </div>`;
   document.body.appendChild(backdrop);
 
   (backdrop.querySelector("#skillsModalBack") as HTMLElement).onclick = () => {
-    openSkillsBrowser();
+    // Pop the current page; if there's still a previous page, render
+    // it. If the stack is now empty, fall back to the skill list.
+    skillNavStack.pop();
+    const prev = skillNavStack[skillNavStack.length - 1];
+    if (prev) {
+      openSkillViewer(prev.name, prev.path, /*pushToStack*/ false);
+    } else {
+      openSkillsBrowser();
+    }
   };
 
-  loadSkillFileIntoModal(skillName, skillPath, /*pushHistory*/ true);
+  loadSkillFileIntoModal(displayName, filePath);
 }
 
 function closeSkillViewer() {
@@ -571,19 +625,12 @@ function closeAllFullpageOverlays() {
 // re-wired to a click handler that re-enters this function with the
 // resolved absolute path, so users can navigate within a skill's
 // reference tree without leaving the chat surface.
-async function loadSkillFileIntoModal(displayName: string, filePath: string, pushHistory: boolean) {
+async function loadSkillFileIntoModal(displayName: string, filePath: string) {
   const body = document.getElementById("skillsModalBody");
   const title = document.getElementById("skillsModalTitle");
-  const back = document.getElementById("skillsModalBack");
-  const crumb = document.getElementById("skillsBreadcrumb");
   if (!body || !title) return;
   body.innerHTML = '<div class="skills-modal-loading">Loading...</div>';
   if (title) title.textContent = displayName;
-  if (back) back.style.display = pushHistory ? "flex" : "none";
-  if (crumb) {
-    crumb.style.display = "block";
-    crumb.innerHTML = `<span class="skills-breadcrumb-path">${esc(filePath)}</span>`;
-  }
   try {
     const data = await api.readSkillFile(filePath);
     // Strip the YAML frontmatter for display — the sidebar list already
@@ -620,7 +667,7 @@ function interceptSkillLinks(container: HTMLElement, currentFilePath: string) {
         a.onclick = (e) => {
           e.preventDefault();
           const name = href.split("/").pop() || href;
-          loadSkillFileIntoModal(name, href, true);
+          openSkillViewer(name, href, /*pushToStack*/ true);
         };
       }
       continue;
@@ -637,7 +684,7 @@ function interceptSkillLinks(container: HTMLElement, currentFilePath: string) {
     a.onclick = (e) => {
       e.preventDefault();
       const name = rel.split("/").pop() || rel;
-      loadSkillFileIntoModal(name, resolved, true);
+      openSkillViewer(name, resolved, /*pushToStack*/ true);
     };
   }
 }
@@ -869,7 +916,12 @@ async function createSession() {
 
 async function switchSession(sid: string) {
   closeAllFullpageOverlays();
-  store.set({ activeSid: sid, isRunning: false, questionPending: false, pendingMessage: null });
+  // Per-session state (running / pending) lives in maps keyed by
+  // sid, so switching sessions doesn't lose background work and
+  // can't leak the previous session's flags into the new one. Only
+  // activeSid + questionPending (which is question-card specific)
+  // get reset.
+  store.set({ activeSid: sid, questionPending: false });
   renderSessions();
   $("messages").innerHTML = "";
   currentAssistantEl = null;
@@ -883,7 +935,7 @@ async function switchSession(sid: string) {
     const turns = await api.getTurns(sid);
     const activeTurn = turns.find(t => t.status === "running");
     if (activeTurn) {
-      store.set({ isRunning: true });
+      setActiveRunning(true);
       if (activeTurn.events) {
         for (const ev of activeTurn.events) {
           handleEvent(ev, false);
@@ -1333,7 +1385,8 @@ function appendQuestionCard(question: string, options: string[]) {
   // waiting on the user, not idle. questionPending lets the Stop
   // button know to resolve the question as "user abandoned" rather
   // than cancelling the entire turn.
-  store.set({ isRunning: true, questionPending: true });
+  store.set({ questionPending: true });
+  setActiveRunning(true);
   const clearPending = () => store.set({ questionPending: false });
   // Watch the card for the .question-card-answered / .question-card-cancelled
   // classes — once applied, drop the questionPending flag.
@@ -1418,7 +1471,7 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
   const t = ev.type as string;
 
   if (t === "turn_start") {
-    store.set({ isRunning: true });
+    setActiveRunning(true);
     const { sessions, activeSid } = store.get();
     const active = sessions.find(s => s.id === activeSid);
     if (active) {
@@ -1521,23 +1574,23 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
         b.disabled = true;
       });
     });
-    store.set({ isRunning: false });
+    setActiveRunning(false);
     currentAssistantEl = null;
     updateSendStopButton();
     refreshPlan();
     refreshSessions();
     if ($("rightPanel").classList.contains("show")) refreshDiff();
-    // Codex-style: flush a queued prompt message now that the turn
-    // has closed. Drop the text into the prompt and send it on the
-    // next tick so this event handler fully unwinds first.
-    const { pendingMessage } = store.get();
-    if (pendingMessage != null) {
+    // Codex-style: flush this session's queued prompt now that the
+    // turn has closed. Look up by the active sid (the SSE stream is
+    // per-session, so we never flush another session's queue here).
+    const pending = getActivePending();
+    if (pending != null) {
       const promptEl = $("prompt") as HTMLTextAreaElement;
-      promptEl.value = pendingMessage;
+      promptEl.value = pending;
       promptEl.style.height = "auto";
       promptEl.style.height = Math.min(promptEl.scrollHeight, 160) + "px";
       $("charCount").textContent = String(promptEl.value.length);
-      store.set({ pendingMessage: null });
+      setActivePending(null);
       renderPendingBar();
       setTimeout(() => { sendMessage(); }, 30);
     }
@@ -1555,7 +1608,7 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     removeTyping();
   } else if (t === "turn_error") {
     removeTyping();
-    store.set({ isRunning: false });
+    setActiveRunning(false);
     updateSendStopButton();
     appendError(ev.error as string || "Unknown error");
   }
@@ -1569,8 +1622,7 @@ function updateConnStatus(connected: boolean) {
 
 function updateSendStopButton() {
   const btn = $("btnSend");
-  const { isRunning } = store.get();
-  if (isRunning) {
+  if (isActiveRunning()) {
     btn.textContent = "■";
     btn.className = "stop-btn";
     btn.title = "Stop";
@@ -1597,15 +1649,16 @@ function updateContextProgress(pct: number, tokens: number) {
 
 // ---- Queue (Codex-style) ----
 // While a turn is running, Enter / send-button stashes the typed text
-// into `pendingMessage` instead of opening a parallel turn. The
-// `turn_end` event flushes it. The user sees a chip above the composer
-// with a one-click edit / clear affordance.
+// into the active session's queue instead of opening a parallel turn.
+// The `turn_end` event flushes it. The user sees a chip above the
+// composer with a one-click edit / clear affordance. Per-session —
+// background sessions keep their own queues untouched.
 function queuePromptMessage() {
   const promptEl = $("prompt") as HTMLTextAreaElement;
   const text = promptEl.value;
   const trimmed = text.trim();
   if (!trimmed) return;
-  store.set({ pendingMessage: text });
+  setActivePending(text);
   promptEl.value = "";
   promptEl.style.height = "auto";
   $("charCount").textContent = "";
@@ -1613,19 +1666,19 @@ function queuePromptMessage() {
 }
 
 function clearPendingMessage() {
-  store.set({ pendingMessage: null });
+  setActivePending(null);
   renderPendingBar();
 }
 
 function editPendingMessage() {
-  const { pendingMessage } = store.get();
-  if (pendingMessage == null) return;
+  const pending = getActivePending();
+  if (pending == null) return;
   const promptEl = $("prompt") as HTMLTextAreaElement;
-  promptEl.value = pendingMessage;
+  promptEl.value = pending;
   promptEl.style.height = "auto";
   promptEl.style.height = Math.min(promptEl.scrollHeight, 160) + "px";
   $("charCount").textContent = String(promptEl.value.length);
-  store.set({ pendingMessage: null });
+  setActivePending(null);
   renderPendingBar();
   promptEl.focus();
 }
@@ -1634,8 +1687,8 @@ function renderPendingBar() {
   const bar = $("pendingBar");
   const text = $("pendingBarText");
   if (!bar || !text) return;
-  const { pendingMessage } = store.get();
-  if (pendingMessage == null) {
+  const pending = getActivePending();
+  if (pending == null) {
     bar.hidden = true;
     text.textContent = "";
     return;
@@ -1643,17 +1696,17 @@ function renderPendingBar() {
   // Truncate the preview so a long queued message doesn't blow up
   // the composer's height. Full content is in the prompt when the
   // user clicks the chip to edit.
-  const preview = pendingMessage.length > 80
-    ? pendingMessage.slice(0, 80) + "…"
-    : pendingMessage;
+  const preview = pending.length > 80
+    ? pending.slice(0, 80) + "…"
+    : pending;
   text.textContent = preview;
-  text.title = pendingMessage;
+  text.title = pending;
   bar.hidden = false;
 }
 
 // ---- Cancel ----
 async function cancelTurn() {
-  const { activeSid, questionPending, pendingMessage } = store.get();
+  const { activeSid, questionPending } = store.get();
   if (!activeSid) return;
   if (questionPending) {
     // A question is mid-flight. Instead of cancelling the whole turn
@@ -1691,9 +1744,9 @@ async function cancelTurn() {
   // for "send after I cancel and start a fresh turn". If the user
   // wanted the queued text, they can leave it in the chip and edit it
   // out before pressing Enter again.
-  if (pendingMessage) clearPendingMessage();
+  if (getActivePending() != null) clearPendingMessage();
   try { await api.cancelTurn(activeSid); } catch { /* ignore */ }
-  store.set({ isRunning: false });
+  setActiveRunning(false);
   removeTyping();
   updateSendStopButton();
 }

@@ -46,7 +46,16 @@ export async function api<T = unknown>(method: string, path: string, body?: unkn
   const opts: RequestInit = { method, headers: JSON_HEADERS };
   if (body !== undefined) opts.body = JSON.stringify(body);
   const r = await fetch(path, opts);
-  return r.json();
+  const data = (await r.json().catch(() => ({}))) as Record<string, unknown> | null;
+  if (!r.ok) {
+    const errCode = typeof data?.error === "string" ? data.error : `http_${r.status}`;
+    const errMsg = typeof data?.message === "string" ? data.message : r.statusText || `HTTP ${r.status}`;
+    const err = new Error(errMsg) as Error & { error?: string; status?: number };
+    err.error = errCode;
+    err.status = r.status;
+    throw err;
+  }
+  return data as T;
 }
 
 export async function listSessions(): Promise<Session[]> {

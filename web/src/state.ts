@@ -9,7 +9,13 @@ export interface Session {
 export interface AppState {
   sessions: Session[];
   activeSid: string | null;
-  isRunning: boolean;
+  // Per-session transient flags keyed by session id, so a session
+  // running in the background (e.g. user opened a different session
+  // in the sidebar while a turn is still streaming) doesn't leak
+  // its "is running" or queued-input state into the newly active
+  // session. The render / input layer consults these by activeSid.
+  runningSessions: Record<string, boolean>;
+  pendingMessages: Record<string, string>;
   config: {
     model: string;
     models: string[];
@@ -28,19 +34,19 @@ export interface AppState {
 
 type Listener = () => void;
 
-export class Store {
-  private state: AppState;
+export class Store<T = AppState> {
+  private state: T;
   private listeners: Set<Listener> = new Set();
 
-  constructor(initial: AppState) {
+  constructor(initial: T) {
     this.state = initial;
   }
 
-  get(): AppState {
+  get(): T {
     return this.state;
   }
 
-  set(partial: Partial<AppState>): void {
+  set(partial: Partial<T>): void {
     this.state = { ...this.state, ...partial };
     for (const fn of this.listeners) {
       try { fn(); } catch { /* ignore */ }

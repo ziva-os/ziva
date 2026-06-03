@@ -10,7 +10,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "model": {"provider": "openai_agents", "name": "gpt-4.1", "api_key": "", "base_url": "", "options": {}},
     "prompt": {"profile": "default", "variables": {}},
     "tool": {"allow": [], "deny": [], "max_rounds": 3},
-    "skill": {"enabled": []},
+    "skill": {
+        "enabled": [],
+        "extra_paths": ["~/.ziva/skills", "~/.agents/skills"],
+    },
     "hooks": {"before_turn": [], "after_turn": [], "before_tool": [], "after_tool": []},
     "memory": {"backend": "inmemory", "context_window_tokens": 200000},
     "plugin": {"paths": ["./plugins"], "trust": {"unsigned": "low"}},
