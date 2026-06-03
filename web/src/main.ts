@@ -23,6 +23,10 @@ const store = new Store({
   activeSid: null,
   isRunning: false,
   questionPending: false,
+  // Text the user typed while a turn was running. Held until
+  // `turn_end`, then sent automatically — Codex-style. The user can
+  // clear it via the queue chip's × or by editing the prompt.
+  pendingMessage: null as string | null,
   config: { model: "unknown", models: [], approval: "suggest", workspace: "", tools: [] },
   connected: false,
   tokenUsage: null,
@@ -133,6 +137,11 @@ function init() {
         <div class="messages" id="messages" style="display:none"></div>
         <div class="ziva-composer-wrapper" id="composerWrapper">
           <div class="ziva-composer">
+            <div class="pending-bar" id="pendingBar" hidden>
+              <span class="pending-bar-label">排队中</span>
+              <span class="pending-bar-text" id="pendingBarText"></span>
+              <button class="pending-bar-clear" id="pendingBarClear" title="取消排队" type="button">×</button>
+            </div>
             <textarea id="prompt" placeholder="Ask anything, @ to mention, / for workflows" rows="1"></textarea>
             <div class="slash-menu" id="slashMenu" style="display:none"></div>
             <div class="composer-toolbar">
@@ -214,7 +223,8 @@ function bindEvents() {
         selectSlashCommand();
         return;
       }
-      e.preventDefault(); sendMessage();
+      e.preventDefault();
+      if (store.get().isRunning) { queuePromptMessage(); } else { sendMessage(); }
     }
     if (e.key === "Escape") {
       hideSlashMenu();
@@ -225,8 +235,14 @@ function bindEvents() {
   });
 
   $("btnSend").onclick = () => {
-    if (store.get().isRunning) { cancelTurn(); } else { sendMessage(); }
+    if (store.get().isRunning) { queuePromptMessage(); } else { sendMessage(); }
   };
+  // Pending-message bar: clicking the text brings the queued content
+  // back into the prompt for editing; the × button drops it.
+  const pendingBarText = $("pendingBarText");
+  const pendingBarClear = $("pendingBarClear");
+  if (pendingBarText) pendingBarText.onclick = editPendingMessage;
+  if (pendingBarClear) pendingBarClear.onclick = clearPendingMessage;
   $("btnNewSession").onclick = () => createSession();
   $("btnRightPanel").onclick = toggleDiff;
   $("btnCloseRight").onclick = toggleDiff;
@@ -853,13 +869,14 @@ async function createSession() {
 
 async function switchSession(sid: string) {
   closeAllFullpageOverlays();
-  store.set({ activeSid: sid, isRunning: false, questionPending: false });
+  store.set({ activeSid: sid, isRunning: false, questionPending: false, pendingMessage: null });
   renderSessions();
   $("messages").innerHTML = "";
   currentAssistantEl = null;
   currentTextParts = { thinking: "", main: "" };
   pendingTools.forEach(c => c.remove());
   pendingTools.clear();
+  renderPendingBar();
   await loadHistory(sid);
 
   try {
@@ -1236,12 +1253,18 @@ function appendQuestionCard(question: string, options: string[]) {
       <button class="question-submit" aria-label="Send">↑</button>
     </div>`;
   }
-  // Footer link — lets the user back out of the question entirely
-  // and re-discuss with the agent (Claude Code calls this
-  // "Chat about this"). Submits a special answer so the model can
-  // see the user changed their mind.
+  // "Chat about this" affordance — lets the user back out of the
+  // question entirely and re-discuss with the agent. We render it
+  // as a small secondary button below the input row: visible enough
+  // that users notice it, but visually subordinate to the main
+  // options so the option click-rate stays high.
   html += `<div class="question-footer">
-    <button class="question-chat-about" type="button">还是聊聊吧</button>
+    <button class="question-chat-about" type="button">
+      <svg class="question-chat-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+      </svg>
+      <span>还是聊聊吧</span>
+    </button>
   </div>`;
   card.innerHTML = html;
 
@@ -1504,6 +1527,20 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     refreshPlan();
     refreshSessions();
     if ($("rightPanel").classList.contains("show")) refreshDiff();
+    // Codex-style: flush a queued prompt message now that the turn
+    // has closed. Drop the text into the prompt and send it on the
+    // next tick so this event handler fully unwinds first.
+    const { pendingMessage } = store.get();
+    if (pendingMessage != null) {
+      const promptEl = $("prompt") as HTMLTextAreaElement;
+      promptEl.value = pendingMessage;
+      promptEl.style.height = "auto";
+      promptEl.style.height = Math.min(promptEl.scrollHeight, 160) + "px";
+      $("charCount").textContent = String(promptEl.value.length);
+      store.set({ pendingMessage: null });
+      renderPendingBar();
+      setTimeout(() => { sendMessage(); }, 30);
+    }
   } else if (t === "round_complete") {
     currentAssistantEl = null;
     const usage = ev.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
@@ -1558,9 +1595,65 @@ function updateContextProgress(pct: number, tokens: number) {
   pctLabel.textContent = Math.round(normalizedPct * 100) + "%";
 }
 
+// ---- Queue (Codex-style) ----
+// While a turn is running, Enter / send-button stashes the typed text
+// into `pendingMessage` instead of opening a parallel turn. The
+// `turn_end` event flushes it. The user sees a chip above the composer
+// with a one-click edit / clear affordance.
+function queuePromptMessage() {
+  const promptEl = $("prompt") as HTMLTextAreaElement;
+  const text = promptEl.value;
+  const trimmed = text.trim();
+  if (!trimmed) return;
+  store.set({ pendingMessage: text });
+  promptEl.value = "";
+  promptEl.style.height = "auto";
+  $("charCount").textContent = "";
+  renderPendingBar();
+}
+
+function clearPendingMessage() {
+  store.set({ pendingMessage: null });
+  renderPendingBar();
+}
+
+function editPendingMessage() {
+  const { pendingMessage } = store.get();
+  if (pendingMessage == null) return;
+  const promptEl = $("prompt") as HTMLTextAreaElement;
+  promptEl.value = pendingMessage;
+  promptEl.style.height = "auto";
+  promptEl.style.height = Math.min(promptEl.scrollHeight, 160) + "px";
+  $("charCount").textContent = String(promptEl.value.length);
+  store.set({ pendingMessage: null });
+  renderPendingBar();
+  promptEl.focus();
+}
+
+function renderPendingBar() {
+  const bar = $("pendingBar");
+  const text = $("pendingBarText");
+  if (!bar || !text) return;
+  const { pendingMessage } = store.get();
+  if (pendingMessage == null) {
+    bar.hidden = true;
+    text.textContent = "";
+    return;
+  }
+  // Truncate the preview so a long queued message doesn't blow up
+  // the composer's height. Full content is in the prompt when the
+  // user clicks the chip to edit.
+  const preview = pendingMessage.length > 80
+    ? pendingMessage.slice(0, 80) + "…"
+    : pendingMessage;
+  text.textContent = preview;
+  text.title = pendingMessage;
+  bar.hidden = false;
+}
+
 // ---- Cancel ----
 async function cancelTurn() {
-  const { activeSid, questionPending } = store.get();
+  const { activeSid, questionPending, pendingMessage } = store.get();
   if (!activeSid) return;
   if (questionPending) {
     // A question is mid-flight. Instead of cancelling the whole turn
@@ -1593,6 +1686,12 @@ async function cancelTurn() {
     }, 50);
     return;
   }
+  // Stop button while running = user really wants to stop. Drop any
+  // queued message too — the queue is for "send after this turn", not
+  // for "send after I cancel and start a fresh turn". If the user
+  // wanted the queued text, they can leave it in the chip and edit it
+  // out before pressing Enter again.
+  if (pendingMessage) clearPendingMessage();
   try { await api.cancelTurn(activeSid); } catch { /* ignore */ }
   store.set({ isRunning: false });
   removeTyping();

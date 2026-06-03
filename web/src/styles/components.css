@@ -681,6 +681,62 @@
   position: relative;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
+/* Pending-message bar — Codex-style chip shown above the prompt
+   while a turn is running and the user has typed something to send
+   after the current turn ends. */
+.pending-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 10px 0;
+  padding: 6px 10px;
+  background: var(--accent-light);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--ink);
+  animation: pending-bar-in 0.18s ease-out;
+}
+.pending-bar[hidden] { display: none; }
+@keyframes pending-bar-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.pending-bar-label {
+  flex: 0 0 auto;
+  font-weight: 600;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--surface);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.pending-bar-text {
+  flex: 1 1 auto;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink);
+  user-select: none;
+}
+.pending-bar-text:hover { color: var(--accent); }
+.pending-bar-clear {
+  flex: 0 0 auto;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  font-family: inherit;
+  border-radius: 4px;
+  transition: color 0.12s, background 0.12s;
+}
+.pending-bar-clear:hover { color: var(--red); background: var(--surface); }
 .ziva-composer:focus-within {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-light);
@@ -952,23 +1008,37 @@
 .question-footer {
   display: flex;
   justify-content: flex-end;
-  margin-top: 10px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
 }
 .question-chat-about {
-  background: transparent;
-  border: none;
-  padding: 4px 6px;
-  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  padding: 5px 10px 5px 9px;
   font-size: 12px;
   font-family: inherit;
+  font-weight: 500;
+  border-radius: 6px;
   cursor: pointer;
-  text-decoration: underline;
-  text-decoration-style: dashed;
-  text-underline-offset: 3px;
-  transition: color 0.12s;
+  transition: border-color 0.15s, color 0.15s, background 0.15s, transform 0.05s;
 }
-.question-chat-about:hover { color: var(--accent); }
+.question-chat-about:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-light);
+}
+.question-chat-about:active { transform: translateY(1px); }
 .question-chat-about:disabled { opacity: 0.4; cursor: not-allowed; }
+.question-chat-icon {
+  flex: 0 0 auto;
+  opacity: 0.7;
+}
+.question-chat-about:hover .question-chat-icon { opacity: 1; }
 .question-reply {
   margin-top: 10px;
   padding: 8px 12px;
