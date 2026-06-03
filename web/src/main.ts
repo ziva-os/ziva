@@ -3,7 +3,7 @@ import "./styles/theme-dark.css";
 import "./styles/theme-light.css";
 import "./styles/components.css";
 import * as api from "./api";
-import { SSEConnection } from "./sse";
+import { SSEPool } from "./sse";
 import { renderMarkdown, addCopyButtons, highlightCode, extractThinking } from "./markdown";
 import { Store } from "./state";
 import type { AppState } from "./state";
@@ -70,7 +70,7 @@ function setActiveRunning(running: boolean) {
   store.set({ runningSessions: next });
 }
 
-const sse = new SSEConnection(handleEvent);
+const sse = new SSEPool();
 const pendingTools = new Map<string, HTMLElement>();
 let currentAssistantEl: HTMLElement | null = null;
 let currentTextParts: { thinking: string; main: string } = { thinking: "", main: "" };
@@ -325,7 +325,6 @@ function bindEvents() {
         store.set({ activeSid: null });
         $("messages").innerHTML = "";
         showEmptyState(true);
-        sse.disconnect();
       }
     }
     $("sessionList").dataset.selectMode = "false";
@@ -750,6 +749,7 @@ async function refreshSessions() {
   }
 
   store.set({ sessions });
+  syncSubscriptions();
   renderSessions();
   const toEnrich = sessions.slice(0, 10);
   for (const s of toEnrich) {
@@ -910,6 +910,7 @@ async function createSession() {
   const sessions = [...store.get().sessions];
   sessions.unshift({ id, turnCount: 0, status: "idle", preview: "Empty session" });
   store.set({ sessions });
+  syncSubscriptions();
   renderSessions();
   await switchSession(id);
 }
@@ -948,7 +949,6 @@ async function switchSession(sid: string) {
   }
 
   updateSendStopButton();
-  sse.connect(sid);
   refreshPlan();
   if ($("rightPanel").classList.contains("show")) refreshDiff();
 }
@@ -957,11 +957,11 @@ async function deleteSession(sid: string) {
   await api.deleteSession(sid);
   const sessions = store.get().sessions.filter(s => s.id !== sid);
   store.set({ sessions });
+  syncSubscriptions();
   if (store.get().activeSid === sid) {
     store.set({ activeSid: null });
     $("messages").innerHTML = "";
     showEmptyState(true);
-    sse.disconnect();
   }
   renderSessions();
 }
@@ -1464,6 +1464,87 @@ function scrollBottom() {
 }
 
 // ---- SSE Event Handling ----
+
+// Pool dispatches (sid, ev). For the active session we render live;
+// for background sessions we only sync the sidebar + per-session
+// running flag — the chat DOM is rebuilt from history on switch.
+const sseUnsubs: Map<string, () => void> = new Map();
+
+function handleSessionEvent(sid: string, ev: api.Event) {
+  const { activeSid } = store.get();
+  if (sid === activeSid) {
+    handleEvent(ev, true);
+    return;
+  }
+  // Background session: keep sidebar + running flag in sync, but
+  // don't touch the chat DOM (it belongs to the active session).
+  syncBackgroundSession(sid, ev);
+}
+
+function syncBackgroundSession(sid: string, ev: api.Event) {
+  const t = ev.type as string;
+  const { sessions, runningSessions } = store.get();
+  const s = sessions.find(x => x.id === sid);
+  if (!s) return;
+
+  if (t === "turn_start") {
+    s.status = "running";
+    s.preview = String((ev.user_message as string) || s.preview || "").slice(0, 60);
+    const next = { ...runningSessions, [sid]: true };
+    store.set({ sessions: [...sessions], runningSessions: next });
+    renderSessions();
+  } else if (t === "turn_end" || t === "turn_cancelled" || t === "turn_failed") {
+    s.status = t === "turn_failed" ? "failed" : (t === "turn_cancelled" ? "idle" : "done");
+    const next = { ...runningSessions };
+    delete next[sid];
+    store.set({ sessions: [...sessions], runningSessions: next });
+    renderSessions();
+  }
+}
+
+// Replay any persisted events from a still-running turn on switch
+// (the live pool will then keep streaming new events for that sid).
+async function replayRunningTurn(sid: string) {
+  try {
+    const turns = await api.getTurns(sid);
+    const activeTurn = turns.find(t => t.status === "running");
+    if (activeTurn) {
+      setActiveRunning(true);
+      if (activeTurn.events) {
+        for (const ev of activeTurn.events) {
+          handleEvent(ev, false);
+        }
+        scrollBottom();
+      }
+    }
+  } catch (e) {
+    console.error("Failed to fetch running turn events:", e);
+  }
+}
+
+function ensureSubscribed(sid: string) {
+  if (sseUnsubs.has(sid)) return;
+  const off = sse.subscribe(sid, handleSessionEvent);
+  sseUnsubs.set(sid, off);
+}
+
+function unsubscribeSession(sid: string) {
+  const off = sseUnsubs.get(sid);
+  if (off) { off(); sseUnsubs.delete(sid); }
+}
+
+// Wire up the pool: every known session is subscribed for its full
+// lifetime so the user can flip between them without losing events.
+function syncSubscriptions() {
+  const known = new Set(store.get().sessions.map(s => s.id));
+  for (const sid of sseUnsubs.keys()) {
+    if (!known.has(sid)) unsubscribeSession(sid);
+  }
+  for (const s of store.get().sessions) {
+    ensureSubscribed(s.id);
+  }
+}
+
 function handleEvent(ev: api.Event, updateScroll: boolean = true) {
   // Skip all sub-agent events — they are shown in a collapsed card, not individually
   if ((ev as any)._subagent) return;
@@ -1613,7 +1694,7 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     appendError(ev.error as string || "Unknown error");
   }
 
-  updateConnStatus(sse.connected);
+  updateConnStatus(sse.isConnected(store.get().activeSid || ""));
 }
 
 function updateConnStatus(connected: boolean) {
