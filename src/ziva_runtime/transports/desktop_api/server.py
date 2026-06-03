@@ -195,9 +195,14 @@ class DesktopAPIServer:
         for m in chat_messages:
             session["messages"].append({"role": m.role, "content": m.content})
 
+        token = CancellationToken()
+        self._cancel_tokens[sid] = token
+
         async def runner() -> None:
             try:
-                # Only pass the new user messages — runtime.chat() manages history internally
+                # Only pass the new user messages — runtime.chat() manages history internally.
+                # The cancel_token is stashed on the context for the streaming layer to
+                # observe; task.cancel() above is the primary cancellation path.
                 _, result, events = await self.runtime.chat_with_events(chat_messages, session_id=sid)
                 # Reload messages from disk since runtime.chat() persisted them via FileStorage
                 fresh_messages = []
@@ -407,8 +412,20 @@ class DesktopAPIServer:
                 "Connection": "keep-alive",
             },
         )
-        await resp.prepare(request)
         queue = self.runtime.event_bus.subscribe(sid)
+        # The SSE pool in the UI can rapidly disconnect the previous
+        # session's stream when the user switches. If the client aborts
+        # before `resp.prepare` finishes writing the response headers,
+        # aiohttp raises ClientConnectionResetError — which the
+        # StreamResponse's own machinery doesn't catch, and which would
+        # otherwise propagate up to the aiohttp app handler as an
+        # unhandled error. Catch it here so the rest of the app stays
+        # healthy; the connection is gone either way.
+        try:
+            await resp.prepare(request)
+        except (ConnectionResetError, asyncio.CancelledError):
+            self.runtime.event_bus.unsubscribe(sid, queue)
+            return resp
         try:
             while True:
                 event = await queue.get()
