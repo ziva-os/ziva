@@ -663,11 +663,13 @@ class DesktopAPIServer:
     async def list_skills(self, _request: web.Request) -> web.Response:
         """Return the list of skills the runtime loaded at startup.
 
-        The runtime scans the configured `extra_skill_paths` (defaulting to
-        `~/.ziva/skills` and `~/.agents/skills`) for `SKILL.md` files and
-        parses the YAML frontmatter for `name` and `description`. The
-        sidebar Skills panel uses this list; clicking a skill resolves to
-        `/skills/file?path=<SKILL.md>` for the markdown body.
+        The runtime scans `skill.extra_paths` (falling back to the
+        legacy `mcp.extra_skill_paths`) and the well-known global
+        directories `~/.ziva/skills` / `~/.agents/skills` for
+        `SKILL.md` files, parsing YAML frontmatter for `name` and
+        `description`. The sidebar Skills panel uses this list;
+        clicking a skill resolves to `/skills/file?path=<SKILL.md>`
+        for the markdown body.
         """
         skill_index = self.runtime.config.get("_skill_index", [])
         return web.json_response({"skills": skill_index})
@@ -706,8 +708,9 @@ class DesktopAPIServer:
 
     def _skill_root_paths(self) -> List[Path]:
         """Compute the absolute paths of the skill directories the runtime
-        scanned, so the file endpoint can confine reads to those roots."""
-        config_paths = self.runtime.config.get("mcp", {}).get("extra_skill_paths", [])
+        scanned, so the file endpoint can confine reads to those roots.
+        Reads `skill.extra_paths`."""
+        config_paths = self.runtime.config.get("skill", {}).get("extra_paths", [])
         roots: List[Path] = []
         for sp in config_paths:
             p = Path(sp).expanduser().resolve()

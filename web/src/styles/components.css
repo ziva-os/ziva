@@ -870,75 +870,100 @@
 /* ============ Question Card ============ */
 .question-card {
   max-width: 720px;
-  margin: 12px auto;
-  padding: 14px 16px;
-  border-radius: 10px;
+  margin: 14px auto;
+  padding: 16px 18px;
+  border-radius: 12px;
   background: var(--surface);
   border: 1px solid var(--line);
-  font-size: 13px;
-}
-.question-header {
-  font-weight: 700;
-  font-size: 16px;
-  color: var(--accent);
-  margin-bottom: 6px;
+  font-size: 14px;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.04);
 }
 .question-text {
   color: var(--ink);
-  margin-bottom: 10px;
-  line-height: 1.5;
+  margin-bottom: 14px;
+  line-height: 1.55;
+  font-size: 14px;
 }
 .question-options {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 8px;
+  margin-bottom: 12px;
 }
 .question-option-btn {
-  padding: 6px 12px;
-  border-radius: 6px;
+  text-align: left;
+  padding: 10px 14px;
+  border-radius: 8px;
   border: 1px solid var(--line);
-  background: var(--surface-alt);
+  background: var(--bg);
   color: var(--ink);
   cursor: pointer;
   font-size: 13px;
+  font-family: inherit;
+  transition: border-color 0.12s, background 0.12s, transform 0.05s;
 }
 .question-option-btn:hover {
   border-color: var(--accent);
+  background: var(--surface-alt);
 }
+.question-option-btn:active { transform: translateY(1px); }
 .question-input-row {
   display: flex;
   gap: 8px;
+  align-items: stretch;
+}
+.question-other-row {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line);
 }
 .question-input {
   flex: 1;
-  padding: 6px 10px;
-  border-radius: 6px;
+  padding: 9px 12px;
+  border-radius: 8px;
   border: 1px solid var(--line);
   background: var(--bg);
   color: var(--ink);
   font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.12s;
 }
+.question-input:focus { border-color: var(--accent); }
+.question-input::placeholder { color: var(--muted); }
 .question-submit {
-  padding: 6px 14px;
-  border-radius: 6px;
+  width: 36px;
+  flex-shrink: 0;
+  border-radius: 8px;
   border: none;
   background: var(--accent);
   color: #fff;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 16px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+  transition: opacity 0.12s;
 }
+.question-submit:hover { opacity: 0.88; }
+.question-submit:disabled { opacity: 0.4; cursor: not-allowed; }
 .question-reply {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--line);
-  color: var(--muted);
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--surface-alt);
+  color: var(--ink);
   font-size: 13px;
+  border-left: 3px solid var(--accent);
 }
+.question-card-answered .question-reply { color: var(--muted); }
 .question-card-cancelled { opacity: 0.55; }
 .question-card-cancelled::after {
   content: "(turn ended before answer)";
   display: block;
-  margin-top: 6px;
+  margin-top: 8px;
   font-size: 11px;
   color: var(--muted);
   font-style: italic;
@@ -1042,8 +1067,7 @@
   background: var(--surface-alt); color: var(--muted);
 }
 
-.skills-modal-body.skills-browser-body,
-#skillsModalBody { padding: 18px 20px; }
+#skillsModalBody { padding: 18px 24px; }
 
 .skills-group { margin-bottom: 18px; }
 .skills-group-header {
@@ -1102,65 +1126,101 @@
   text-align: center; line-height: 1.5;
 }
 
-/* Skills modal — used for both the list view and the file viewer */
-.skills-modal-backdrop {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.45);
-  display: flex; align-items: center; justify-content: center;
-  z-index: 1000; padding: 40px 20px;
-}
-.skills-modal {
+/* ============ Full-page overlay (Skills / Scheduled Tasks) ============ */
+/* Replaces the chat surface but leaves the sidebar visible so users
+   can still jump between destinations (Skills ↔ Scheduled Tasks ↔
+   chat) without closing the overlay first. The sidebar width is
+   kept in sync with the main layout's actual sidebar via the
+   `--sidebar-width` CSS variable, which the layout updates as the
+   sidebar collapses/expands. */
+.fullpage-overlay {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: var(--sidebar-width, 0px);
   background: var(--bg, #1a1a1a);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  width: 100%; max-width: 760px; height: 100%; max-height: 80vh;
-  display: flex; flex-direction: column; overflow: hidden;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  z-index: 100;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  border-left: 1px solid var(--line);
+  animation: fullpage-in 0.18s ease-out;
 }
-.skills-modal-header {
-  display: flex; align-items: center; gap: 10px;
-  padding: 14px 18px; border-bottom: 1px solid var(--line);
+@keyframes fullpage-in {
+  from { transform: translateX(8px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+.fullpage-shell {
+  flex: 1;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.fullpage-topbar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 24px; border-bottom: 1px solid var(--line);
   flex-shrink: 0;
+  background: var(--bg);
 }
-.skills-modal-back {
+.fullpage-title {
+  font-size: 16px; font-weight: 500; color: var(--ink);
+  flex: 1; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+  text-align: center;
+}
+.fullpage-topbar-spacer { width: 1px; }
+.fullpage-back {
+  display: inline-flex; align-items: center; gap: 6px;
   background: transparent; border: 1px solid var(--line);
-  color: var(--ink); cursor: pointer; padding: 4px 10px;
-  border-radius: 6px; font-size: 12px; display: flex; align-items: center; gap: 4px;
+  color: var(--ink); cursor: pointer;
+  padding: 6px 12px; border-radius: 6px;
+  font-size: 12px; font-family: inherit;
+  flex-shrink: 0;
+  transition: background 0.1s, border-color 0.1s;
 }
-.skills-modal-back:hover { background: var(--surface-alt); }
-.skills-modal-title {
-  font-size: 14px; font-weight: 500; color: var(--ink);
-  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.fullpage-back:hover { background: var(--surface-alt); border-color: var(--line-strong); }
+.fullpage-back .back-arrow { font-size: 14px; line-height: 1; }
+.fullpage-toolbar {
+  padding: 14px 24px; border-bottom: 1px solid var(--line);
+  display: flex; flex-direction: column; gap: 12px;
+  flex-shrink: 0;
+  background: var(--bg);
 }
-.skills-modal-close {
-  background: transparent; border: none;
-  color: var(--muted); cursor: pointer; font-size: 20px;
-  padding: 0 4px; line-height: 1;
-}
-.skills-modal-close:hover { color: var(--ink); }
-.skills-modal-body {
-  padding: 18px 22px; overflow-y: auto; flex: 1;
+.fullpage-body {
+  flex: 1; overflow-y: auto;
+  padding: 20px 28px 32px;
   font-size: 13px; line-height: 1.6;
+  color: var(--ink);
 }
-.skills-modal-body h1 { font-size: 18px; margin: 18px 0 10px; }
-.skills-modal-body h2 { font-size: 15px; margin: 16px 0 8px; }
-.skills-modal-body h3 { font-size: 14px; margin: 12px 0 6px; }
-.skills-modal-body p { margin: 8px 0; }
-.skills-modal-body code {
+.fullpage-body-wide { max-width: 920px; margin: 0 auto; width: 100%; }
+
+/* Sticky inner top bar inside the body (used by the skill viewer) */
+.fullpage-inner-topbar {
+  position: sticky; top: 0;
+  display: flex; align-items: center; gap: 8px;
+  padding: 0 0 12px;
+  background: var(--bg);
+  z-index: 1;
+}
+.fullpage-body h1 { font-size: 18px; margin: 18px 0 10px; }
+.fullpage-body h2 { font-size: 15px; margin: 16px 0 8px; }
+.fullpage-body h3 { font-size: 14px; margin: 12px 0 6px; }
+.fullpage-body p { margin: 8px 0; }
+.fullpage-body code {
   background: var(--surface-alt); padding: 2px 5px; border-radius: 3px;
   font-size: 12px;
 }
-.skills-modal-body pre {
+.fullpage-body pre {
   background: var(--surface-alt); padding: 10px 12px; border-radius: 6px;
   overflow-x: auto; font-size: 12px;
 }
-.skills-modal-body ul, .skills-modal-body ol { padding-left: 22px; }
-.skills-modal-body li { margin: 4px 0; }
-.skills-modal-body a.skill-file-link {
+.fullpage-body ul, .fullpage-body ol { padding-left: 22px; }
+.fullpage-body li { margin: 4px 0; }
+.fullpage-body a.skill-file-link {
   color: var(--accent); text-decoration: none;
   border-bottom: 1px dashed var(--accent);
   cursor: pointer;
 }
-.skills-modal-body a.skill-file-link:hover {
+.fullpage-body a.skill-file-link:hover {
   background: rgba(122, 162, 247, 0.1);
 }
 .skills-modal-list { display: flex; flex-direction: column; gap: 4px; }
@@ -1295,4 +1355,7 @@
   .ziva-sidebar { display: none; }
   .ziva-sidebar.show { display: flex; }
   .skills-modal { max-height: 95vh; }
+  .fullpage-body { padding: 16px 18px 24px; }
+  .fullpage-topbar { padding: 12px 16px; }
+  .fullpage-toolbar { padding: 12px 16px; }
 }

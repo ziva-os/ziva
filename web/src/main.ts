@@ -314,6 +314,13 @@ function bindEvents() {
     layout.classList.toggle("sidebar-collapsed");
     const collapsed = layout.classList.contains("sidebar-collapsed");
     localStorage.setItem("ziva-sidebar-collapsed", collapsed ? "1" : "0");
+    // Keep the fullpage overlay's left edge in sync with the live
+    // sidebar width (it spans from the sidebar's right edge to the
+    // viewport's right edge).
+    document.documentElement.style.setProperty(
+      "--sidebar-width",
+      collapsed ? "0px" : "var(--sidebar-real-width, 260px)"
+    );
   };
   $("btnToggleSidebar").onclick = toggleSidebar;
   $("btnOpenSidebar").onclick = toggleSidebar;
@@ -321,6 +328,13 @@ function bindEvents() {
   if (localStorage.getItem("ziva-sidebar-collapsed") === "1") {
     document.querySelector(".ziva-layout")?.classList.add("sidebar-collapsed");
   }
+  // Initialize --sidebar-width so the fullpage overlay's left edge
+  // aligns with the live sidebar width.
+  const initialCollapsed = localStorage.getItem("ziva-sidebar-collapsed") === "1";
+  document.documentElement.style.setProperty(
+    "--sidebar-width",
+    initialCollapsed ? "0px" : "260px"
+  );
 
   document.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "d") { e.preventDefault(); toggleDiff(); }
@@ -364,29 +378,32 @@ let skillsBrowserState: { query: string; category: string | null } = { query: ""
 async function openSkillsBrowser() {
   closeSkillViewer();
   const backdrop = document.createElement("div");
-  backdrop.className = "skills-modal-backdrop";
+  backdrop.className = "fullpage-overlay";
   backdrop.id = "skillsModalBackdrop";
   backdrop.innerHTML = `
-    <div class="skills-browser-modal">
-      <div class="skills-browser-header">
-        <div class="skills-browser-title">📚 Skills</div>
-        <button class="skills-modal-close" id="skillsModalClose" aria-label="Close">×</button>
+    <div class="fullpage-shell">
+      <div class="fullpage-topbar">
+        <button class="fullpage-back" id="skillsModalClose" aria-label="Back to chat">
+          <span class="back-arrow">←</span>
+          <span>Back to chat</span>
+        </button>
+        <div class="fullpage-title">📚 Skills</div>
+        <div class="fullpage-topbar-spacer"></div>
       </div>
-      <div class="skills-browser-toolbar">
+      <div class="fullpage-toolbar">
         <div class="skills-search-box">
           <span class="skills-search-icon">🔍</span>
           <input type="text" id="skillsSearchInput" placeholder="Search by name or description..." />
         </div>
         <div class="skills-category-tabs" id="skillsCategoryTabs"></div>
       </div>
-      <div class="skills-modal-body" id="skillsModalBody">
+      <div class="fullpage-body" id="skillsModalBody">
         <div class="skills-modal-loading">Loading skills...</div>
       </div>
     </div>`;
   document.body.appendChild(backdrop);
 
   (backdrop.querySelector("#skillsModalClose") as HTMLElement).onclick = closeSkillViewer;
-  backdrop.onclick = (e) => { if (e.target === backdrop) closeSkillViewer(); };
   (backdrop.querySelector("#skillsSearchInput") as HTMLInputElement).oninput = (e) => {
     skillsBrowserState.query = (e.target as HTMLInputElement).value;
     renderSkillsBrowserBody();
@@ -499,26 +516,31 @@ function renderSkillsBrowserBody() {
 function openSkillViewer(skillName: string, skillPath: string, fromBrowser: boolean = false) {
   closeSkillViewer();
   const backdrop = document.createElement("div");
-  backdrop.className = "skills-modal-backdrop";
+  backdrop.className = "fullpage-overlay";
   backdrop.id = "skillsModalBackdrop";
-  const modal = document.createElement("div");
-  modal.className = "skills-modal";
-  modal.innerHTML = `
-    <div class="skills-modal-header">
-      <button class="skills-modal-back" id="skillsModalBack" style="display:${fromBrowser ? "flex" : "none"}">← Back to Skills</button>
-      <div class="skills-modal-title" id="skillsModalTitle">${esc(skillName)}</div>
-      <button class="skills-modal-close" id="skillsModalClose" aria-label="Close">×</button>
-    </div>
-    <div class="skills-breadcrumb" id="skillsBreadcrumb" style="display:none"></div>
-    <div class="skills-modal-body" id="skillsModalBody">
-      <div class="skills-modal-loading">Loading ${esc(skillName)}...</div>
+  backdrop.innerHTML = `
+    <div class="fullpage-shell">
+      <div class="fullpage-topbar">
+        <button class="fullpage-back" id="skillsModalBack" style="display:${fromBrowser ? "flex" : "none"}">
+          <span class="back-arrow">←</span>
+          <span>Back to Skills</span>
+        </button>
+        <button class="fullpage-back" id="skillsModalClose" style="display:${fromBrowser ? "none" : "flex"}">
+          <span class="back-arrow">←</span>
+          <span>Back to chat</span>
+        </button>
+        <div class="fullpage-title" id="skillsModalTitle">${esc(skillName)}</div>
+        <div class="fullpage-topbar-spacer"></div>
+      </div>
+      <div class="skills-breadcrumb" id="skillsBreadcrumb" style="display:none"></div>
+      <div class="fullpage-body fullpage-body-wide" id="skillsModalBody">
+        <div class="skills-modal-loading">Loading ${esc(skillName)}...</div>
+      </div>
     </div>`;
-  backdrop.appendChild(modal);
   document.body.appendChild(backdrop);
 
-  (modal.querySelector("#skillsModalClose") as HTMLElement).onclick = closeSkillViewer;
-  backdrop.onclick = (e) => { if (e.target === backdrop) closeSkillViewer(); };
-  (modal.querySelector("#skillsModalBack") as HTMLElement).onclick = () => {
+  (backdrop.querySelector("#skillsModalClose") as HTMLElement).onclick = closeSkillViewer;
+  (backdrop.querySelector("#skillsModalBack") as HTMLElement).onclick = () => {
     openSkillsBrowser();
   };
 
@@ -1198,24 +1220,36 @@ function appendQuestionCard(question: string, options: string[]) {
   showEmptyState(false);
   const card = document.createElement("div");
   card.className = "question-card";
-  let html = `<div class="question-header">?</div><div class="question-text">${esc(question)}</div>`;
+  let html = `<div class="question-text">${esc(question)}</div>`;
   if (options.length > 0) {
-    html += `<div class="question-options">${options.map((o) => `<button class="question-option-btn">${esc(o)}</button>`).join("")}</div>`;
+    html += `<div class="question-options">${options.map((o, i) =>
+      `<button class="question-option-btn" data-opt="${i}">${esc(o)}</button>`
+    ).join("")}</div>`;
+    // "Other" freeform input — surfaces when none of the options fits.
+    html += `<div class="question-input-row question-other-row">
+      <input type="text" class="question-input" placeholder="Or type your own answer..." />
+      <button class="question-submit" aria-label="Send">↑</button>
+    </div>`;
   } else {
-    html += `<div class="question-input-row"><input type="text" class="question-input" placeholder="Your answer..." /><button class="question-submit">Send</button></div>`;
+    html += `<div class="question-input-row">
+      <input type="text" class="question-input" placeholder="Type your answer..." />
+      <button class="question-submit" aria-label="Send">↑</button>
+    </div>`;
   }
   card.innerHTML = html;
 
   let submitted = false;
   const submit = (answer: string) => {
     if (submitted) return;
+    const trimmed = answer.trim();
+    if (!trimmed) return;
     const activeSid = store.get().activeSid;
-    if (!activeSid || !answer.trim()) return;
+    if (!activeSid) return;
     submitted = true;
     // Resolve the pending ask_user future on the backend instead of
     // starting a brand-new turn — the original model round is still
     // waiting for our answer.
-    api.replyQuestion(activeSid, answer.trim()).catch((e) => {
+    api.replyQuestion(activeSid, trimmed).catch((e) => {
       console.error("replyQuestion failed:", e);
     });
     card.querySelector(".question-input-row")?.remove();
@@ -1223,21 +1257,20 @@ function appendQuestionCard(question: string, options: string[]) {
     card.classList.add("question-card-answered");
     const replyDiv = document.createElement("div");
     replyDiv.className = "question-reply";
-    replyDiv.textContent = `You: ${answer}`;
+    replyDiv.textContent = `You: ${trimmed}`;
     card.appendChild(replyDiv);
   };
 
   if (options.length > 0) {
-    card.querySelectorAll(".question-option-btn").forEach((btn) => {
-      btn.addEventListener("click", () => submit((btn as HTMLElement).textContent || ""));
+    card.querySelectorAll<HTMLElement>(".question-option-btn").forEach((btn) => {
+      btn.addEventListener("click", () => submit(btn.textContent || ""));
     });
-  } else {
-    const input = card.querySelector(".question-input") as HTMLInputElement;
-    const btn = card.querySelector(".question-submit") as HTMLElement;
-    btn.onclick = () => submit(input.value);
-    input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(input.value); });
-    input.focus();
   }
+  const input = card.querySelector(".question-input") as HTMLInputElement;
+  const sendBtn = card.querySelector(".question-submit") as HTMLElement;
+  sendBtn.onclick = () => submit(input.value);
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(input.value); });
+  input.focus();
 
   $("messages").appendChild(card);
   // Mark the turn as still running: the model round is suspended
@@ -1567,23 +1600,25 @@ async function refreshPlan() {
 async function openAutomationsModal() {
   closeAutomationsModal();
   const backdrop = document.createElement("div");
-  backdrop.className = "skills-modal-backdrop";
+  backdrop.className = "fullpage-overlay";
   backdrop.id = "automationsModalBackdrop";
-  const modal = document.createElement("div");
-  modal.className = "skills-modal";
-  modal.innerHTML = `
-    <div class="skills-modal-header">
-      <div class="skills-modal-title">Scheduled Tasks</div>
-      <button class="skills-modal-close" id="automationsModalClose" aria-label="Close">×</button>
-    </div>
-    <div class="skills-modal-body" id="automationsModalBody">
-      <div class="skills-modal-loading">Loading automations...</div>
+  backdrop.innerHTML = `
+    <div class="fullpage-shell">
+      <div class="fullpage-topbar">
+        <button class="fullpage-back" id="automationsModalClose" aria-label="Back to chat">
+          <span class="back-arrow">←</span>
+          <span>Back to chat</span>
+        </button>
+        <div class="fullpage-title">⏰ Scheduled Tasks</div>
+        <div class="fullpage-topbar-spacer"></div>
+      </div>
+      <div class="fullpage-body" id="automationsModalBody">
+        <div class="skills-modal-loading">Loading automations...</div>
+      </div>
     </div>`;
-  backdrop.appendChild(modal);
   document.body.appendChild(backdrop);
 
-  (modal.querySelector("#automationsModalClose") as HTMLElement).onclick = closeAutomationsModal;
-  backdrop.onclick = (e) => { if (e.target === backdrop) closeAutomationsModal(); };
+  (backdrop.querySelector("#automationsModalClose") as HTMLElement).onclick = closeAutomationsModal;
 
   await loadAutomationsIntoModal();
 }

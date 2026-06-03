@@ -11,10 +11,7 @@ class AskUserTool:
             "name": "ask_user",
             "description": (
                 "Ask the user a question when you need clarification, more information, "
-                "or a decision before proceeding. The question is shown in the UI and "
-                "this tool BLOCKS until the user answers — you will not get a result "
-                "back until they respond, so do not produce any post-question summary "
-                "or repeat the question in your own words. Just call the tool and wait. "
+                "or a decision before proceeding. The question will be shown in the UI. "
                 "Prefer this over making assumptions."
             ),
             "input_schema": {
