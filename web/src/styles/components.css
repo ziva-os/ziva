@@ -869,7 +869,8 @@
 
 /* ============ Question Card ============ */
 .question-card {
-  margin: 12px 20px;
+  max-width: 720px;
+  margin: 12px auto;
   padding: 14px 16px;
   border-radius: 10px;
   background: var(--surface);
@@ -932,6 +933,15 @@
   border-top: 1px solid var(--line);
   color: var(--muted);
   font-size: 13px;
+}
+.question-card-cancelled { opacity: 0.55; }
+.question-card-cancelled::after {
+  content: "(turn ended before answer)";
+  display: block;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  font-style: italic;
 }
 
 /* ============ Skills panel + viewer modal ============ */

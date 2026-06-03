@@ -11,7 +11,10 @@ class AskUserTool:
             "name": "ask_user",
             "description": (
                 "Ask the user a question when you need clarification, more information, "
-                "or a decision before proceeding. The question will be shown in the UI. "
+                "or a decision before proceeding. The question is shown in the UI and "
+                "this tool BLOCKS until the user answers — you will not get a result "
+                "back until they respond, so do not produce any post-question summary "
+                "or repeat the question in your own words. Just call the tool and wait. "
                 "Prefer this over making assumptions."
             ),
             "input_schema": {
@@ -37,9 +40,24 @@ class AskUserTool:
             return {"error": "missing_question", "message": "question is required"}
 
         options = input_data.get("options", [])
-        return {
-            "status": "asked",
-            "question": question,
-            "options": options,
-            "message": f"Question asked: '{question}'. Waiting for user response.",
-        }
+        runtime = ctx.metadata.get("_runtime") if ctx else None
+        if runtime is None:
+            return {
+                "error": "no_runtime",
+                "message": "ask_user requires a runtime context to wait for user input.",
+            }
+
+        # Emit the question payload alongside the existing tool_start /
+        # tool_end events so the UI can render the card immediately.
+        # The tool coroutine itself blocks here until the HTTP reply
+        # handler resolves the future — the model round stays open.
+        await runtime._emit(
+            ctx.session_id,
+            {
+                "type": "ask_user_question",
+                "question": question,
+                "options": options,
+            },
+        )
+
+        return await runtime.await_user_answer(session_id=ctx.session_id)

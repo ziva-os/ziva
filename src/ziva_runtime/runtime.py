@@ -104,6 +104,12 @@ class Runtime:
     _mcp_connected: bool = False
     _session_history: Dict[str, List[ChatMessage]] = field(default_factory=dict)
     _project_id: str | None = None
+    # Per-session future for the ask_user tool: when an agent calls
+    # ask_user_question, the tool run() awaits the future set by the
+    # server's POST /sessions/{sid}/questions/reply handler. The future
+    # resolves to the user's answer (or None on cancel). One slot per
+    # session — questions are sequential.
+    _pending_questions: Dict[str, asyncio.Future] = field(default_factory=dict, init=False, repr=False)
 
     @property
     def project_id(self) -> str:
@@ -586,6 +592,47 @@ class Runtime:
         payload = {"session_id": session_id, "seq": seq, "ts": int(time.time() * 1000)}
         payload.update(event)
         await self.event_bus.publish(session_id, payload)
+
+    async def await_user_answer(self, session_id: str) -> Dict[str, Any]:
+        """Block the calling tool until the user replies via the UI.
+
+        Used by the `ask_user` tool: instead of returning a fake
+        "waiting" tool_result, the tool awaits this future so the model
+        round stays open until the user actually answers. The future
+        is set by `set_user_answer` (called from the server's
+        `/sessions/{sid}/questions/reply` handler). If the turn is
+        cancelled while waiting, returns a cancelled envelope so the
+        LLM can react gracefully instead of hanging.
+        """
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
+        self._pending_questions[session_id] = fut
+        try:
+            return await fut
+        except asyncio.CancelledError:
+            return {
+                "status": "cancelled",
+                "message": "User cancelled the turn before answering.",
+            }
+        finally:
+            if self._pending_questions.get(session_id) is fut:
+                self._pending_questions.pop(session_id, None)
+
+    def set_user_answer(self, session_id: str, answer: str | None) -> bool:
+        """Resolve the pending question future for `session_id`.
+
+        Returns True if a future was pending (and was set), False if
+        there was no question waiting — the caller (the HTTP handler)
+        can use that to 404 instead of claiming success.
+        """
+        fut = self._pending_questions.get(session_id)
+        if fut is None or fut.done():
+            return False
+        if answer is None:
+            fut.cancel()
+        else:
+            fut.set_result({"status": "answered", "answer": answer})
+        return True
 
     async def _execute_tool(self, call: ToolCall, ctx: RuntimeContext) -> Dict[str, Any]:
         # Check deny list (legacy, for backward compatibility)

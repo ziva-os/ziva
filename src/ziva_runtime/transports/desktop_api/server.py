@@ -115,6 +115,7 @@ class DesktopAPIServer:
         self.app.router.add_get("/automations", self.list_automations)
         self.app.router.add_delete("/automations/{aid}", self.delete_automation)
         self.app.router.add_post("/api/permissions/{request_id}/reply", self.permission_reply)
+        self.app.router.add_post("/sessions/{sid}/questions/reply", self.question_reply)
         self.app.router.add_delete("/sessions/{sid}", self.delete_session)
         self.app.router.add_get("/status", self.get_status)
         self.app.router.add_get("/mcp-status", self.get_mcp_status)
@@ -525,6 +526,26 @@ class DesktopAPIServer:
         perm_manager = get_permission_manager()
         perm_manager.reply(request_id, action, message)
 
+        return web.json_response({"ok": True})
+
+    async def question_reply(self, request: web.Request) -> web.Response:
+        """Resolve a pending ask_user question future with the user's answer.
+
+        The ask_user tool run() blocks on a per-session future. When the
+        front-end submits the answer from the question card it hits
+        this endpoint, which calls Runtime.set_user_answer to unblock
+        the tool — the model round then continues with the real answer
+        instead of an empty "Waiting…" tool_result. 404 if no question
+        is currently waiting (e.g. the user navigated away).
+        """
+        sid = request.match_info["sid"]
+        payload = await request.json()
+        answer = payload.get("answer")
+        if not isinstance(answer, str) or not answer.strip():
+            return web.json_response({"error": "missing_answer"}, status=400)
+        ok = self.runtime.set_user_answer(sid, answer.strip())
+        if not ok:
+            return web.json_response({"error": "no_pending_question"}, status=404)
         return web.json_response({"ok": True})
 
     async def delete_session(self, request: web.Request) -> web.Response:

@@ -1206,12 +1206,21 @@ function appendQuestionCard(question: string, options: string[]) {
   }
   card.innerHTML = html;
 
+  let submitted = false;
   const submit = (answer: string) => {
+    if (submitted) return;
     const activeSid = store.get().activeSid;
     if (!activeSid || !answer.trim()) return;
-    api.createTurn(activeSid, answer.trim());
+    submitted = true;
+    // Resolve the pending ask_user future on the backend instead of
+    // starting a brand-new turn — the original model round is still
+    // waiting for our answer.
+    api.replyQuestion(activeSid, answer.trim()).catch((e) => {
+      console.error("replyQuestion failed:", e);
+    });
     card.querySelector(".question-input-row")?.remove();
     card.querySelector(".question-options")?.remove();
+    card.classList.add("question-card-answered");
     const replyDiv = document.createElement("div");
     replyDiv.className = "question-reply";
     replyDiv.textContent = `You: ${answer}`;
@@ -1227,10 +1236,15 @@ function appendQuestionCard(question: string, options: string[]) {
     const btn = card.querySelector(".question-submit") as HTMLElement;
     btn.onclick = () => submit(input.value);
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(input.value); });
+    input.focus();
   }
 
   $("messages").appendChild(card);
-  currentAssistantEl = null;
+  // Mark the turn as still running: the model round is suspended
+  // waiting on the user, not idle.
+  store.set({ isRunning: true });
+  updateSendStopButton();
+  scrollBottom();
 }
 
 function appendError(msg: string) {
@@ -1335,6 +1349,14 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     addCopyButtons(el.parentElement!);
     highlightCode(el.parentElement!);
     if (updateScroll) scrollBottom();
+  } else if (t === "ask_user_question") {
+    // Render the question card immediately so the user sees it
+    // before the ask_user tool coroutine unblocks.
+    removeTyping();
+    const q = String((ev.question as string) || "");
+    const opts = ((ev.options as string[]) || []) as string[];
+    appendQuestionCard(q, opts);
+    if (updateScroll) scrollBottom();
   } else if (t === "tool_start") {
     removeTyping();
     const key = `${ev.round}:${ev.call_id || ev.tool}`;
@@ -1349,8 +1371,9 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
       pending.remove();
     }
     if (ev.tool === "ask_user") {
-      const output = (ev.output || {}) as Record<string, unknown>;
-      appendQuestionCard(String(output.question || ""), (output.options || []) as string[]);
+      // Card is already on screen via the earlier `ask_user_question`
+      // event. Don't create a second one — the user has already (or
+      // is about to) answer it.
     } else {
       const status = ev.error_class ? "error" : "success";
       let subagentTools: string[] | undefined;
@@ -1378,6 +1401,15 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     // "flash" of the full conversation. We only refresh lightweight
     // sidebar / context surfaces that don't drive the chat display.
     removeTyping();
+    // Any question card still on screen is now abandoned — the round
+    // closed without an answer (probably cancelled). Lock its inputs
+    // so the user can't submit a reply that will land in a new turn.
+    document.querySelectorAll(".question-card:not(.question-card-answered)").forEach((el) => {
+      el.classList.add("question-card-cancelled");
+      (el.querySelectorAll("input, button") as NodeListOf<HTMLElement>).forEach((b) => {
+        b.disabled = true;
+      });
+    });
     store.set({ isRunning: false });
     currentAssistantEl = null;
     updateSendStopButton();

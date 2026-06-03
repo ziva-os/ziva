@@ -149,6 +149,10 @@ export async function replyPermission(requestId: string, action: string, message
   await api("POST", `/api/permissions/${requestId}/reply`, { action, message });
 }
 
+export async function replyQuestion(sid: string, answer: string): Promise<{ ok: boolean }> {
+  return api("POST", `/sessions/${sid}/questions/reply`, { answer });
+}
+
 export async function listAutomations(): Promise<Automation[]> {
   const data = await api<{ automations: Automation[] }>("GET", "/automations");
   return data.automations || [];
