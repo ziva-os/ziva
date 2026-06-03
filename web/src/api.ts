@@ -158,6 +158,7 @@ export interface Skill {
   name: string;
   description: string;
   path: string;
+  category: string;
 }
 
 export interface SkillFile {

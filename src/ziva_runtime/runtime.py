@@ -56,6 +56,42 @@ def _current_date_for_timezone(timezone: str) -> str:
         return datetime.now().astimezone().date().isoformat()
 
 
+# Skill categorization — used by the sidebar Skills page to group
+# skills in the browsing UI. The mapping is purely keyword-based and
+# intentionally coarse: a few top-level buckets are easier to scan
+# than a long flat list, and the search box handles fine-grained
+# filtering. The first matching rule wins; "Other" is the fallback.
+_SKILL_CATEGORY_RULES: List[tuple] = [
+    ("规划/工作流", ("plan", "task_plan", "findings", "progress", "brainstorm", "workflow", "manus", "session-catchup", "会话")),
+    ("浏览器/网页", ("browser", "web page", "navigate", "snapshot", "devtools", "dom", "click", "fill form", "browser automation")),
+    ("视频/动画", ("video", "视频", "动画", "漫画", "短剧", "drama", "seedance", "即梦", "stitch", "manga")),
+    ("金融/投资", ("stock", "crypto", "finance", "financial", "portfolio", "yahoo", "trading")),
+    ("数据/搜索", ("search", "search the web", "data source", "datasource", "数据", "网络搜索")),
+    ("MCP/集成", ("mcp", "model context protocol", "plugin", "clawdhub", "tool integration")),
+    ("开发/工程", ("code", "coding", "build", "website", "frontend", "backend", "debug", "test", "engineer", "stitch-loop")),
+    ("设计/UI", ("design", "ui", "ux", "interface", "visual", "styling", "theme")),
+]
+
+
+def _categorize_skill(name: str, description: str) -> str:
+    """Best-effort categorization for a skill based on its name + description.
+
+    The runtime scans SKILL.md frontmatter to build a compact index, and
+    callers (the desktop UI's Skills page) need a single `category`
+    string per entry so they can group skills into collapsible sections
+    and offer category filters. The match is purely substring-based —
+    it's intentionally lenient, because the cost of a wrong bucket
+    (a skill landing in "Other") is much lower than the cost of an
+    unindexed skill that the user has to hunt for.
+    """
+    haystack = f"{name} {description}".lower()
+    for category, keywords in _SKILL_CATEGORY_RULES:
+        for kw in keywords:
+            if kw in haystack:
+                return category
+    return "其他"
+
+
 @dataclass
 class Runtime:
     config: Dict[str, Any]
@@ -133,6 +169,7 @@ class Runtime:
                         "name": name,
                         "description": desc[:200] if desc else "",
                         "path": str(skill_file),
+                        "category": _categorize_skill(name, desc),
                     })
 
         config["_skill_index"] = skill_index

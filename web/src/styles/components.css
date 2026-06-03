@@ -970,6 +970,128 @@
   padding: 16px 12px; color: var(--muted); font-size: 12px; text-align: center;
 }
 
+/* ============ Skills browser (full-page) ============ */
+.skills-browser-modal {
+  background: var(--bg, #1a1a1a);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  width: 100%; max-width: 920px; height: 100%; max-height: 85vh;
+  display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+.skills-browser-header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 20px; border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.skills-browser-title {
+  font-size: 16px; font-weight: 500; color: var(--ink);
+  flex: 1;
+}
+.skills-browser-toolbar {
+  padding: 12px 20px; border-bottom: 1px solid var(--line);
+  display: flex; flex-direction: column; gap: 10px;
+  flex-shrink: 0;
+}
+.skills-search-box {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--surface-alt);
+  transition: border-color 0.15s;
+}
+.skills-search-box:focus-within { border-color: var(--line-strong); }
+.skills-search-icon { font-size: 12px; opacity: 0.6; flex-shrink: 0; }
+.skills-search-box input {
+  flex: 1; border: none; outline: none; background: transparent;
+  color: var(--ink); font-size: 13px;
+}
+.skills-search-box input::placeholder { color: var(--muted); }
+
+.skills-category-tabs {
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.skills-category-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 11px; border: 1px solid var(--line);
+  border-radius: 14px; background: transparent;
+  color: var(--muted); font-size: 12px; cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+}
+.skills-category-tab:hover { background: var(--surface-alt); color: var(--ink); }
+.skills-category-tab.active {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+}
+.skills-cat-count {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 18px; height: 16px; padding: 0 5px;
+  border-radius: 8px; font-size: 10px; font-weight: 500;
+  background: rgba(255,255,255,0.12);
+}
+.skills-category-tab:not(.active) .skills-cat-count {
+  background: var(--surface-alt); color: var(--muted);
+}
+
+.skills-modal-body.skills-browser-body,
+#skillsModalBody { padding: 18px 20px; }
+
+.skills-group { margin-bottom: 18px; }
+.skills-group-header {
+  font-size: 11px; font-weight: 500; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.05em;
+  margin-bottom: 8px; display: flex; align-items: center; gap: 6px;
+}
+.skills-group-count {
+  font-size: 10px; color: var(--muted);
+  background: var(--surface-alt);
+  padding: 1px 6px; border-radius: 8px;
+  font-weight: 400; text-transform: none; letter-spacing: 0;
+}
+.skills-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+}
+.skill-card {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 12px 14px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--surface-alt);
+  cursor: pointer; transition: all 0.15s;
+  min-height: 96px;
+}
+.skill-card:hover {
+  border-color: var(--accent);
+  background: var(--bg);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+}
+.skill-card-name {
+  font-size: 13px; font-weight: 500; color: var(--ink);
+  display: flex; align-items: center; gap: 6px;
+}
+.skill-card-name::before {
+  content: "📄"; font-size: 11px; opacity: 0.6;
+}
+.skill-card-desc {
+  font-size: 11px; color: var(--muted); line-height: 1.4;
+  flex: 1;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.skill-card-footer {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 2px;
+}
+.skill-card-cat {
+  font-size: 10px; color: var(--muted);
+  background: var(--bg);
+  padding: 2px 7px; border-radius: 8px;
+  border: 1px solid var(--line);
+}
+.skills-empty {
+  padding: 32px 20px; color: var(--muted); font-size: 13px;
+  text-align: center; line-height: 1.5;
+}
+
 /* Skills modal — used for both the list view and the file viewer */
 .skills-modal-backdrop {
   position: fixed; inset: 0; background: rgba(0,0,0,0.45);

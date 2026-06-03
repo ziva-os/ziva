@@ -88,7 +88,6 @@ function init() {
             <span>Scheduled Tasks</span>
           </button>
         </div>
-        <div class="skills-list" id="skillsList" style="display:none"></div>
         <div class="sidebar-section-header">
           <span>Projects</span>
           <div class="section-actions">
@@ -231,7 +230,7 @@ function bindEvents() {
   $("btnRightPanel").onclick = toggleDiff;
   $("btnCloseRight").onclick = toggleDiff;
 
-  $("btnSkills").onclick = () => toggleSkillsPanel();
+  $("btnSkills").onclick = () => openSkillsBrowser();
   $("btnScheduled").onclick = () => openAutomationsModal();
 
   $("btnTheme").onclick = () => {
@@ -360,50 +359,135 @@ function bindEvents() {
 // navigate the skill's reference tree without leaving the chat surface.
 
 let skillsCache: api.Skill[] | null = null;
-let skillsPanelOpen = false;
+let skillsBrowserState: { query: string; category: string | null } = { query: "", category: null };
 
-async function toggleSkillsPanel() {
-  const list = $("skillsList");
-  skillsPanelOpen = !skillsPanelOpen;
-  if (skillsPanelOpen) {
-    list.style.display = "flex";
-    await loadSkillsPanel();
-  } else {
-    list.style.display = "none";
-  }
-}
+async function openSkillsBrowser() {
+  closeSkillViewer();
+  const backdrop = document.createElement("div");
+  backdrop.className = "skills-modal-backdrop";
+  backdrop.id = "skillsModalBackdrop";
+  backdrop.innerHTML = `
+    <div class="skills-browser-modal">
+      <div class="skills-browser-header">
+        <div class="skills-browser-title">📚 Skills</div>
+        <button class="skills-modal-close" id="skillsModalClose" aria-label="Close">×</button>
+      </div>
+      <div class="skills-browser-toolbar">
+        <div class="skills-search-box">
+          <span class="skills-search-icon">🔍</span>
+          <input type="text" id="skillsSearchInput" placeholder="Search by name or description..." />
+        </div>
+        <div class="skills-category-tabs" id="skillsCategoryTabs"></div>
+      </div>
+      <div class="skills-modal-body" id="skillsModalBody">
+        <div class="skills-modal-loading">Loading skills...</div>
+      </div>
+    </div>`;
+  document.body.appendChild(backdrop);
 
-async function loadSkillsPanel() {
-  const list = $("skillsList");
-  list.innerHTML = '<div class="skills-loading">Loading skills...</div>';
+  (backdrop.querySelector("#skillsModalClose") as HTMLElement).onclick = closeSkillViewer;
+  backdrop.onclick = (e) => { if (e.target === backdrop) closeSkillViewer(); };
+  (backdrop.querySelector("#skillsSearchInput") as HTMLInputElement).oninput = (e) => {
+    skillsBrowserState.query = (e.target as HTMLInputElement).value;
+    renderSkillsBrowserBody();
+  };
+
   try {
     if (!skillsCache) skillsCache = await api.listSkills();
-    renderSkillsPanel(skillsCache);
+    renderSkillsBrowser();
   } catch (e) {
-    list.innerHTML = `<div class="skills-empty">Failed to load skills: ${esc((e as Error).message)}</div>`;
+    const body = backdrop.querySelector("#skillsModalBody") as HTMLElement;
+    body.innerHTML = `<div class="skills-modal-error">Failed to load: ${esc((e as Error).message)}</div>`;
   }
 }
 
-function renderSkillsPanel(skills: api.Skill[]) {
-  const list = $("skillsList");
-  if (skills.length === 0) {
-    list.innerHTML = '<div class="skills-empty">No skills loaded. Add SKILL.md files to ~/.ziva/skills or ~/.agents/skills.</div>';
+function renderSkillsBrowser() {
+  renderSkillsCategoryTabs();
+  renderSkillsBrowserBody();
+}
+
+function renderSkillsCategoryTabs() {
+  const tabs = document.getElementById("skillsCategoryTabs");
+  if (!tabs || !skillsCache) return;
+  const counts = new Map<string, number>();
+  for (const s of skillsCache) {
+    const c = s.category || "其他";
+    counts.set(c, (counts.get(c) || 0) + 1);
+  }
+  // Stable sort by name, then by count desc
+  const sorted = Array.from(counts.entries()).sort((a, b) => {
+    if (b[1] !== a[1]) return b[1] - a[1];
+    return a[0].localeCompare(b[0]);
+  });
+  const total = skillsCache.length;
+  const active = skillsBrowserState.category;
+  tabs.innerHTML = `
+    <button class="skills-category-tab ${active === null ? "active" : ""}" data-cat="">
+      全部 <span class="skills-cat-count">${total}</span>
+    </button>` +
+    sorted.map(([cat, n]) => `
+      <button class="skills-category-tab ${active === cat ? "active" : ""}" data-cat="${esc(cat)}">
+        ${esc(cat)} <span class="skills-cat-count">${n}</span>
+      </button>`).join("");
+  tabs.querySelectorAll<HTMLElement>(".skills-category-tab").forEach((btn) => {
+    btn.onclick = () => {
+      const cat = btn.dataset.cat || null;
+      skillsBrowserState.category = cat;
+      renderSkillsBrowser();
+    };
+  });
+}
+
+function renderSkillsBrowserBody() {
+  const body = document.getElementById("skillsModalBody");
+  if (!body || !skillsCache) return;
+  const q = skillsBrowserState.query.trim().toLowerCase();
+  const cat = skillsBrowserState.category;
+  const filtered = skillsCache.filter((s) => {
+    if (cat && (s.category || "其他") !== cat) return false;
+    if (!q) return true;
+    return s.name.toLowerCase().includes(q) || (s.description || "").toLowerCase().includes(q);
+  });
+
+  if (filtered.length === 0) {
+    body.innerHTML = '<div class="skills-empty">No skills match your search.</div>';
     return;
   }
-  list.innerHTML = skills
-    .map(
-      (s) => `
-        <div class="skill-item" data-skill-path="${esc(s.path)}" data-skill-name="${esc(s.name)}">
-          <div class="skill-item-name">${esc(s.name)}</div>
-          ${s.description ? `<div class="skill-item-desc">${esc(s.description)}</div>` : ""}
-        </div>`,
-    )
-    .join("");
-  list.querySelectorAll<HTMLElement>(".skill-item").forEach((el) => {
+
+  // Group by category for the visual layout
+  const groups = new Map<string, api.Skill[]>();
+  for (const s of filtered) {
+    const c = s.category || "其他";
+    if (!groups.has(c)) groups.set(c, []);
+    groups.get(c)!.push(s);
+  }
+  // Use the same category order shown in the tabs
+  const orderedCats = cat ? [cat] : Array.from(groups.keys()).sort((a, b) => a.localeCompare(b));
+
+  let html = "";
+  for (const c of orderedCats) {
+    const items = groups.get(c) || [];
+    html += `<div class="skills-group">`;
+    html += `<div class="skills-group-header">${esc(c)} <span class="skills-group-count">${items.length}</span></div>`;
+    html += `<div class="skills-grid">`;
+    for (const s of items) {
+      html += `
+        <div class="skill-card" data-skill-path="${esc(s.path)}" data-skill-name="${esc(s.name)}">
+          <div class="skill-card-name">${esc(s.name)}</div>
+          <div class="skill-card-desc">${esc(s.description || "(no description)")}</div>
+          <div class="skill-card-footer">
+            <span class="skill-card-cat">${esc(s.category || "其他")}</span>
+          </div>
+        </div>`;
+    }
+    html += `</div></div>`;
+  }
+  body.innerHTML = html;
+  body.querySelectorAll<HTMLElement>(".skill-card").forEach((el) => {
     el.onclick = () => {
       const path = el.dataset.skillPath!;
       const name = el.dataset.skillName!;
-      openSkillViewer(name, path);
+      openSkillViewer(name, path, /*fromBrowser*/ true);
     };
   });
 }
@@ -412,7 +496,7 @@ function renderSkillsPanel(skills: api.Skill[]) {
 //   - "list" mode: shows the list of skills (used as a navigation fallback)
 //   - "file" mode: shows a single skill file with rendered markdown, and
 //     intercepts relative links so the user can navigate the skill's tree.
-function openSkillViewer(skillName: string, skillPath: string) {
+function openSkillViewer(skillName: string, skillPath: string, fromBrowser: boolean = false) {
   closeSkillViewer();
   const backdrop = document.createElement("div");
   backdrop.className = "skills-modal-backdrop";
@@ -421,7 +505,7 @@ function openSkillViewer(skillName: string, skillPath: string) {
   modal.className = "skills-modal";
   modal.innerHTML = `
     <div class="skills-modal-header">
-      <button class="skills-modal-back" id="skillsModalBack" style="display:none">← Back</button>
+      <button class="skills-modal-back" id="skillsModalBack" style="display:${fromBrowser ? "flex" : "none"}">← Back to Skills</button>
       <div class="skills-modal-title" id="skillsModalTitle">${esc(skillName)}</div>
       <button class="skills-modal-close" id="skillsModalClose" aria-label="Close">×</button>
     </div>
@@ -435,62 +519,10 @@ function openSkillViewer(skillName: string, skillPath: string) {
   (modal.querySelector("#skillsModalClose") as HTMLElement).onclick = closeSkillViewer;
   backdrop.onclick = (e) => { if (e.target === backdrop) closeSkillViewer(); };
   (modal.querySelector("#skillsModalBack") as HTMLElement).onclick = () => {
-    openSkillListViewer();
+    openSkillsBrowser();
   };
 
   loadSkillFileIntoModal(skillName, skillPath, /*pushHistory*/ true);
-}
-
-function openSkillListViewer() {
-  closeSkillViewer();
-  if (!skillsCache) {
-    api.listSkills().then((s) => {
-      skillsCache = s;
-      renderSkillListModal(s);
-    }).catch(() => renderSkillListModal([]));
-  } else {
-    renderSkillListModal(skillsCache);
-  }
-}
-
-function renderSkillListModal(skills: api.Skill[]) {
-  const backdrop = document.createElement("div");
-  backdrop.className = "skills-modal-backdrop";
-  backdrop.id = "skillsModalBackdrop";
-  const modal = document.createElement("div");
-  modal.className = "skills-modal";
-  let body = "";
-  if (skills.length === 0) {
-    body = '<div class="skills-modal-empty">No skills loaded.</div>';
-  } else {
-    body = '<div class="skills-modal-list">' + skills
-      .map(
-        (s) => `
-          <div class="skills-modal-list-item" data-skill-path="${esc(s.path)}" data-skill-name="${esc(s.name)}">
-            <div class="skills-modal-list-name">${esc(s.name)}</div>
-            ${s.description ? `<div class="skills-modal-list-desc">${esc(s.description)}</div>` : ""}
-          </div>`,
-      )
-      .join("") + "</div>";
-  }
-  modal.innerHTML = `
-    <div class="skills-modal-header">
-      <div class="skills-modal-title">Skills</div>
-      <button class="skills-modal-close" id="skillsModalClose" aria-label="Close">×</button>
-    </div>
-    <div class="skills-modal-body">${body}</div>`;
-  backdrop.appendChild(modal);
-  document.body.appendChild(backdrop);
-
-  (modal.querySelector("#skillsModalClose") as HTMLElement).onclick = closeSkillViewer;
-  backdrop.onclick = (e) => { if (e.target === backdrop) closeSkillViewer(); };
-  modal.querySelectorAll<HTMLElement>(".skills-modal-list-item").forEach((el) => {
-    el.onclick = () => {
-      const path = el.dataset.skillPath!;
-      const name = el.dataset.skillName!;
-      openSkillViewer(name, path);
-    };
-  });
 }
 
 function closeSkillViewer() {
