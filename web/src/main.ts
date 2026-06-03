@@ -22,6 +22,7 @@ const store = new Store({
   sessions: [],
   activeSid: null,
   isRunning: false,
+  questionPending: false,
   config: { model: "unknown", models: [], approval: "suggest", workspace: "", tools: [] },
   connected: false,
   tokenUsage: null,
@@ -376,17 +377,13 @@ let skillsCache: api.Skill[] | null = null;
 let skillsBrowserState: { query: string; category: string | null } = { query: "", category: null };
 
 async function openSkillsBrowser() {
-  closeSkillViewer();
+  closeAllFullpageOverlays();
   const backdrop = document.createElement("div");
   backdrop.className = "fullpage-overlay";
   backdrop.id = "skillsModalBackdrop";
   backdrop.innerHTML = `
     <div class="fullpage-shell">
       <div class="fullpage-topbar">
-        <button class="fullpage-back" id="skillsModalClose" aria-label="Back to chat">
-          <span class="back-arrow">←</span>
-          <span>Back to chat</span>
-        </button>
         <div class="fullpage-title">📚 Skills</div>
         <div class="fullpage-topbar-spacer"></div>
       </div>
@@ -403,7 +400,6 @@ async function openSkillsBrowser() {
     </div>`;
   document.body.appendChild(backdrop);
 
-  (backdrop.querySelector("#skillsModalClose") as HTMLElement).onclick = closeSkillViewer;
   (backdrop.querySelector("#skillsSearchInput") as HTMLInputElement).oninput = (e) => {
     skillsBrowserState.query = (e.target as HTMLInputElement).value;
     renderSkillsBrowserBody();
@@ -525,10 +521,6 @@ function openSkillViewer(skillName: string, skillPath: string, fromBrowser: bool
           <span class="back-arrow">←</span>
           <span>Back to Skills</span>
         </button>
-        <button class="fullpage-back" id="skillsModalClose" style="display:${fromBrowser ? "none" : "flex"}">
-          <span class="back-arrow">←</span>
-          <span>Back to chat</span>
-        </button>
         <div class="fullpage-title" id="skillsModalTitle">${esc(skillName)}</div>
         <div class="fullpage-topbar-spacer"></div>
       </div>
@@ -539,7 +531,6 @@ function openSkillViewer(skillName: string, skillPath: string, fromBrowser: bool
     </div>`;
   document.body.appendChild(backdrop);
 
-  (backdrop.querySelector("#skillsModalClose") as HTMLElement).onclick = closeSkillViewer;
   (backdrop.querySelector("#skillsModalBack") as HTMLElement).onclick = () => {
     openSkillsBrowser();
   };
@@ -549,6 +540,14 @@ function openSkillViewer(skillName: string, skillPath: string, fromBrowser: bool
 
 function closeSkillViewer() {
   document.getElementById("skillsModalBackdrop")?.remove();
+}
+
+// Close every fullpage overlay currently on screen. Called when the
+// user picks a destination from the sidebar (a session, a nav item
+// other than the current one) so the chat surface is restored.
+function closeAllFullpageOverlays() {
+  closeSkillViewer();
+  closeAutomationsModal();
 }
 
 // Fetch a skill file and render its markdown body into the modal.
@@ -853,7 +852,8 @@ async function createSession() {
 }
 
 async function switchSession(sid: string) {
-  store.set({ activeSid: sid, isRunning: false });
+  closeAllFullpageOverlays();
+  store.set({ activeSid: sid, isRunning: false, questionPending: false });
   renderSessions();
   $("messages").innerHTML = "";
   currentAssistantEl = null;
@@ -1236,29 +1236,41 @@ function appendQuestionCard(question: string, options: string[]) {
       <button class="question-submit" aria-label="Send">↑</button>
     </div>`;
   }
+  // Footer link — lets the user back out of the question entirely
+  // and re-discuss with the agent (Claude Code calls this
+  // "Chat about this"). Submits a special answer so the model can
+  // see the user changed their mind.
+  html += `<div class="question-footer">
+    <button class="question-chat-about" type="button">还是聊聊吧</button>
+  </div>`;
   card.innerHTML = html;
 
   let submitted = false;
+  const lockCard = (answer: string) => {
+    submitted = true;
+    card.querySelector(".question-input-row")?.remove();
+    card.querySelector(".question-options")?.remove();
+    card.querySelector(".question-footer")?.remove();
+    card.classList.add("question-card-answered");
+    const replyDiv = document.createElement("div");
+    replyDiv.className = "question-reply";
+    replyDiv.textContent = `You: ${answer}`;
+    card.appendChild(replyDiv);
+  };
+
   const submit = (answer: string) => {
     if (submitted) return;
     const trimmed = answer.trim();
     if (!trimmed) return;
     const activeSid = store.get().activeSid;
     if (!activeSid) return;
-    submitted = true;
     // Resolve the pending ask_user future on the backend instead of
     // starting a brand-new turn — the original model round is still
     // waiting for our answer.
     api.replyQuestion(activeSid, trimmed).catch((e) => {
       console.error("replyQuestion failed:", e);
     });
-    card.querySelector(".question-input-row")?.remove();
-    card.querySelector(".question-options")?.remove();
-    card.classList.add("question-card-answered");
-    const replyDiv = document.createElement("div");
-    replyDiv.className = "question-reply";
-    replyDiv.textContent = `You: ${trimmed}`;
-    card.appendChild(replyDiv);
+    lockCard(trimmed);
   };
 
   if (options.length > 0) {
@@ -1272,10 +1284,53 @@ function appendQuestionCard(question: string, options: string[]) {
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(input.value); });
   input.focus();
 
+  const chatAboutBtn = card.querySelector(".question-chat-about") as HTMLElement;
+  chatAboutBtn.onclick = () => {
+    if (submitted) return;
+    const activeSid = store.get().activeSid;
+    if (!activeSid) return;
+    // A specific answer signals to the model that the user opted
+    // out of the structured question and wants to discuss the
+    // topic instead. The model should re-evaluate without forcing
+    // an answer.
+    api.replyQuestion(activeSid, "（用户放弃当前选项，希望直接讨论这个话题）").catch((e) => {
+      console.error("replyQuestion failed:", e);
+    });
+    lockCard("还是聊聊吧");
+    // Focus the chat composer so the user can immediately type
+    // their new direction.
+    setTimeout(() => {
+      const prompt = document.getElementById("prompt") as HTMLTextAreaElement | null;
+      prompt?.focus();
+    }, 50);
+  };
+
   $("messages").appendChild(card);
   // Mark the turn as still running: the model round is suspended
-  // waiting on the user, not idle.
-  store.set({ isRunning: true });
+  // waiting on the user, not idle. questionPending lets the Stop
+  // button know to resolve the question as "user abandoned" rather
+  // than cancelling the entire turn.
+  store.set({ isRunning: true, questionPending: true });
+  const clearPending = () => store.set({ questionPending: false });
+  // Watch the card for the .question-card-answered / .question-card-cancelled
+  // classes — once applied, drop the questionPending flag.
+  const observer = new MutationObserver(() => {
+    if (card.classList.contains("question-card-answered") ||
+        card.classList.contains("question-card-cancelled")) {
+      clearPending();
+      observer.disconnect();
+    }
+  });
+  observer.observe(card, { attributes: true, attributeFilter: ["class"] });
+  // Safety net — if the card is removed from the DOM without ever
+  // getting answered (e.g. session switched), clear the flag too.
+  const removalObserver = new MutationObserver(() => {
+    if (!card.isConnected) {
+      clearPending();
+      removalObserver.disconnect();
+    }
+  });
+  removalObserver.observe($("messages"), { childList: true });
   updateSendStopButton();
   scrollBottom();
 }
@@ -1505,8 +1560,39 @@ function updateContextProgress(pct: number, tokens: number) {
 
 // ---- Cancel ----
 async function cancelTurn() {
-  const { activeSid } = store.get();
+  const { activeSid, questionPending } = store.get();
   if (!activeSid) return;
+  if (questionPending) {
+    // A question is mid-flight. Instead of cancelling the whole turn
+    // (which surfaces a `cancelled` envelope to the model and the
+    // chat history), resolve the question future with a "user
+    // abandoned" answer — the same path as the "还是聊聊吧" button.
+    // The model continues normally; the user can send a new message.
+    try {
+      await api.replyQuestion(activeSid, "（用户放弃当前选项，希望直接讨论这个话题）");
+    } catch { /* 404 = no pending question; fall through to cancel */ }
+    // Lock the visible question card so the user sees the action
+    // landed. There can be at most one unanswered card on screen.
+    const pendingCard = document.querySelector(".question-card:not(.question-card-answered):not(.question-card-cancelled)") as HTMLElement | null;
+    if (pendingCard) {
+      pendingCard.querySelector(".question-input-row")?.remove();
+      pendingCard.querySelector(".question-options")?.remove();
+      pendingCard.querySelector(".question-footer")?.remove();
+      pendingCard.classList.add("question-card-answered");
+      const replyDiv = document.createElement("div");
+      replyDiv.className = "question-reply";
+      replyDiv.textContent = "You: 还是聊聊吧";
+      pendingCard.appendChild(replyDiv);
+    }
+    store.set({ questionPending: false });
+    // Turn is still running — the model will keep streaming its
+    // follow-up. Don't touch isRunning.
+    setTimeout(() => {
+      const prompt = document.getElementById("prompt") as HTMLTextAreaElement | null;
+      prompt?.focus();
+    }, 50);
+    return;
+  }
   try { await api.cancelTurn(activeSid); } catch { /* ignore */ }
   store.set({ isRunning: false });
   removeTyping();
@@ -1598,17 +1684,13 @@ async function refreshPlan() {
 // an interval (in seconds) — the server schedules a background task
 // that re-sends the prompt to the runtime every `interval` seconds.
 async function openAutomationsModal() {
-  closeAutomationsModal();
+  closeAllFullpageOverlays();
   const backdrop = document.createElement("div");
   backdrop.className = "fullpage-overlay";
   backdrop.id = "automationsModalBackdrop";
   backdrop.innerHTML = `
     <div class="fullpage-shell">
       <div class="fullpage-topbar">
-        <button class="fullpage-back" id="automationsModalClose" aria-label="Back to chat">
-          <span class="back-arrow">←</span>
-          <span>Back to chat</span>
-        </button>
         <div class="fullpage-title">⏰ Scheduled Tasks</div>
         <div class="fullpage-topbar-spacer"></div>
       </div>
@@ -1617,8 +1699,6 @@ async function openAutomationsModal() {
       </div>
     </div>`;
   document.body.appendChild(backdrop);
-
-  (backdrop.querySelector("#automationsModalClose") as HTMLElement).onclick = closeAutomationsModal;
 
   await loadAutomationsIntoModal();
 }

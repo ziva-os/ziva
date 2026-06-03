@@ -949,6 +949,26 @@
 }
 .question-submit:hover { opacity: 0.88; }
 .question-submit:disabled { opacity: 0.4; cursor: not-allowed; }
+.question-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+.question-chat-about {
+  background: transparent;
+  border: none;
+  padding: 4px 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dashed;
+  text-underline-offset: 3px;
+  transition: color 0.12s;
+}
+.question-chat-about:hover { color: var(--accent); }
+.question-chat-about:disabled { opacity: 0.4; cursor: not-allowed; }
 .question-reply {
   margin-top: 10px;
   padding: 8px 12px;
