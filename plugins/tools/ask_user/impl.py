@@ -26,6 +26,11 @@ class AskUserTool:
                         "items": {"type": "string"},
                         "description": "Optional predefined options for the user to choose from",
                     },
+                    "multi_select": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "When true, the user can select multiple options (checkboxes). When false (default), single-select (radio buttons).",
+                    },
                 },
                 "required": ["question"],
             },
@@ -37,6 +42,7 @@ class AskUserTool:
             return {"error": "missing_question", "message": "question is required"}
 
         options = input_data.get("options", [])
+        multi_select = bool(input_data.get("multi_select", False))
         runtime = ctx.metadata.get("_runtime") if ctx else None
         if runtime is None:
             return {
@@ -54,6 +60,7 @@ class AskUserTool:
                 "type": "ask_user_question",
                 "question": question,
                 "options": options,
+                "multi_select": multi_select,
             },
         )
 

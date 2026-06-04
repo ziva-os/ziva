@@ -27,6 +27,7 @@ const store = new Store<AppState>({
   runningSessions: {},
   pendingMessages: {},
   questionPending: false,
+  answeredQuestions: {},
   config: { model: "unknown", models: [], approval: "suggest", workspace: "", tools: [] },
   connected: false,
   tokenUsage: null,
@@ -926,6 +927,24 @@ async function switchSession(sid: string) {
   renderPendingBar();
   await loadHistory(sid);
 
+  // Restore answered question cards that were persisted before the
+  // user switched away. loadHistory rebuilds the chat DOM from server
+  // messages, so the answered cards are gone — re-insert them.
+  const answeredList = store.get().answeredQuestions[sid];
+  if (answeredList && answeredList.length > 0) {
+    const userMsgs = $("messages").querySelectorAll(".msg-user");
+    // Insert in reverse order so indices don't shift.
+    for (let i = answeredList.length - 1; i >= 0; i--) {
+      const aq = answeredList[i];
+      const afterEl = userMsgs[aq.afterUserMsgIdx];
+      if (!afterEl) continue;
+      const card = document.createElement("div");
+      card.className = "question-card question-card-answered";
+      card.innerHTML = `<div class="question-text">${esc(aq.question)}</div><div class="question-reply">You: ${esc(aq.answer)}</div>`;
+      afterEl.after(card);
+    }
+  }
+
   try {
     const turns = await api.getTurns(sid);
     const activeTurn = turns.find(t => t.status === "running");
@@ -1278,20 +1297,29 @@ function appendApprovalCard(requestId: string, toolName: string, args: Record<st
   currentAssistantEl = null;
 }
 
-function appendQuestionCard(question: string, options: string[]) {
+function appendQuestionCard(question: string, options: string[], multiSelect: boolean = false) {
   showEmptyState(false);
   const card = document.createElement("div");
   card.className = "question-card";
   let html = `<div class="question-text">${esc(question)}</div>`;
   if (options.length > 0) {
-    html += `<div class="question-options">${options.map((o, i) =>
-      `<button class="question-option-btn" data-opt="${i}">${esc(o)}</button>`
-    ).join("")}</div>`;
-    // "Other" freeform input — surfaces when none of the options fits.
-    html += `<div class="question-input-row question-other-row">
-      <input type="text" class="question-input" placeholder="Or type your own answer..." />
-      <button class="question-submit" aria-label="Send">↑</button>
-    </div>`;
+    if (multiSelect) {
+      html += `<div class="question-options">${options.map((o, i) =>
+        `<label class="question-checkbox-label"><input type="checkbox" class="question-checkbox" data-opt="${i}" value="${esc(o)}" /><span>${esc(o)}</span></label>`
+      ).join("")}</div>`;
+      html += `<div class="question-input-row question-other-row">
+        <input type="text" class="question-input" placeholder="Or type your own answer..." />
+        <button class="question-submit" aria-label="Submit">↑</button>
+      </div>`;
+    } else {
+      html += `<div class="question-options">${options.map((o, i) =>
+        `<button class="question-option-btn" data-opt="${i}">${esc(o)}</button>`
+      ).join("")}</div>`;
+      html += `<div class="question-input-row question-other-row">
+        <input type="text" class="question-input" placeholder="Or type your own answer..." />
+        <button class="question-submit" aria-label="Send">↑</button>
+      </div>`;
+    }
   } else {
     html += `<div class="question-input-row">
       <input type="text" class="question-input" placeholder="Type your answer..." />
@@ -1316,7 +1344,17 @@ function appendQuestionCard(question: string, options: string[]) {
   let submitted = false;
   const lockCard = (answer: string) => {
     submitted = true;
-    card.querySelector(".question-input-row")?.remove();
+    // Persist answered question so it survives session switches.
+    const sid = store.get().activeSid;
+    if (sid) {
+      const userMsgs = $("messages").querySelectorAll(".msg-user");
+      const afterIdx = userMsgs.length - 1;
+      const { answeredQuestions } = store.get();
+      const list = answeredQuestions[sid] ? [...answeredQuestions[sid]] : [];
+      list.push({ question, options: [...options], multiSelect, answer, afterUserMsgIdx: afterIdx });
+      store.set({ answeredQuestions: { ...answeredQuestions, [sid]: list } });
+    }
+    card.querySelectorAll(".question-input-row").forEach(el => el.remove());
     card.querySelector(".question-options")?.remove();
     card.querySelector(".question-footer")?.remove();
     card.classList.add("question-card-answered");
@@ -1341,16 +1379,35 @@ function appendQuestionCard(question: string, options: string[]) {
     lockCard(trimmed);
   };
 
-  if (options.length > 0) {
+  if (multiSelect && options.length > 0) {
+    const sendBtn = card.querySelector(".question-submit") as HTMLElement;
+    const input = card.querySelector(".question-input") as HTMLInputElement;
+    const doSubmit = () => {
+      if (submitted) return;
+      const text = (input?.value || "").trim();
+      if (text) { submit(text); return; }
+      const checked = card.querySelectorAll<HTMLInputElement>(".question-checkbox:checked");
+      const selected = Array.from(checked).map(cb => cb.value);
+      submit(JSON.stringify(selected));
+    };
+    sendBtn.onclick = doSubmit;
+    input?.addEventListener("keydown", (e) => { if (e.key === "Enter") doSubmit(); });
+  } else if (options.length > 0) {
     card.querySelectorAll<HTMLElement>(".question-option-btn").forEach((btn) => {
       btn.addEventListener("click", () => submit(btn.textContent || ""));
     });
   }
-  const input = card.querySelector(".question-input") as HTMLInputElement;
-  const sendBtn = card.querySelector(".question-submit") as HTMLElement;
-  sendBtn.onclick = () => submit(input.value);
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(input.value); });
-  input.focus();
+  if (!(multiSelect && options.length > 0)) {
+    const input = card.querySelector(".question-input") as HTMLInputElement;
+    const sendBtn = card.querySelector(".question-submit") as HTMLElement;
+    if (sendBtn && input) {
+      sendBtn.onclick = () => submit(input.value);
+      input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(input.value); });
+    }
+    input?.focus();
+  } else {
+    card.querySelector(".question-input")?.focus();
+  }
 
   const chatAboutBtn = card.querySelector(".question-chat-about") as HTMLElement;
   chatAboutBtn.onclick = () => {
@@ -1606,7 +1663,8 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     removeTyping();
     const q = String((ev.question as string) || "");
     const opts = ((ev.options as string[]) || []) as string[];
-    appendQuestionCard(q, opts);
+    const ms = !!ev.multi_select;
+    appendQuestionCard(q, opts, ms);
     if (updateScroll) scrollBottom();
   } else if (t === "tool_start") {
     removeTyping();
