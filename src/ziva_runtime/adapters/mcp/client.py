@@ -40,7 +40,12 @@ class MCPToolWrapper:
                 return result.model_dump()
             return {"result": str(result)}
         except Exception as e:
-            return {"error": "mcp_call_failed", "message": str(e)}
+            # anyio cancel-scope errors from MCP stdio cleanup are
+            # benign — suppress them so the turn doesn't crash.
+            msg = str(e)
+            if "cancel scope" in msg:
+                return {"error": "mcp_connection_lost", "message": "MCP server connection closed"}
+            return {"error": "mcp_call_failed", "message": msg}
 
 
 class MCPClient:
@@ -96,9 +101,16 @@ class MCPClient:
             )
             self._tools.append(wrapper)
 
-    @property
-    def connected_servers(self) -> List[str]:
-        return list(self._servers.keys())
+    async def cleanup(self) -> None:
+        """Gracefully close all MCP server connections in the current task."""
+        for name, server in list(self._servers.items()):
+            try:
+                if hasattr(server, "cleanup"):
+                    await server.cleanup()
+            except Exception:
+                pass
+        self._servers.clear()
+        self._connected = False
 
 
 def parse_mcp_config(config: Dict[str, Any]) -> List[MCPServerConfig]:

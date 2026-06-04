@@ -338,6 +338,26 @@ async def run_async(argv: list[str] | None = None) -> int:
         import signal
         stop_event = asyncio.Event()
         loop = asyncio.get_running_loop()
+        # Suppress benign anyio cancel-scope errors from MCP stdio
+        # cleanup — these fire in background tasks when an MCP server
+        # process exits and the async generator is GC'd in a different
+        # task. The MCP SDK's own cleanup() handles it; this catches
+        # the stragglers that escape to the event loop.
+        _default_handler = loop.get_exception_handler()
+
+        def _suppress_anyio_cancel_scope(loop, context):
+            msg = context.get("message", "")
+            exc = context.get("exception")
+            if exc and "cancel scope" in str(exc):
+                return
+            if "cancel scope" in msg:
+                return
+            if _default_handler:
+                _default_handler(loop, context)
+            else:
+                loop.default_exception_handler(context)
+
+        loop.set_exception_handler(_suppress_anyio_cancel_scope)
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, stop_event.set)
         await server.start(host=args.host, port=args.port)

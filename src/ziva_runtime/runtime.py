@@ -941,11 +941,8 @@ class Runtime:
     async def shutdown(self) -> None:
         """Gracefully shutdown runtime, disconnecting MCP servers."""
         if self._mcp_client:
-            for name, server in self._mcp_client._servers.items():
-                try:
-                    if hasattr(server, "cleanup"):
-                        await server.cleanup()
-                except Exception:
-                    pass
-            self._mcp_client._servers.clear()
+            try:
+                await self._mcp_client.cleanup()
+            except Exception:
+                pass
             self._mcp_connected = False
