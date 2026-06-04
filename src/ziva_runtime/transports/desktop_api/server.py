@@ -124,6 +124,8 @@ class DesktopAPIServer:
         self.app.router.add_patch("/config", self.update_config)
         self.app.router.add_get("/config/yaml", self.get_config_yaml)
         self.app.router.add_put("/config/yaml", self.save_config_yaml)
+        self.app.router.add_get("/config/json", self.get_config_json)
+        self.app.router.add_put("/config/json", self.save_config_json)
         self.app.router.add_get("/skills", self.list_skills)
         self.app.router.add_get("/skills/file", self.read_skill_file)
         # Serve static assets from build output
@@ -732,6 +734,21 @@ class DesktopAPIServer:
         except yaml.YAMLError as e:
             return web.json_response({"error": f"Invalid YAML: {e}"}, status=400)
         config_path.write_text(yaml_text, encoding="utf-8")
+        return web.json_response({"ok": True})
+
+    async def get_config_json(self, _request: web.Request) -> web.Response:
+        """Return the parsed config as JSON."""
+        return web.json_response(self.runtime.config)
+
+    async def save_config_json(self, request: web.Request) -> web.Response:
+        """Save a JSON config object, writing it as YAML."""
+        payload = await request.json()
+        import yaml
+        config_path = self.runtime.workspace_root / ".ziva" / "config.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(yaml.dump(payload, default_flow_style=False, allow_unicode=True, sort_keys=False), encoding="utf-8")
+        # Hot-reload the in-memory config
+        self.runtime.config.update(payload)
         return web.json_response({"ok": True})
 
     async def get_status(self, _request: web.Request) -> web.Response:

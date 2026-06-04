@@ -621,6 +621,7 @@ function closeSkillViewer() {
 function closeAllFullpageOverlays() {
   closeSkillViewer();
   closeAutomationsModal();
+  closeSettingsModal();
 }
 
 // Fetch a skill file and render its markdown body into the modal.
@@ -2013,6 +2014,10 @@ function closeAutomationsModal() {
   document.getElementById("automationsModalBackdrop")?.remove();
 }
 
+function closeSettingsModal() {
+  document.getElementById("settingsModalBackdrop")?.remove();
+}
+
 async function loadAutomationsIntoModal() {
   const body = document.getElementById("automationsModalBody");
   if (!body) return;
@@ -2331,22 +2336,68 @@ async function openSettingsModal() {
   const body = backdrop.querySelector(".fullpage-body") as HTMLElement;
 
   try {
-    const yaml = await api.getConfigYaml();
+    const cfg = await api.getConfigJson();
+    const m = cfg.model || {};
+    const ap = cfg.approval || {};
+    const mem = cfg.memory || {};
+    const tool = cfg.tool || {};
+    const mcp = cfg.mcp || {};
+
     body.innerHTML = `
-      <div class="settings-editor-wrap">
-        <div class="settings-hint">Edit <code>.ziva/config.yaml</code> — changes take effect on the next turn.</div>
-        <textarea class="settings-editor" id="settingsEditor" spellcheck="false">${esc(yaml)}</textarea>
+      <div class="settings-form-wrap">
+        <div class="settings-section">
+          <div class="settings-section-title">Model</div>
+          <div class="settings-row"><label class="settings-label">Provider</label><input class="settings-input" id="s_model_provider" value="${esc(m.provider || "")}" /></div>
+          <div class="settings-row"><label class="settings-label">Name</label><input class="settings-input" id="s_model_name" value="${esc(m.name || "")}" /></div>
+          <div class="settings-row"><label class="settings-label">API Key</label><input class="settings-input" type="password" id="s_model_api_key" value="${esc(m.api_key || "")}" /></div>
+          <div class="settings-row"><label class="settings-label">Base URL</label><input class="settings-input" id="s_model_base_url" value="${esc(m.base_url || "")}" /></div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-section-title">Approval</div>
+          <div class="settings-row"><label class="settings-label">Policy</label>
+            <select class="settings-select" id="s_approval_policy">
+              <option value="suggest" ${ap.policy === "suggest" ? "selected" : ""}>suggest</option>
+              <option value="auto-edit" ${ap.policy === "auto-edit" ? "selected" : ""}>auto-edit</option>
+              <option value="full-auto" ${ap.policy === "full-auto" ? "selected" : ""}>full-auto</option>
+            </select>
+          </div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-section-title">Memory</div>
+          <div class="settings-row"><label class="settings-label">Context Window Tokens</label><input class="settings-input" type="number" id="s_memory_tokens" value="${mem.context_window_tokens || 200000}" /></div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-section-title">Tool</div>
+          <div class="settings-row"><label class="settings-label">Max Rounds (0 = unlimited)</label><input class="settings-input" type="number" id="s_tool_max_rounds" value="${tool.max_rounds || 0}" /></div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-section-title">MCP</div>
+          <div class="settings-row"><label class="settings-label">Enabled</label>
+            <select class="settings-select" id="s_mcp_enabled">
+              <option value="true" ${mcp.enabled ? "selected" : ""}>Yes</option>
+              <option value="false" ${!mcp.enabled ? "selected" : ""}>No</option>
+            </select>
+          </div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-section-title">Prompt Profile</div>
+          <div class="settings-row"><label class="settings-label">Profile</label><input class="settings-input" id="s_prompt_profile" value="${esc((cfg.prompt || {}).profile || "default")}" /></div>
+        </div>
       </div>`;
-    const editor = backdrop.querySelector("#settingsEditor") as HTMLTextAreaElement;
-    editor.style.tabSize = "2";
 
     (backdrop.querySelector("#settingsSaveBtn") as HTMLElement).onclick = async () => {
       const btn = backdrop.querySelector("#settingsSaveBtn") as HTMLElement;
-      const val = editor.value;
       btn.textContent = "Saving...";
       btn.setAttribute("disabled", "true");
       try {
-        await api.saveConfigYaml(val);
+        const updated = { ...cfg };
+        updated.model = { ...updated.model, provider: (backdrop.querySelector("#s_model_provider") as HTMLInputElement).value, name: (backdrop.querySelector("#s_model_name") as HTMLInputElement).value, api_key: (backdrop.querySelector("#s_model_api_key") as HTMLInputElement).value, base_url: (backdrop.querySelector("#s_model_base_url") as HTMLInputElement).value };
+        updated.approval = { ...updated.approval, policy: (backdrop.querySelector("#s_approval_policy") as HTMLSelectElement).value };
+        updated.memory = { ...updated.memory, context_window_tokens: parseInt((backdrop.querySelector("#s_memory_tokens") as HTMLInputElement).value) || 200000 };
+        updated.tool = { ...updated.tool, max_rounds: parseInt((backdrop.querySelector("#s_tool_max_rounds") as HTMLInputElement).value) || 0 };
+        updated.mcp = { ...updated.mcp, enabled: (backdrop.querySelector("#s_mcp_enabled") as HTMLSelectElement).value === "true" };
+        updated.prompt = { ...updated.prompt, profile: (backdrop.querySelector("#s_prompt_profile") as HTMLInputElement).value };
+        await api.saveConfigJson(updated);
         btn.textContent = "Saved";
         setTimeout(() => { btn.textContent = "Save"; btn.removeAttribute("disabled"); }, 1500);
       } catch (e) {

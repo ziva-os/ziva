@@ -139,6 +139,14 @@ export async function saveConfigYaml(yaml: string): Promise<void> {
   await api("PUT", "/config/yaml", { yaml });
 }
 
+export async function getConfigJson(): Promise<Record<string, any>> {
+  return api<Record<string, any>>("GET", "/config/json");
+}
+
+export async function saveConfigJson(config: Record<string, any>): Promise<void> {
+  await api("PUT", "/config/json", config);
+}
+
 export async function updateSession(sid: string, updates: { name?: string }): Promise<void> {
   await api("PATCH", `/sessions/${sid}`, updates);
 }
