@@ -50,6 +50,8 @@ class AskUserTool:
                 "message": "ask_user requires a runtime context to wait for user input.",
             }
 
+        call_id = (ctx.metadata or {}).get("_tool_call_id", "") if ctx else ""
+
         # Emit the question payload alongside the existing tool_start /
         # tool_end events so the UI can render the card immediately.
         # The tool coroutine itself blocks here until the HTTP reply
@@ -58,10 +60,11 @@ class AskUserTool:
             ctx.session_id,
             {
                 "type": "ask_user_question",
+                "call_id": call_id,
                 "question": question,
                 "options": options,
                 "multi_select": multi_select,
             },
         )
 
-        return await runtime.await_user_answer(session_id=ctx.session_id)
+        return await runtime.await_user_answer(session_id=ctx.session_id, call_id=call_id)

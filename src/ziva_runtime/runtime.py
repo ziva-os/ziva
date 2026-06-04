@@ -104,12 +104,12 @@ class Runtime:
     _mcp_connected: bool = False
     _session_history: Dict[str, List[ChatMessage]] = field(default_factory=dict)
     _project_id: str | None = None
-    # Per-session future for the ask_user tool: when an agent calls
-    # ask_user_question, the tool run() awaits the future set by the
-    # server's POST /sessions/{sid}/questions/reply handler. The future
-    # resolves to the user's answer (or None on cancel). One slot per
-    # session — questions are sequential.
-    _pending_questions: Dict[str, asyncio.Future] = field(default_factory=dict, init=False, repr=False)
+    # Per-session futures for the ask_user tool, keyed by call_id so
+    # that multiple ask_user calls can be pending in parallel. The tool
+    # run() awaits the future set by the server's POST
+    # /sessions/{sid}/questions/reply handler. The future resolves to
+    # the user's answer (or None on cancel).
+    _pending_questions: Dict[str, Dict[str, asyncio.Future]] = field(default_factory=dict, init=False, repr=False)
 
     @property
     def project_id(self) -> str:
@@ -474,7 +474,12 @@ class Runtime:
             async def _run_tool(tc: ToolCallItem) -> tuple[Any, bool, ToolCallItem]:
                 sig = f"{tc.name}:{json.dumps(tc.arguments, sort_keys=True)}"
                 count = tool_call_history.get(sig, 0)
-                tool_output = await self._execute_tool(ToolCall(name=tc.name, arguments=tc.arguments), ctx)
+                call_ctx = RuntimeContext(
+                    session_id=ctx.session_id,
+                    config=ctx.config,
+                    metadata={**ctx.metadata, "_tool_call_id": tc.id},
+                )
+                tool_output = await self._execute_tool(ToolCall(name=tc.name, arguments=tc.arguments), call_ctx)
                 is_not_found = isinstance(tool_output, dict) and tool_output.get("error") == "tool_not_found"
                 if count >= 3 and not is_not_found:
                     warning = f"<reminder>'{tc.name}' has been called {count} times with the same arguments. Check prior results or try a different approach.</reminder>"
@@ -597,7 +602,7 @@ class Runtime:
         payload.update(event)
         await self.event_bus.publish(session_id, payload)
 
-    async def await_user_answer(self, session_id: str) -> Dict[str, Any]:
+    async def await_user_answer(self, session_id: str, call_id: str = "") -> Dict[str, Any]:
         """Block the calling tool until the user replies via the UI.
 
         Used by the `ask_user` tool: instead of returning a fake
@@ -610,7 +615,7 @@ class Runtime:
         """
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
-        self._pending_questions[session_id] = fut
+        self._pending_questions.setdefault(session_id, {})[call_id] = fut
         try:
             return await fut
         except asyncio.CancelledError:
@@ -619,17 +624,23 @@ class Runtime:
                 "message": "User cancelled the turn before answering.",
             }
         finally:
-            if self._pending_questions.get(session_id) is fut:
-                self._pending_questions.pop(session_id, None)
+            pending = self._pending_questions.get(session_id)
+            if pending and pending.get(call_id) is fut:
+                pending.pop(call_id, None)
+                if not pending:
+                    self._pending_questions.pop(session_id, None)
 
-    def set_user_answer(self, session_id: str, answer: str | None) -> bool:
-        """Resolve the pending question future for `session_id`.
+    def set_user_answer(self, session_id: str, answer: str | None, call_id: str = "") -> bool:
+        """Resolve the pending question future for `session_id` + `call_id`.
 
         Returns True if a future was pending (and was set), False if
         there was no question waiting — the caller (the HTTP handler)
         can use that to 404 instead of claiming success.
         """
-        fut = self._pending_questions.get(session_id)
+        pending = self._pending_questions.get(session_id)
+        if not pending:
+            return False
+        fut = pending.get(call_id)
         if fut is None or fut.done():
             return False
         if answer is None:
@@ -749,7 +760,6 @@ class Runtime:
             spec = tool.spec()
             if spec.get("name") == call.name:
                 await self._run_hooks("before_tool", {"tool": call.name, "arguments": call.arguments}, ctx)
-                # Subagent tools can run indefinitely
                 if call.name in ("invoke_subagent", "spawn_agent"):
                     timeout = None
                 else:

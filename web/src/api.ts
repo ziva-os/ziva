@@ -175,8 +175,10 @@ export async function replyPermission(requestId: string, action: string, message
   await api("POST", `/api/permissions/${requestId}/reply`, { action, message });
 }
 
-export async function replyQuestion(sid: string, answer: string): Promise<{ ok: boolean }> {
-  return api("POST", `/sessions/${sid}/questions/reply`, { answer });
+export async function replyQuestion(sid: string, answer: string, callId?: string): Promise<{ ok: boolean }> {
+  const body: Record<string, string> = { answer };
+  if (callId) body.call_id = callId;
+  return api("POST", `/sessions/${sid}/questions/reply`, body);
 }
 
 export async function listAutomations(): Promise<Automation[]> {

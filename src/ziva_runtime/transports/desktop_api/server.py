@@ -605,9 +605,10 @@ class DesktopAPIServer:
         sid = request.match_info["sid"]
         payload = await request.json()
         answer = payload.get("answer")
+        call_id = payload.get("call_id", "")
         if not isinstance(answer, str) or not answer.strip():
             return web.json_response({"error": "missing_answer"}, status=400)
-        ok = self.runtime.set_user_answer(sid, answer.strip())
+        ok = self.runtime.set_user_answer(sid, answer.strip(), call_id=call_id)
         if not ok:
             return web.json_response({"error": "no_pending_question"}, status=404)
         return web.json_response({"ok": True})

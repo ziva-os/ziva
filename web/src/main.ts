@@ -956,6 +956,7 @@ async function switchSession(sid: string) {
               String(args.question || ""),
               (args.options as string[]) || [],
               !!args.multi_select,
+              tc.id,
             );
           }
         }
@@ -1326,7 +1327,7 @@ function appendApprovalCard(requestId: string, toolName: string, args: Record<st
   currentAssistantEl = null;
 }
 
-function appendQuestionCard(question: string, options: string[], multiSelect: boolean = false) {
+function appendQuestionCard(question: string, options: string[], multiSelect: boolean = false, callId?: string) {
   showEmptyState(false);
   const card = document.createElement("div");
   card.className = "question-card";
@@ -1392,7 +1393,7 @@ function appendQuestionCard(question: string, options: string[], multiSelect: bo
     // Resolve the pending ask_user future on the backend instead of
     // starting a brand-new turn — the original model round is still
     // waiting for our answer.
-    api.replyQuestion(activeSid, trimmed).catch((e) => {
+    api.replyQuestion(activeSid, trimmed, callId).catch((e) => {
       console.error("replyQuestion failed:", e);
     });
     lockCard(trimmed);
@@ -1433,11 +1434,7 @@ function appendQuestionCard(question: string, options: string[], multiSelect: bo
     if (submitted) return;
     const activeSid = store.get().activeSid;
     if (!activeSid) return;
-    // A specific answer signals to the model that the user opted
-    // out of the structured question and wants to discuss the
-    // topic instead. The model should re-evaluate without forcing
-    // an answer.
-    api.replyQuestion(activeSid, "（用户放弃当前选项，希望直接讨论这个话题）").catch((e) => {
+    api.replyQuestion(activeSid, "（用户放弃当前选项，希望直接讨论这个话题）", callId).catch((e) => {
       console.error("replyQuestion failed:", e);
     });
     lockCard("还是聊聊吧");
@@ -1690,6 +1687,7 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     const q = String((ev.question as string) || "");
     const opts = ((ev.options as string[]) || []) as string[];
     const ms = !!ev.multi_select;
+    const cid = (ev.call_id as string) || undefined;
     // Skip if renderMessages already rendered an answered card for this
     // question (happens when replaying a running turn whose earlier
     // ask_user calls have already been answered and persisted as tool
@@ -1697,7 +1695,7 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     const existing = $("messages").querySelectorAll(".question-card-answered .question-text");
     const alreadyAnswered = Array.from(existing).some(el => (el.textContent || "").trim() === q);
     if (!alreadyAnswered) {
-      appendQuestionCard(q, opts, ms);
+      appendQuestionCard(q, opts, ms, cid);
     }
     if (updateScroll) scrollBottom();
   } else if (t === "tool_start") {
