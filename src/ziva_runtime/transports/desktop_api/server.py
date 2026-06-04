@@ -122,6 +122,8 @@ class DesktopAPIServer:
         self.app.router.add_get("/mcp-status", self.get_mcp_status)
         self.app.router.add_get("/config", self.get_config)
         self.app.router.add_patch("/config", self.update_config)
+        self.app.router.add_get("/config/yaml", self.get_config_yaml)
+        self.app.router.add_put("/config/yaml", self.save_config_yaml)
         self.app.router.add_get("/skills", self.list_skills)
         self.app.router.add_get("/skills/file", self.read_skill_file)
         # Serve static assets from build output
@@ -707,6 +709,29 @@ class DesktopAPIServer:
             if "approval" not in self.runtime.config:
                 self.runtime.config["approval"] = {}
             self.runtime.config["approval"].update(payload["approval"])
+        return web.json_response({"ok": True})
+
+    async def get_config_yaml(self, _request: web.Request) -> web.Response:
+        """Return the raw YAML config file content."""
+        config_path = self.runtime.workspace_root / ".ziva" / "config.yaml"
+        if not config_path.exists():
+            return web.json_response({"yaml": ""})
+        return web.json_response({"yaml": config_path.read_text(encoding="utf-8")})
+
+    async def save_config_yaml(self, request: web.Request) -> web.Response:
+        """Save raw YAML content to the workspace config file."""
+        payload = await request.json()
+        yaml_text = payload.get("yaml", "")
+        config_path = self.runtime.workspace_root / ".ziva" / "config.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        import yaml
+        try:
+            data = yaml.safe_load(yaml_text)
+            if data is not None and not isinstance(data, dict):
+                return web.json_response({"error": "Config must be a YAML mapping"}, status=400)
+        except yaml.YAMLError as e:
+            return web.json_response({"error": f"Invalid YAML: {e}"}, status=400)
+        config_path.write_text(yaml_text, encoding="utf-8")
         return web.json_response({"ok": True})
 
     async def get_status(self, _request: web.Request) -> web.Response:

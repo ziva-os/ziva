@@ -113,18 +113,18 @@ function init() {
         </div>
         <div class="sidebar-top">
           <button id="btnNewSession" class="sidebar-btn">
-            <span class="btn-icon">+</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
             <span>New conversation</span>
           </button>
         </div>
         <div class="sidebar-nav">
           <button class="sidebar-nav-item" id="btnSkills">
-            <span class="nav-icon">📚</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
             <span>Skills</span>
           </button>
           <button class="sidebar-nav-item" id="btnScheduled">
-            <span class="nav-icon">⏰</span>
-            <span>Scheduled Tasks</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+            <span>自动化</span>
           </button>
         </div>
         <div class="sidebar-section-header">
@@ -146,12 +146,16 @@ function init() {
             <span class="mcp-detail" id="mcpDetail"></span>
           </div>
           <button class="sidebar-nav-item" id="btnTheme">
-            <span class="nav-icon" id="themeIcon">◐</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
             <span>Theme</span>
           </button>
           <button class="sidebar-nav-item" id="btnRightPanel">
-            <span class="nav-icon">⊡</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
             <span>Changes</span>
+          </button>
+          <button class="sidebar-nav-item" id="btnSettings">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+            <span>Settings</span>
           </button>
         </div>
       </aside>
@@ -269,7 +273,7 @@ function bindEvents() {
   });
 
   $("btnSend").onclick = () => {
-    if (isActiveRunning()) { queuePromptMessage(); } else { sendMessage(); }
+    if (isActiveRunning()) { cancelTurn(); } else { sendMessage(); }
   };
   // Pending-message bar: clicking the text brings the queued content
   // back into the prompt for editing; the × button drops it.
@@ -283,13 +287,13 @@ function bindEvents() {
 
   $("btnSkills").onclick = () => openSkillsBrowser();
   $("btnScheduled").onclick = () => openAutomationsModal();
+  $("btnSettings").onclick = () => openSettingsModal();
 
   $("btnTheme").onclick = () => {
     const current = store.get().theme;
     const next = current === "dark" ? "light" : "dark";
     store.set({ theme: next });
     document.documentElement.setAttribute("data-theme", next);
-    $("themeIcon").textContent = next === "dark" ? "◐" : "◑";
     localStorage.setItem("ziva-theme", next);
   };
 
@@ -410,7 +414,6 @@ function bindEvents() {
   if (savedTheme) {
     store.set({ theme: savedTheme });
     document.documentElement.setAttribute("data-theme", savedTheme);
-    $("themeIcon").textContent = savedTheme === "dark" ? "◐" : "◑";
   }
 }
 
@@ -1994,7 +1997,7 @@ async function openAutomationsModal() {
   backdrop.innerHTML = `
     <div class="fullpage-shell">
       <div class="fullpage-topbar">
-        <div class="fullpage-title">⏰ Scheduled Tasks</div>
+        <div class="fullpage-title">⏰ 自动化</div>
         <div class="fullpage-topbar-spacer"></div>
       </div>
       <div class="fullpage-body" id="automationsModalBody">
@@ -2303,6 +2306,57 @@ function insertSlashCommand(cmd: string) {
   // Auto-send no-argument commands like /compact and /prune
   if (cmd === "/compact" || cmd === "/prune") {
     sendMessage();
+  }
+}
+
+// ---- Settings modal ----
+async function openSettingsModal() {
+  closeAllFullpageOverlays();
+  const backdrop = document.createElement("div");
+  backdrop.className = "fullpage-overlay";
+  backdrop.id = "settingsModalBackdrop";
+  backdrop.innerHTML = `
+    <div class="fullpage-shell">
+      <div class="fullpage-topbar">
+        <div class="fullpage-title">Settings</div>
+        <div class="fullpage-topbar-spacer"></div>
+        <button class="settings-save-btn" id="settingsSaveBtn">Save</button>
+      </div>
+      <div class="fullpage-body settings-body">
+        <div class="settings-loading">Loading config...</div>
+      </div>
+    </div>`;
+  document.body.appendChild(backdrop);
+
+  const body = backdrop.querySelector(".fullpage-body") as HTMLElement;
+
+  try {
+    const yaml = await api.getConfigYaml();
+    body.innerHTML = `
+      <div class="settings-editor-wrap">
+        <div class="settings-hint">Edit <code>.ziva/config.yaml</code> — changes take effect on the next turn.</div>
+        <textarea class="settings-editor" id="settingsEditor" spellcheck="false">${esc(yaml)}</textarea>
+      </div>`;
+    const editor = backdrop.querySelector("#settingsEditor") as HTMLTextAreaElement;
+    editor.style.tabSize = "2";
+
+    (backdrop.querySelector("#settingsSaveBtn") as HTMLElement).onclick = async () => {
+      const btn = backdrop.querySelector("#settingsSaveBtn") as HTMLElement;
+      const val = editor.value;
+      btn.textContent = "Saving...";
+      btn.setAttribute("disabled", "true");
+      try {
+        await api.saveConfigYaml(val);
+        btn.textContent = "Saved";
+        setTimeout(() => { btn.textContent = "Save"; btn.removeAttribute("disabled"); }, 1500);
+      } catch (e) {
+        btn.textContent = "Error";
+        alert((e as Error).message);
+        setTimeout(() => { btn.textContent = "Save"; btn.removeAttribute("disabled"); }, 1500);
+      }
+    };
+  } catch (e) {
+    body.innerHTML = `<div class="skills-modal-error">Failed to load config: ${esc((e as Error).message)}</div>`;
   }
 }
 

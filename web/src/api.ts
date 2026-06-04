@@ -130,6 +130,15 @@ export async function updateConfig(updates: { model?: { name: string }; approval
   await api("PATCH", "/config", updates);
 }
 
+export async function getConfigYaml(): Promise<string> {
+  const res = await api<{ yaml: string }>("GET", "/config/yaml");
+  return res.yaml;
+}
+
+export async function saveConfigYaml(yaml: string): Promise<void> {
+  await api("PUT", "/config/yaml", { yaml });
+}
+
 export async function updateSession(sid: string, updates: { name?: string }): Promise<void> {
   await api("PATCH", `/sessions/${sid}`, updates);
 }

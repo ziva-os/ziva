@@ -101,6 +101,10 @@ class MCPClient:
             )
             self._tools.append(wrapper)
 
+    @property
+    def connected_servers(self) -> List[str]:
+        return list(self._servers.keys())
+
     async def cleanup(self) -> None:
         """Gracefully close all MCP server connections in the current task."""
         for name, server in list(self._servers.items()):

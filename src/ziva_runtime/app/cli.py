@@ -361,6 +361,12 @@ async def run_async(argv: list[str] | None = None) -> int:
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, stop_event.set)
         await server.start(host=args.host, port=args.port)
+        # Pre-connect MCP servers at startup so the first turn
+        # doesn't block on MCP initialization.
+        try:
+            await runtime._connect_mcp_if_needed()
+        except Exception:
+            pass
         try:
             await stop_event.wait()
         finally:
