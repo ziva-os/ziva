@@ -75,6 +75,11 @@ const sse = new SSEPool();
 const pendingTools = new Map<string, HTMLElement>();
 let currentAssistantEl: HTMLElement | null = null;
 let currentTextParts: { thinking: string; main: string } = { thinking: "", main: "" };
+// Track assistant element boundaries around tool calls so that text
+// produced AFTER a tool call is rendered in a new element positioned
+// AFTER the completed tool card, not before it.
+let mainBeforeTool = "";
+let prevAssistantWrappers: HTMLElement[] = [];
 
 // ---- Empty State ----
 function showEmptyState(show: boolean) {
@@ -922,6 +927,8 @@ async function switchSession(sid: string) {
   $("messages").innerHTML = "";
   currentAssistantEl = null;
   currentTextParts = { thinking: "", main: "" };
+  mainBeforeTool = "";
+  prevAssistantWrappers = [];
   pendingTools.forEach(c => c.remove());
   pendingTools.clear();
   renderPendingBar();
@@ -1650,6 +1657,12 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     // Final full response; ensure _main matches exactly to avoid drift from deltas
     removeTyping();
     showEmptyState(false);
+    // Remove previous assistant elements that were trimmed at tool call
+    // boundaries — the final response replaces them with one element.
+    for (const w of prevAssistantWrappers) {
+      if (w.parentNode) w.remove();
+    }
+    prevAssistantWrappers = [];
     const el = getOrCreateAssistantEl();
     const content = (ev.content as string) || "";
     (el as any)._main = content;
@@ -1674,6 +1687,11 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     if (updateScroll) scrollBottom();
   } else if (t === "tool_start") {
     removeTyping();
+    // Snapshot _main so we can trim the current assistant element
+    // to only show text produced before this tool call.
+    if (currentAssistantEl) {
+      mainBeforeTool = (currentAssistantEl as any)._main || "";
+    }
     const key = `${ev.round}:${ev.call_id || ev.tool}`;
     const card = appendToolCard(ev.tool as string, (ev.arguments || {}) as Record<string, unknown>, "running");
     pendingTools.set(key, card);
@@ -1698,6 +1716,24 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
       }
       appendToolCard(ev.tool as string, (ev.arguments || {}) as Record<string, unknown>, status, ev.output, subagentTools);
     }
+    // Trim the current assistant element to only show text produced
+    // before this tool call, then null it out so the next delta
+    // creates a fresh element AFTER the tool card.
+    if (currentAssistantEl && mainBeforeTool !== undefined) {
+      const wrapper = currentAssistantEl.closest(".assistant") as HTMLElement | null;
+      if (wrapper) prevAssistantWrappers.push(wrapper);
+      (currentAssistantEl as any)._main = mainBeforeTool;
+      const { thinking, main } = extractThinking(mainBeforeTool);
+      let html = "";
+      if (thinking) {
+        html += `<details class="thinking-card"><summary>Thinking</summary><div class="thinking-card-content">${esc(thinking)}</div></details>`;
+      }
+      html += renderMarkdown(main);
+      currentAssistantEl.innerHTML = html;
+      addCopyButtons(currentAssistantEl.parentElement!);
+      highlightCode(currentAssistantEl.parentElement!);
+    }
+    currentAssistantEl = null;
     if (updateScroll) scrollBottom();
   } else if (t === "permission_request" || t === "approval_request") {
     removeTyping();
@@ -1727,6 +1763,8 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     });
     setActiveRunning(false);
     currentAssistantEl = null;
+    prevAssistantWrappers = [];
+    mainBeforeTool = "";
     updateSendStopButton();
     refreshPlan();
     refreshSessions();
