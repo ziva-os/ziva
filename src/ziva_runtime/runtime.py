@@ -239,7 +239,6 @@ class Runtime:
         if isinstance(_last, list):
             _last = " ".join(p.get("text", "") for p in _last if isinstance(p, dict) and p.get("type") == "text")
         skill_output = await self._maybe_apply_skill(_last, ctx)
-        rendered_messages = self._with_environment_context(rendered_messages)
         if skill_output:
             rendered_messages.append(ChatMessage(role="system", content=f"Skill output: {skill_output}"))
 
@@ -308,7 +307,6 @@ class Runtime:
         if isinstance(_last, list):
             _last = " ".join(p.get("text", "") for p in _last if isinstance(p, dict) and p.get("type") == "text")
         skill_output = await self._maybe_apply_skill(_last, ctx)
-        rendered_messages = self._with_environment_context(rendered_messages)
         if skill_output:
             rendered_messages.append(ChatMessage(role="system", content=f"Skill output: {skill_output}"))
 
@@ -333,7 +331,7 @@ class Runtime:
         raw_max = self.config.get("tool", {}).get("max_rounds", 10)
         max_rounds = None if raw_max in (0, None, "0") else int(raw_max or 10)
         context_window = int(self.config.get("memory", {}).get("context_window_tokens", 200000) or 200000)
-        working = self._with_environment_context(list(messages))
+        working = list(messages)
         api_tools = self._build_tools_param(ctx)
         tool_call_history: Dict[str, int] = {}
         is_sub = ctx.metadata.get("_subagent", False) if ctx else False
@@ -400,7 +398,9 @@ class Runtime:
             round_start = time.perf_counter()
             base_prompt = self.config.get("prompt", {}).get("system_prompt") or ""
             instructions = load_layered_instructions(self.workspace_root)
+            env_context = self._build_environment_context()
             parts = [p for p in [base_prompt, instructions] if p]
+            parts.append(env_context)
             skill_index = self.config.get("_skill_index", [])
             if skill_index:
                 skill_lines = ["# Available Skills (use `read_skill` tool to load full details)", ""]
@@ -813,19 +813,24 @@ class Runtime:
         out[-1] = ChatMessage(role=out[-1].role, content=rendered)
         return out
 
-    def _with_environment_context(self, messages: List[ChatMessage]) -> List[ChatMessage]:
-        return [ChatMessage(role="user", content=self._environment_context_text()), *messages]
-
-    def _environment_context_text(self) -> str:
+    def _build_environment_context(self) -> str:
         timezone = _detect_timezone()
         shell = os.environ.get("SHELL", "")
-        return "\n".join([
-            "Environment context:",
+        model_cfg = self.config.get("model", {})
+        model_name = model_cfg.get("name", "unknown")
+        models_list = model_cfg.get("models", [])
+        current_model = next((m for m in models_list if m.get("name") == model_name), {})
+        supports_image = current_model.get("supports_image", False)
+        lines = [
+            "## Environment",
             f"cwd: {self.workspace_root}",
             f"shell: {Path(shell).name if shell else ''}",
             f"current_date: {_current_date_for_timezone(timezone)}",
             f"timezone: {timezone}",
-        ])
+            f"model: {model_name}",
+            f"supports_image: {supports_image}",
+        ]
+        return "\n".join(lines)
 
     async def _maybe_apply_skill(self, input_text: str, ctx: RuntimeContext) -> str | None:
         for skill_rec in self.registry.list_kind("skill"):
