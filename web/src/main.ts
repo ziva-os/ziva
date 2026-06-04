@@ -1243,11 +1243,25 @@ function appendCompactBoundary(
 // compact-history expand affordance passes a different container so the
 // folded messages reuse the same DOM (and styling) as the live chat,
 // just visually scaled down via a wrapper class.
-function appendUserMsg(text: string, target: HTMLElement = $("messages")) {
+function appendUserMsg(text: string | unknown[], target: HTMLElement = $("messages")) {
   showEmptyState(false);
   const div = document.createElement("div");
   div.className = "msg user";
-  div.innerHTML = `<div class="msg-inner"><div class="role-label"><span class="dot"></span> You</div><div class="md">${renderMarkdown(text)}</div></div>`;
+  let body = "";
+  if (Array.isArray(text)) {
+    for (const part of text) {
+      if (typeof part === "object" && part !== null) {
+        const p = part as Record<string, any>;
+        if (p.type === "text" && p.text) body += renderMarkdown(p.text);
+        else if (p.type === "image_url" && p.image_url?.url) {
+          body += `<div class="user-image"><img src="${esc(p.image_url.url)}" alt="attached image" loading="lazy" /></div>`;
+        }
+      }
+    }
+  } else {
+    body = renderMarkdown(text);
+  }
+  div.innerHTML = `<div class="msg-inner"><div class="role-label"><span class="dot"></span> You</div><div class="md">${body}</div></div>`;
   target.appendChild(div);
   currentAssistantEl = null;
   highlightCode(div);
@@ -2050,7 +2064,7 @@ async function sendMessage() {
     for (const img of pendingImages) {
       parts.push({ type: "image_url", image_url: { url: img.dataUrl } });
     }
-    appendUserMsg(text || "(image)");
+    appendUserMsg(parts);
     pendingImages = [];
     renderImagePreviews();
     appendTyping();

@@ -1552,6 +1552,18 @@
 .automation-form-status.success { color: var(--accent); }
 .automation-form-status.error { color: var(--red); }
 
+/* ============ User Message Image ============ */
+.user-image {
+  margin-top: 6px;
+}
+.user-image img {
+  max-width: 320px;
+  max-height: 240px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  object-fit: contain;
+}
+
 /* ============ Image Previews ============ */
 .image-previews {
   display: flex;
