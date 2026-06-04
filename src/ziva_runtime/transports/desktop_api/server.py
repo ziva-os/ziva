@@ -191,7 +191,7 @@ class DesktopAPIServer:
             return web.json_response({"error": "session_not_found"}, status=404)
         payload = await request.json()
         messages = payload.get("messages") or []
-        chat_messages = [ChatMessage(role=str(m.get("role", "user")), content=str(m.get("content", ""))) for m in messages]
+        chat_messages = [ChatMessage(role=str(m.get("role", "user")), content=m.get("content", "")) for m in messages]
         turn_id = str(uuid.uuid4())
         turn = {"id": turn_id, "status": "running", "events": [], "result": None}
         session = self.store._ensure_loaded(sid)
@@ -693,10 +693,15 @@ class DesktopAPIServer:
 
     async def get_config(self, _request: web.Request) -> web.Response:
         model_cfg = self.runtime.config.get("model", {})
+        models_list = model_cfg.get("models", [])
+        available = [m.get("name", "") for m in models_list if m.get("name")]
+        if not available:
+            available = [model_cfg.get("name", "unknown")]
         return web.json_response({
             "model": {
                 "current": model_cfg.get("name", "unknown"),
-                "available": [model_cfg.get("name", "unknown")],
+                "available": available,
+                "models": models_list,
             },
             "approval": {
                 "current": self.runtime.config.get("approval", {}).get("policy", "suggest"),

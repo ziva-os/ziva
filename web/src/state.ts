@@ -19,6 +19,7 @@ export interface AppState {
   config: {
     model: string;
     models: string[];
+    modelDetails: Array<{ name: string; supports_image: boolean }>;
     approval: string;
     workspace: string;
     tools: string[];

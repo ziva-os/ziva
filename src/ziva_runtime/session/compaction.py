@@ -73,17 +73,26 @@ COMPACTION_TEMPLATE = """请根据上方对话内容生成一份详细的摘要�
 ---"""
 
 
+def _text_of(content: str | list) -> str:
+    """Extract plain text from message content (str or multi-part list)."""
+    if isinstance(content, str):
+        return content
+    parts = []
+    for p in content:
+        if isinstance(p, dict) and p.get("type") == "text":
+            parts.append(p.get("text", ""))
+    return " ".join(parts)
+
+
 def estimate_tokens(messages: List[ChatMessage]) -> int:
     """Rough token estimate: ~4 chars per token for English, ~2 for CJK."""
     total = 0
     for m in messages:
-        # Count content characters
-        char_count = len(m.content)
-        # Rough heuristic: mix of CJK detection
-        cjk = sum(1 for c in m.content if "一" <= c <= "鿿")
+        text = _text_of(m.content)
+        char_count = len(text)
+        cjk = sum(1 for c in text if "一" <= c <= "鿿")
         non_cjk = char_count - cjk
         total += int(cjk / 2) + int(non_cjk / 4)
-        # Each message has overhead (role, metadata)
         total += 10
     return total
 
@@ -222,17 +231,18 @@ def _format_history(messages: List[ChatMessage]) -> str:
     """Format messages into a compact history string for the compaction prompt."""
     parts = []
     for m in messages:
+        text = _text_of(m.content)
         if m.role == "user":
-            parts.append(f"User: {m.content}")
+            parts.append(f"User: {text}")
         elif m.role == "assistant":
-            content = m.content
+            content = text
             if m.tool_calls:
                 tc_desc = ", ".join(f"{tc.name}({tc.arguments})" for tc in m.tool_calls)
                 content = f"[tool calls: {tc_desc}]"
             if content:
                 parts.append(f"Assistant: {content}")
         elif m.role == "tool":
-            parts.append(f"Tool ({m.name}): {m.content[:500]}")
+            parts.append(f"Tool ({m.name}): {text[:500]}")
     return "\n\n".join(parts)
 
 
@@ -299,10 +309,11 @@ def _simple_compact(messages: List[ChatMessage]) -> Tuple[List[ChatMessage], Lis
     """
     summary_parts = []
     for m in messages:
+        text = _text_of(m.content)
         if m.role == "user":
-            summary_parts.append(f"User: {m.content[:200]}")
+            summary_parts.append(f"User: {text[:200]}")
         elif m.role == "assistant":
-            content = m.content[:200]
+            content = text[:200]
             if content:
                 summary_parts.append(f"Assistant: {content}")
 

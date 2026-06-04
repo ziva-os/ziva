@@ -235,7 +235,10 @@ class Runtime:
         await self._emit(sid, {"type": "turn_start"})
 
         rendered_messages = self._apply_prompt(list(history), ctx)
-        skill_output = await self._maybe_apply_skill(rendered_messages[-1].content if rendered_messages else "", ctx)
+        _last = rendered_messages[-1].content if rendered_messages else ""
+        if isinstance(_last, list):
+            _last = " ".join(p.get("text", "") for p in _last if isinstance(p, dict) and p.get("type") == "text")
+        skill_output = await self._maybe_apply_skill(_last, ctx)
         rendered_messages = self._with_environment_context(rendered_messages)
         if skill_output:
             rendered_messages.append(ChatMessage(role="system", content=f"Skill output: {skill_output}"))
@@ -301,7 +304,10 @@ class Runtime:
         yield {"type": "turn_start", "session_id": sid}
 
         rendered_messages = self._apply_prompt(list(history), ctx)
-        skill_output = await self._maybe_apply_skill(rendered_messages[-1].content if rendered_messages else "", ctx)
+        _last = rendered_messages[-1].content if rendered_messages else ""
+        if isinstance(_last, list):
+            _last = " ".join(p.get("text", "") for p in _last if isinstance(p, dict) and p.get("type") == "text")
+        skill_output = await self._maybe_apply_skill(_last, ctx)
         rendered_messages = self._with_environment_context(rendered_messages)
         if skill_output:
             rendered_messages.append(ChatMessage(role="system", content=f"Skill output: {skill_output}"))
@@ -339,7 +345,10 @@ class Runtime:
             return payload
 
         # Handle slash commands (e.g., /compact)
-        if working and working[-1].role == "user" and working[-1].content.strip() == "/compact":
+        _last_user_text = working[-1].content if working and working[-1].role == "user" else ""
+        if isinstance(_last_user_text, list):
+            _last_user_text = " ".join(p.get("text", "") for p in _last_user_text if isinstance(p, dict) and p.get("type") == "text")
+        if _last_user_text.strip() == "/compact":
             summary_list, _compacted = await compact_messages(
                 working, context_window, model_cfg["name"], self.model_adapter
             )

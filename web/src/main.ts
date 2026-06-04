@@ -179,11 +179,13 @@ function init() {
               <span class="pending-bar-text" id="pendingBarText"></span>
               <button class="pending-bar-clear" id="pendingBarClear" title="取消排队" type="button">×</button>
             </div>
+            <div class="image-previews" id="imagePreviews" style="display:none"></div>
+            <input type="file" id="imageFileInput" accept="image/*" multiple style="display:none" />
             <textarea id="prompt" placeholder="Ask anything, @ to mention, / for workflows" rows="1"></textarea>
             <div class="slash-menu" id="slashMenu" style="display:none"></div>
             <div class="composer-toolbar">
               <div class="toolbar-left">
-                <button class="composer-action-btn" id="btnAttach" title="Attach">+</button>
+                <button class="composer-action-btn" id="btnAttach" title="Attach image">📎</button>
                 <select id="approvalSelect" title="Mode">
                   <option value="suggest">Fast</option>
                   <option value="auto-edit">Auto Edit</option>
@@ -409,11 +411,71 @@ function bindEvents() {
     store.set({ autoScroll: el.scrollTop + el.clientHeight >= el.scrollHeight - 50 });
   });
 
+  // Image upload: attach button, paste, drag-and-drop
+  $("btnAttach").onclick = () => ($("imageFileInput") as HTMLInputElement).click();
+  ($("imageFileInput") as HTMLInputElement).onchange = (e) => {
+    const files = (e.target as HTMLInputElement).files;
+    if (files) for (const f of files) addImageFile(f);
+    (e.target as HTMLInputElement).value = "";
+  };
+  promptEl.addEventListener("paste", (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.type.startsWith("image/")) {
+        e.preventDefault();
+        addImageFile(item.getAsFile()!);
+      }
+    }
+  });
+  promptEl.addEventListener("dragover", (e) => { e.preventDefault(); });
+  promptEl.addEventListener("drop", (e) => {
+    e.preventDefault();
+    const files = e.dataTransfer?.files;
+    if (files) for (const f of files) { if (f.type.startsWith("image/")) addImageFile(f); }
+  });
+
   const savedTheme = localStorage.getItem("ziva-theme") as "dark" | "light" | null;
   if (savedTheme) {
     store.set({ theme: savedTheme });
     document.documentElement.setAttribute("data-theme", savedTheme);
   }
+}
+
+// ---- Image Attachments ----
+let pendingImages: Array<{ dataUrl: string; name: string }> = [];
+
+function addImageFile(file: File) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    const dataUrl = reader.result as string;
+    pendingImages.push({ dataUrl, name: file.name });
+    renderImagePreviews();
+  };
+  reader.readAsDataURL(file);
+}
+
+function renderImagePreviews() {
+  const container = $("imagePreviews") as HTMLElement;
+  if (pendingImages.length === 0) {
+    container.style.display = "none";
+    container.innerHTML = "";
+    return;
+  }
+  container.style.display = "flex";
+  container.innerHTML = pendingImages.map((img, i) =>
+    `<div class="image-preview-item">
+      <img src="${img.dataUrl}" alt="${esc(img.name)}" />
+      <button class="image-preview-remove" data-idx="${i}" title="Remove">×</button>
+    </div>`
+  ).join("");
+  container.querySelectorAll(".image-preview-remove").forEach(btn => {
+    (btn as HTMLElement).onclick = () => {
+      const idx = parseInt((btn as HTMLElement).dataset.idx || "0");
+      pendingImages.splice(idx, 1);
+      renderImagePreviews();
+    };
+  });
 }
 
 // ---- Skills panel + viewer modal ----
@@ -716,11 +778,22 @@ function stripFrontmatter(content: string): string {
 async function refreshConfig() {
   try {
     const cfg = await api.getConfig();
-    store.set({ config: { ...store.get().config, model: cfg.model.current, models: cfg.model.available, approval: cfg.approval.current } });
+    const modelDetails = (cfg.model as any).models || (cfg.model.available || []).map((m: string) => ({ name: m, supports_image: false }));
+    store.set({ config: { ...store.get().config, model: cfg.model.current, models: cfg.model.available, modelDetails, approval: cfg.approval.current } });
     const sel = $("modelSelect") as HTMLSelectElement;
-    sel.innerHTML = cfg.model.available.map(m => `<option value="${esc(m)}" ${m === cfg.model.current ? "selected" : ""}>${esc(m)}</option>`).join("");
+    sel.innerHTML = cfg.model.available.map((m: string) => `<option value="${esc(m)}" ${m === cfg.model.current ? "selected" : ""}>${esc(m)}</option>`).join("");
     ($("approvalSelect") as HTMLSelectElement).value = cfg.approval.current;
+    updateImageSupport();
   } catch { /* server not running */ }
+}
+
+function updateImageSupport() {
+  const { config } = store.get();
+  const details = config.modelDetails || [];
+  const current = details.find((m: any) => m.name === config.model);
+  const supportsImage = current?.supports_image ?? false;
+  const attachBtn = $("btnAttach") as HTMLElement | null;
+  if (attachBtn) attachBtn.style.display = supportsImage ? "" : "none";
 }
 
 // ---- Sessions ----
@@ -1965,10 +2038,32 @@ async function sendMessage() {
   ($("prompt") as HTMLTextAreaElement).value = "";
   ($("prompt") as HTMLTextAreaElement).style.height = "auto";
   $("charCount").textContent = "";
-  appendUserMsg(text);
-  appendTyping();
-  scrollBottom();
-  await api.createTurn(sid, text);
+
+  const { config } = store.get();
+  const details = config.modelDetails || [];
+  const currentModel = details.find((m: any) => m.name === config.model);
+  const supportsImage = currentModel?.supports_image ?? false;
+
+  if (pendingImages.length > 0 && supportsImage) {
+    const parts: unknown[] = [];
+    if (text) parts.push({ type: "text", text });
+    for (const img of pendingImages) {
+      parts.push({ type: "image_url", image_url: { url: img.dataUrl } });
+    }
+    appendUserMsg(text || "(image)");
+    pendingImages = [];
+    renderImagePreviews();
+    appendTyping();
+    scrollBottom();
+    await api.createTurn(sid, parts);
+  } else {
+    appendUserMsg(text);
+    pendingImages = [];
+    renderImagePreviews();
+    appendTyping();
+    scrollBottom();
+    await api.createTurn(sid, text);
+  }
 }
 
 // ---- Plan ----
@@ -2418,8 +2513,8 @@ async function openSettingsModal() {
           <div class="settings-panel active" data-panel="model">
             <div class="settings-panel-inner">
               <div class="settings-section">
-                <div class="settings-section-title">Model Configuration</div>
-                <div class="settings-row"><label class="settings-label">Provider</label>
+                <div class="settings-section-title">Provider</div>
+                <div class="settings-row"><label class="settings-label">Type</label>
                   <select class="settings-select" id="s_model_provider">
                     <option value="openai_agents" ${m.provider === "openai_agents" ? "selected" : ""}>OpenAI Agents</option>
                     <option value="anthropic" ${m.provider === "anthropic" ? "selected" : ""}>Anthropic</option>
@@ -2427,9 +2522,14 @@ async function openSettingsModal() {
                     <option value="" ${!m.provider ? "selected" : ""}>Custom</option>
                   </select>
                 </div>
-                <div class="settings-row"><label class="settings-label">Name</label><input class="settings-input" id="s_model_name" value="${esc(m.name || "")}" /></div>
                 <div class="settings-row"><label class="settings-label">API Key</label><input class="settings-input" type="password" id="s_model_api_key" value="${esc(m.api_key || "")}" /></div>
                 <div class="settings-row"><label class="settings-label">Base URL</label><input class="settings-input" id="s_model_base_url" value="${esc(m.base_url || "")}" /></div>
+              </div>
+              <div class="settings-section">
+                <div class="settings-section-title">Models</div>
+                <div class="settings-desc">Add models and set one as default. Mark "Image" if the model supports vision input.</div>
+                <div id="sModelsList"></div>
+                <button class="settings-add-btn" id="addModelBtn">+ Add model</button>
               </div>
             </div>
           </div>
@@ -2564,6 +2664,98 @@ async function openSettingsModal() {
       btn.onclick = () => (btn.closest(".settings-mcp-card") as HTMLElement)?.remove();
     });
 
+    // Models list management
+    const modelsList = (m.models || []) as Array<{ name: string; supports_image?: boolean }>;
+    const defaultModelName = m.name || "";
+    const modelsListEl = body.querySelector("#sModelsList") as HTMLElement;
+
+    function renderModelsList() {
+      const rows = modelsListEl.querySelectorAll(".settings-model-row");
+      const current: Array<{ name: string; supports_image: boolean; is_default: boolean }> = [];
+      rows.forEach((row) => {
+        const nameInput = row.querySelector(".s-model-name") as HTMLInputElement;
+        const imgCheck = row.querySelector(".s-model-image") as HTMLInputElement;
+        const defaultRadio = row.querySelector(".s-model-default") as HTMLInputElement;
+        if (nameInput) {
+          current.push({
+            name: nameInput.value.trim(),
+            supports_image: imgCheck?.checked ?? false,
+            is_default: defaultRadio?.checked ?? false,
+          });
+        }
+      });
+      modelsListEl.innerHTML = current.map((m, i) => `
+        <div class="settings-model-row">
+          <input class="settings-input s-model-name" value="${esc(m.name)}" placeholder="Model name" style="flex:1" />
+          <label class="settings-model-check" title="Supports image input"><input type="checkbox" class="s-model-image" ${m.supports_image ? "checked" : ""} /> Image</label>
+          <label class="settings-model-check" title="Set as default model"><input type="radio" name="modelDefault" class="s-model-default" ${m.is_default ? "checked" : ""} /> Default</label>
+          <button class="settings-hook-remove s-model-remove" title="Remove">×</button>
+        </div>
+      `).join("");
+      modelsListEl.querySelectorAll(".s-model-remove").forEach((btn) => {
+        (btn as HTMLElement).onclick = () => (btn as HTMLElement).closest(".settings-model-row")!.remove();
+      });
+      modelsListEl.querySelectorAll(".s-model-default").forEach((radio) => {
+        (radio as HTMLInputElement).onchange = () => {
+          modelsListEl.querySelectorAll(".s-model-default").forEach((r) => {
+            if (r !== radio) (r as HTMLInputElement).checked = false;
+          });
+        };
+      });
+    }
+
+    // Populate initial models
+    if (modelsList.length > 0) {
+      modelsListEl.innerHTML = modelsList.map((model: any) => `
+        <div class="settings-model-row">
+          <input class="settings-input s-model-name" value="${esc(model.name || "")}" placeholder="Model name" style="flex:1" />
+          <label class="settings-model-check" title="Supports image input"><input type="checkbox" class="s-model-image" ${model.supports_image ? "checked" : ""} /> Image</label>
+          <label class="settings-model-check" title="Set as default model"><input type="radio" name="modelDefault" class="s-model-default" ${model.name === defaultModelName ? "checked" : ""} /> Default</label>
+          <button class="settings-hook-remove s-model-remove" title="Remove">×</button>
+        </div>
+      `).join("");
+    } else {
+      // Single model from config (backward compat)
+      modelsListEl.innerHTML = `
+        <div class="settings-model-row">
+          <input class="settings-input s-model-name" value="${esc(m.name || "")}" placeholder="Model name" style="flex:1" />
+          <label class="settings-model-check" title="Supports image input"><input type="checkbox" class="s-model-image" /> Image</label>
+          <label class="settings-model-check" title="Set as default model"><input type="radio" name="modelDefault" class="s-model-default" checked /> Default</label>
+          <button class="settings-hook-remove s-model-remove" title="Remove">×</button>
+        </div>`;
+    }
+    modelsListEl.querySelectorAll(".s-model-remove").forEach((btn) => {
+      (btn as HTMLElement).onclick = () => (btn as HTMLElement).closest(".settings-model-row")!.remove();
+    });
+    modelsListEl.querySelectorAll(".s-model-default").forEach((radio) => {
+      (radio as HTMLInputElement).onchange = () => {
+        modelsListEl.querySelectorAll(".s-model-default").forEach((r) => {
+          if (r !== radio) (r as HTMLInputElement).checked = false;
+        });
+      };
+    });
+
+    const addModelBtn = body.querySelector("#addModelBtn") as HTMLElement;
+    if (addModelBtn) {
+      addModelBtn.onclick = () => {
+        const row = document.createElement("div");
+        row.className = "settings-model-row";
+        row.innerHTML = `
+          <input class="settings-input s-model-name" value="" placeholder="Model name" style="flex:1" />
+          <label class="settings-model-check" title="Supports image input"><input type="checkbox" class="s-model-image" /> Image</label>
+          <label class="settings-model-check" title="Set as default model"><input type="radio" name="modelDefault" class="s-model-default" /> Default</label>
+          <button class="settings-hook-remove s-model-remove" title="Remove">×</button>`;
+        row.querySelector(".s-model-remove")!.onclick = () => row.remove();
+        row.querySelector(".s-model-default")!.onchange = () => {
+          modelsListEl.querySelectorAll(".s-model-default").forEach((r) => {
+            if (r !== row.querySelector(".s-model-default")) (r as HTMLInputElement).checked = false;
+          });
+        };
+        modelsListEl.appendChild(row);
+        row.querySelector("input")?.focus();
+      };
+    }
+
     // MCP add server
     const addBtn = body.querySelector("#addMcpServer") as HTMLElement;
     if (addBtn) {
@@ -2608,12 +2800,28 @@ async function openSettingsModal() {
 
         // Model
         const providerSel = backdrop.querySelector("#s_model_provider") as HTMLSelectElement;
+        const modelsRows = backdrop.querySelectorAll(".settings-model-row");
+        const models: Array<{ name: string; supports_image: boolean }> = [];
+        let defaultName = "";
+        modelsRows.forEach((row) => {
+          const nameInput = row.querySelector(".s-model-name") as HTMLInputElement;
+          const imgCheck = row.querySelector(".s-model-image") as HTMLInputElement;
+          const defaultRadio = row.querySelector(".s-model-default") as HTMLInputElement;
+          const name = nameInput?.value.trim() || "";
+          if (!name) return;
+          const supports_image = imgCheck?.checked ?? false;
+          models.push({ name, supports_image });
+          if (defaultRadio?.checked) defaultName = name;
+        });
+        if (!defaultName && models.length > 0) defaultName = models[0].name;
+        const provider = providerSel.value || (defaultName.includes("claude") ? "anthropic" : "openai");
         updated.model = {
           ...updated.model,
-          provider: providerSel.value === "" ? (backdrop.querySelector("#s_model_name") as HTMLInputElement).value.includes("claude") ? "anthropic" : "openai" : providerSel.value,
-          name: (backdrop.querySelector("#s_model_name") as HTMLInputElement).value,
+          provider,
+          name: defaultName || updated.model?.name,
           api_key: (backdrop.querySelector("#s_model_api_key") as HTMLInputElement).value,
           base_url: (backdrop.querySelector("#s_model_base_url") as HTMLInputElement).value,
+          models,
         };
 
         // Approval

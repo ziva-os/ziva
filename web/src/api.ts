@@ -82,7 +82,7 @@ export async function getTurns(sid: string): Promise<Turn[]> {
   return data.turns || [];
 }
 
-export async function createTurn(sid: string, content: string): Promise<{ accepted: boolean; turn_id: string }> {
+export async function createTurn(sid: string, content: string | unknown[]): Promise<{ accepted: boolean; turn_id: string }> {
   return api("POST", `/sessions/${sid}/turns`, { messages: [{ role: "user", content }] });
 }
 

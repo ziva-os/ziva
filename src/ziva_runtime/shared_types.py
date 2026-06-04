@@ -17,7 +17,7 @@ class RuntimeContext:
 @dataclass
 class ChatMessage:
     role: str
-    content: str
+    content: str | list
     tool_call_id: Optional[str] = None
     name: Optional[str] = None
     tool_calls: List[ToolCallItem] = field(default_factory=list)
