@@ -14,7 +14,7 @@ class ApplyPatchTool:
 
     def spec(self):
         return {
-            "name": "apply_patch",
+            "name": "edit_file",
             "description": (
                 "Apply file changes using unified diffs. "
                 "Can create, delete, or update files. "
