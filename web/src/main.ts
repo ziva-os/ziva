@@ -27,7 +27,6 @@ const store = new Store<AppState>({
   runningSessions: {},
   pendingMessages: {},
   questionPending: false,
-  answeredQuestions: {},
   config: { model: "unknown", models: [], approval: "suggest", workspace: "", tools: [] },
   connected: false,
   tokenUsage: null,
@@ -930,12 +929,6 @@ async function switchSession(sid: string) {
   pendingTools.clear();
   renderPendingBar();
   await loadHistory(sid);
-  // After rebuilding the chat DOM from history, re-insert answered
-  // question cards. This is the only path that restores them for
-  // *completed* turns (the running-turn replay below would handle
-  // the in-flight case, but it only fires if a turn is currently
-  // running).
-  restoreAnsweredQuestions(sid);
 
   try {
     const turns = await api.getTurns(sid);
@@ -1077,8 +1070,27 @@ function renderMessages(target: HTMLElement, msgs: any[]): void {
         subagentTools = (output as any).tools;
       }
 
-      // ask_user is rendered as a question/answered card, not a tool card.
-      if (toolName === "ask_user") continue;
+      // ask_user is rendered as an answered question card, not a tool card.
+      // The tool result content is like {"status":"answered","answer":"..."}.
+      // We pull question/options/multiSelect from the matching tool_call args.
+      if (toolName === "ask_user") {
+        let answer = "";
+        if (typeof output === "object" && output !== null) {
+          answer = String((output as any).answer || "");
+        } else if (typeof m.content === "string") {
+          try { answer = JSON.parse(m.content).answer || ""; } catch {}
+        }
+        const q = String(args.question || "");
+        const opts = (args.options as string[]) || [];
+        const ms = !!args.multi_select;
+        if (q) {
+          const card = document.createElement("div");
+          card.className = "question-card question-card-answered";
+          card.innerHTML = `<div class="question-text">${esc(q)}</div><div class="question-reply">You: ${esc(answer)}</div>`;
+          target.appendChild(card);
+        }
+        continue;
+      }
 
       appendToolCard(toolName, args, "success", output, subagentTools, isPruned, target);
     }
@@ -1342,21 +1354,6 @@ function appendQuestionCard(question: string, options: string[], multiSelect: bo
   let submitted = false;
   const lockCard = (answer: string) => {
     submitted = true;
-    // Persist answered question so it survives session switches.
-    // We store a snippet of the user message that triggered this
-    // question (rather than a DOM index) so that even after the chat
-    // is rebuilt — e.g. session switch or compaction — we can locate
-    // the right insertion point via content matching.
-    const sid = store.get().activeSid;
-    if (sid) {
-      const userMsgs = $("messages").querySelectorAll(".msg-user");
-      const lastUserMsg = userMsgs[userMsgs.length - 1] as HTMLElement | undefined;
-      const userMsgText = (lastUserMsg?.textContent || "").slice(0, 100);
-      const { answeredQuestions } = store.get();
-      const list = answeredQuestions[sid] ? [...answeredQuestions[sid]] : [];
-      list.push({ question, options: [...options], multiSelect, answer, userMsgText });
-      store.set({ answeredQuestions: { ...answeredQuestions, [sid]: list } });
-    }
     card.querySelectorAll(".question-input-row").forEach(el => el.remove());
     card.querySelector(".question-options")?.remove();
     card.querySelector(".question-footer")?.remove();
@@ -1473,43 +1470,6 @@ function appendQuestionCard(question: string, options: string[], multiSelect: bo
  * away), we append the card to the end so the user still sees that
  * the question was answered.
  */
-function restoreAnsweredQuestions(sid: string) {
-  const list = store.get().answeredQuestions[sid];
-  if (!list || list.length === 0) return;
-  const messages = $("messages");
-  for (const aq of list) {
-    // Skip if a card with this exact question text is already in
-    // the DOM (e.g. the running-turn replay path in switchSession
-    // already inserted it). Avoids duplicates on the second pass.
-    const allAnswered = messages.querySelectorAll(".question-card-answered .question-text");
-    let alreadyRendered = false;
-    allAnswered.forEach((el) => {
-      if ((el.textContent || "").trim() === aq.question) {
-        alreadyRendered = true;
-      }
-    });
-    if (alreadyRendered) continue;
-
-    const card = document.createElement("div");
-    card.className = "question-card question-card-answered";
-    card.innerHTML = `<div class="question-text">${esc(aq.question)}</div><div class="question-reply">You: ${esc(aq.answer)}</div>`;
-
-    let inserted = false;
-    if (aq.userMsgText) {
-      const userMsgs = messages.querySelectorAll(".msg-user");
-      for (const um of Array.from(userMsgs)) {
-        const text = (um.textContent || "").trim();
-        if (text.startsWith(aq.userMsgText) || text.includes(aq.userMsgText)) {
-          um.after(card);
-          inserted = true;
-          break;
-        }
-      }
-    }
-    if (!inserted) messages.appendChild(card);
-  }
-}
-
 function appendError(msg: string) {
   const div = document.createElement("div");
   div.className = "error-card";
@@ -1711,19 +1671,7 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     const q = String((ev.question as string) || "");
     const opts = ((ev.options as string[]) || []) as string[];
     const ms = !!ev.multi_select;
-    // If the user already answered this question (e.g. after
-    // switching sessions back), render the answered card instead
-    // of the interactive one.
-    const activeSid = store.get().activeSid;
-    const answered = activeSid ? store.get().answeredQuestions[activeSid]?.find(aq => aq.question === q) : undefined;
-    if (answered) {
-      const card = document.createElement("div");
-      card.className = "question-card question-card-answered";
-      card.innerHTML = `<div class="question-text">${esc(q)}</div><div class="question-reply">You: ${esc(answered.answer)}</div>`;
-      $("messages").appendChild(card);
-    } else {
-      appendQuestionCard(q, opts, ms);
-    }
+    appendQuestionCard(q, opts, ms);
     if (updateScroll) scrollBottom();
   } else if (t === "tool_start") {
     removeTyping();

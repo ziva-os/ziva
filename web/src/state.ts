@@ -6,26 +6,6 @@ export interface Session {
   time?: { created: number; updated: number };
 }
 
-// A question card the user has already answered. Stored per-session so
-// that switching to another session and back doesn't drop the
-// "answered" state — loadHistory re-renders the chat container from
-// scratch, so without this map the answered card would silently revert
-// to the unanswered form.
-export interface AnsweredQuestion {
-  question: string;
-  options: string[];
-  multiSelect: boolean;
-  // Either a single selected option (string) or a JSON array for
-  // multi-select. We store as a free-form string to keep the type
-  // simple — the renderer just displays it verbatim.
-  answer: string;
-  // First 100 chars of the user message that triggered this
-  // question. Used during session-switch restore to find the right
-  // position via content matching (compaction can invalidate a
-  // stored index, but text matching is robust).
-  userMsgText: string;
-}
-
 export interface AppState {
   sessions: Session[];
   activeSid: string | null;
@@ -36,12 +16,6 @@ export interface AppState {
   // session. The render / input layer consults these by activeSid.
   runningSessions: Record<string, boolean>;
   pendingMessages: Record<string, string>;
-  // Per-session answered question cards, in order of completion. The
-  // chat DOM is rebuilt from history on session switch, so the only
-  // way to keep an answered question card visible after the user
-  // switches away and back is to store it here and re-insert it
-  // during loadHistory.
-  answeredQuestions: Record<string, AnsweredQuestion[]>;
   config: {
     model: string;
     models: string[];
