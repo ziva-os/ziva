@@ -2347,61 +2347,327 @@ async function openSettingsModal() {
     const mem = cfg.memory || {};
     const tool = cfg.tool || {};
     const mcp = cfg.mcp || {};
+    const mcpServers = mcp.servers || {};
+    const sandbox = cfg.sandbox || {};
+    const hooks = cfg.hooks || {};
+    const prompt = cfg.prompt || {};
+
+    // SVG icons for tabs (16x16)
+    const icons = {
+      model: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z"/><path d="M2 12h20"/><path d="M12 2a15 15 0 0 1 4 10 15 15 0 0 1-4 10 15 15 0 0 1-4-10A15 15 0 0 1 12 2z"/></svg>`,
+      approval: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`,
+      mcp: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>`,
+      tool: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>`,
+      hooks: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>`,
+      memory: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="2" x2="9" y2="4"/><line x1="15" y1="2" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="22"/><line x1="15" y1="20" x2="15" y2="22"/><line x1="20" y1="9" x2="22" y2="9"/><line x1="20" y1="14" x2="22" y2="14"/><line x1="2" y1="9" x2="4" y2="9"/><line x1="2" y1="14" x2="4" y2="14"/></svg>`,
+      sandbox: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`,
+      prompt: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`,
+    };
+
+    // Build MCP servers HTML
+    let mcpServersHtml = "";
+    const mcpServerNames = Object.keys(mcpServers);
+    for (const sname of mcpServerNames) {
+      const srv = mcpServers[sname] as any;
+      const cmd = Array.isArray(srv.command) ? srv.command.join(" ") : (srv.command || "");
+      mcpServersHtml += `
+        <div class="settings-mcp-card" data-mcp-server="${esc(sname)}">
+          <div class="settings-mcp-card-header">
+            <span class="settings-mcp-name">${esc(sname)}</span>
+            <div>
+              <select class="settings-select" style="width:auto;padding:4px 8px;font-size:12px" data-mcp-enabled="${esc(sname)}">
+                <option value="true" ${srv.enabled !== false ? "selected" : ""}>Enabled</option>
+                <option value="false" ${srv.enabled === false ? "selected" : ""}>Disabled</option>
+              </select>
+              <button class="settings-hook-remove" data-mcp-remove="${esc(sname)}" title="Remove">×</button>
+            </div>
+          </div>
+          <div class="settings-row"><label class="settings-label">Command</label><input class="settings-input" data-mcp-command="${esc(sname)}" value="${esc(cmd)}" /></div>
+          <div class="settings-row"><label class="settings-label">Type</label>
+            <select class="settings-select" data-mcp-type="${esc(sname)}">
+              <option value="local" ${srv.type !== "remote" ? "selected" : ""}>local</option>
+              <option value="remote" ${srv.type === "remote" ? "selected" : ""}>remote</option>
+            </select>
+          </div>
+        </div>`;
+    }
+
+    // Build hooks HTML per hook type
+    const hookTypes = ["before_turn", "after_turn", "before_tool", "after_tool"];
+    let hooksHtml = "";
+    for (const ht of hookTypes) {
+      const items: string[] = hooks[ht] || [];
+      let rows = "";
+      for (let i = 0; i < items.length; i++) {
+        rows += `<div class="settings-hook-row"><input class="settings-input" data-hook="${ht}" data-hook-idx="${i}" value="${esc(items[i])}" /><button class="settings-hook-remove" data-hook-remove="${ht}:${i}" title="Remove">×</button></div>`;
+      }
+      hooksHtml += `
+        <div class="settings-section">
+          <div class="settings-section-title">${ht.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())}</div>
+          <div class="settings-desc">Shell commands to run ${ht.replace(/_/g, " ")}.</div>
+          <div data-hook-list="${ht}">${rows}</div>
+          <button class="settings-add-btn" data-hook-add="${ht}">+ Add command</button>
+        </div>`;
+    }
 
     body.innerHTML = `
-      <div class="settings-form-wrap">
-        <div class="settings-section">
-          <div class="settings-section-title">Model</div>
-          <div class="settings-row"><label class="settings-label">Provider</label><input class="settings-input" id="s_model_provider" value="${esc(m.provider || "")}" /></div>
-          <div class="settings-row"><label class="settings-label">Name</label><input class="settings-input" id="s_model_name" value="${esc(m.name || "")}" /></div>
-          <div class="settings-row"><label class="settings-label">API Key</label><input class="settings-input" type="password" id="s_model_api_key" value="${esc(m.api_key || "")}" /></div>
-          <div class="settings-row"><label class="settings-label">Base URL</label><input class="settings-input" id="s_model_base_url" value="${esc(m.base_url || "")}" /></div>
+      <div class="settings-layout">
+        <div class="settings-tabs">
+          <button class="settings-tab active" data-tab="model">${icons.model}<span>Model</span></button>
+          <button class="settings-tab" data-tab="approval">${icons.approval}<span>Approval</span></button>
+          <button class="settings-tab" data-tab="mcp">${icons.mcp}<span>MCP Servers</span></button>
+          <button class="settings-tab" data-tab="tool">${icons.tool}<span>Tool</span></button>
+          <button class="settings-tab" data-tab="hooks">${icons.hooks}<span>Hooks</span></button>
+          <button class="settings-tab" data-tab="memory">${icons.memory}<span>Memory</span></button>
+          <button class="settings-tab" data-tab="sandbox">${icons.sandbox}<span>Sandbox</span></button>
+          <button class="settings-tab" data-tab="prompt">${icons.prompt}<span>Prompt</span></button>
         </div>
-        <div class="settings-section">
-          <div class="settings-section-title">Approval</div>
-          <div class="settings-row"><label class="settings-label">Policy</label>
-            <select class="settings-select" id="s_approval_policy">
-              <option value="suggest" ${ap.policy === "suggest" ? "selected" : ""}>suggest</option>
-              <option value="auto-edit" ${ap.policy === "auto-edit" ? "selected" : ""}>auto-edit</option>
-              <option value="full-auto" ${ap.policy === "full-auto" ? "selected" : ""}>full-auto</option>
-            </select>
+        <div class="settings-content">
+          <!-- Model -->
+          <div class="settings-panel active" data-panel="model">
+            <div class="settings-panel-inner">
+              <div class="settings-section">
+                <div class="settings-section-title">Model Configuration</div>
+                <div class="settings-row"><label class="settings-label">Provider</label>
+                  <select class="settings-select" id="s_model_provider">
+                    <option value="openai_agents" ${m.provider === "openai_agents" ? "selected" : ""}>OpenAI Agents</option>
+                    <option value="anthropic" ${m.provider === "anthropic" ? "selected" : ""}>Anthropic</option>
+                    <option value="openai" ${m.provider === "openai" ? "selected" : ""}>OpenAI</option>
+                    <option value="" ${!m.provider ? "selected" : ""}>Custom</option>
+                  </select>
+                </div>
+                <div class="settings-row"><label class="settings-label">Name</label><input class="settings-input" id="s_model_name" value="${esc(m.name || "")}" /></div>
+                <div class="settings-row"><label class="settings-label">API Key</label><input class="settings-input" type="password" id="s_model_api_key" value="${esc(m.api_key || "")}" /></div>
+                <div class="settings-row"><label class="settings-label">Base URL</label><input class="settings-input" id="s_model_base_url" value="${esc(m.base_url || "")}" /></div>
+              </div>
+            </div>
           </div>
-        </div>
-        <div class="settings-section">
-          <div class="settings-section-title">Memory</div>
-          <div class="settings-row"><label class="settings-label">Context Window Tokens</label><input class="settings-input" type="number" id="s_memory_tokens" value="${mem.context_window_tokens || 200000}" /></div>
-        </div>
-        <div class="settings-section">
-          <div class="settings-section-title">Tool</div>
-          <div class="settings-row"><label class="settings-label">Max Rounds (0 = unlimited)</label><input class="settings-input" type="number" id="s_tool_max_rounds" value="${tool.max_rounds || 0}" /></div>
-        </div>
-        <div class="settings-section">
-          <div class="settings-section-title">MCP</div>
-          <div class="settings-row"><label class="settings-label">Enabled</label>
-            <select class="settings-select" id="s_mcp_enabled">
-              <option value="true" ${mcp.enabled ? "selected" : ""}>Yes</option>
-              <option value="false" ${!mcp.enabled ? "selected" : ""}>No</option>
-            </select>
+          <!-- Approval -->
+          <div class="settings-panel" data-panel="approval">
+            <div class="settings-panel-inner">
+              <div class="settings-section">
+                <div class="settings-section-title">Approval Policy</div>
+                <div class="settings-desc">Controls how tools request permission before execution.</div>
+                <div class="settings-row"><label class="settings-label">Policy</label>
+                  <select class="settings-select" id="s_approval_policy">
+                    <option value="suggest" ${ap.policy === "suggest" ? "selected" : ""}>suggest (ask every time)</option>
+                    <option value="auto-edit" ${ap.policy === "auto-edit" ? "selected" : ""}>auto-edit (auto file edits)</option>
+                    <option value="full-auto" ${ap.policy === "full-auto" ? "selected" : ""}>full-auto (no prompts)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
           </div>
-        </div>
-        <div class="settings-section">
-          <div class="settings-section-title">Prompt Profile</div>
-          <div class="settings-row"><label class="settings-label">Profile</label><input class="settings-input" id="s_prompt_profile" value="${esc((cfg.prompt || {}).profile || "default")}" /></div>
+          <!-- MCP -->
+          <div class="settings-panel" data-panel="mcp">
+            <div class="settings-panel-inner">
+              <div class="settings-section">
+                <div class="settings-section-title">MCP</div>
+                <div class="settings-row"><label class="settings-label">MCP Enabled</label>
+                  <select class="settings-select" id="s_mcp_enabled">
+                    <option value="true" ${mcp.enabled ? "selected" : ""}>Yes</option>
+                    <option value="false" ${!mcp.enabled ? "selected" : ""}>No</option>
+                  </select>
+                </div>
+              </div>
+              <div class="settings-section">
+                <div class="settings-section-title">Servers</div>
+                <div id="mcpServersList">${mcpServersHtml}</div>
+                <button class="settings-add-btn" id="addMcpServer">+ Add MCP server</button>
+              </div>
+            </div>
+          </div>
+          <!-- Tool -->
+          <div class="settings-panel" data-panel="tool">
+            <div class="settings-panel-inner">
+              <div class="settings-section">
+                <div class="settings-section-title">Tool Settings</div>
+                <div class="settings-row"><label class="settings-label">Max Rounds</label><input class="settings-input" type="number" id="s_tool_max_rounds" value="${tool.max_rounds || 0}" /><span style="font-size:12px;color:var(--muted);margin-left:4px">0 = unlimited</span></div>
+              </div>
+            </div>
+          </div>
+          <!-- Hooks -->
+          <div class="settings-panel" data-panel="hooks">
+            <div class="settings-panel-inner">${hooksHtml}</div>
+          </div>
+          <!-- Memory -->
+          <div class="settings-panel" data-panel="memory">
+            <div class="settings-panel-inner">
+              <div class="settings-section">
+                <div class="settings-section-title">Memory</div>
+                <div class="settings-row"><label class="settings-label">Backend</label>
+                  <select class="settings-select" id="s_memory_backend">
+                    <option value="inmemory" ${mem.backend === "inmemory" || !mem.backend ? "selected" : ""}>In-memory</option>
+                  </select>
+                </div>
+                <div class="settings-row"><label class="settings-label">Context Window</label><input class="settings-input" type="number" id="s_memory_tokens" value="${mem.context_window_tokens || 200000}" /><span style="font-size:12px;color:var(--muted);margin-left:4px">tokens</span></div>
+              </div>
+            </div>
+          </div>
+          <!-- Sandbox -->
+          <div class="settings-panel" data-panel="sandbox">
+            <div class="settings-panel-inner">
+              <div class="settings-section">
+                <div class="settings-section-title">Sandbox</div>
+                <div class="settings-row"><label class="settings-label">Mode</label>
+                  <select class="settings-select" id="s_sandbox_mode">
+                    <option value="off" ${sandbox.mode !== "docker" && sandbox.mode !== "restrictive" ? "selected" : ""}>Off</option>
+                    <option value="docker" ${sandbox.mode === "docker" ? "selected" : ""}>Docker</option>
+                    <option value="restrictive" ${sandbox.mode === "restrictive" ? "selected" : ""}>Restrictive</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
+          <!-- Prompt -->
+          <div class="settings-panel" data-panel="prompt">
+            <div class="settings-panel-inner">
+              <div class="settings-section">
+                <div class="settings-section-title">Prompt Profile</div>
+                <div class="settings-row"><label class="settings-label">Profile</label>
+                  <select class="settings-select" id="s_prompt_profile">
+                    <option value="default" ${prompt.profile === "default" || !prompt.profile ? "selected" : ""}>default</option>
+                    <option value="concise" ${prompt.profile === "concise" ? "selected" : ""}>concise</option>
+                    <option value="detailed" ${prompt.profile === "detailed" ? "selected" : ""}>detailed</option>
+                    <option value="" ${!["default","concise","detailed"].includes(prompt.profile) && prompt.profile ? "selected" : ""}>custom</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>`;
 
+    // Tab switching
+    const tabs = body.querySelectorAll<HTMLButtonElement>(".settings-tab");
+    const panels = body.querySelectorAll<HTMLDivElement>(".settings-panel");
+    tabs.forEach(tab => {
+      tab.onclick = () => {
+        tabs.forEach(t => t.classList.remove("active"));
+        panels.forEach(p => p.classList.remove("active"));
+        tab.classList.add("active");
+        body.querySelector(`.settings-panel[data-panel="${tab.dataset.tab}"]`)?.classList.add("active");
+      };
+    });
+
+    // Hook add/remove
+    body.querySelectorAll<HTMLButtonElement>("[data-hook-add]").forEach(btn => {
+      btn.onclick = () => {
+        const ht = btn.dataset.hookAdd!;
+        const list = body.querySelector(`[data-hook-list="${ht}"]`)!;
+        const idx = list.children.length;
+        const row = document.createElement("div");
+        row.className = "settings-hook-row";
+        row.innerHTML = `<input class="settings-input" data-hook="${ht}" data-hook-idx="${idx}" value="" placeholder="e.g. npm run lint" /><button class="settings-hook-remove" data-hook-remove="${ht}:${idx}" title="Remove">×</button>`;
+        row.querySelector(".settings-hook-remove")!.onclick = () => row.remove();
+        list.appendChild(row);
+        row.querySelector("input")?.focus();
+      };
+    });
+    body.querySelectorAll<HTMLButtonElement>("[data-hook-remove]").forEach(btn => {
+      btn.onclick = () => (btn.closest(".settings-hook-row") as HTMLElement)?.remove();
+    });
+
+    // MCP server remove
+    body.querySelectorAll<HTMLButtonElement>("[data-mcp-remove]").forEach(btn => {
+      btn.onclick = () => (btn.closest(".settings-mcp-card") as HTMLElement)?.remove();
+    });
+
+    // MCP add server
+    const addBtn = body.querySelector("#addMcpServer") as HTMLElement;
+    if (addBtn) {
+      addBtn.onclick = () => {
+        const name = prompt("MCP server name:");
+        if (!name) return;
+        const list = body.querySelector("#mcpServersList")!;
+        const card = document.createElement("div");
+        card.className = "settings-mcp-card";
+        card.dataset.mcpServer = name;
+        card.innerHTML = `
+          <div class="settings-mcp-card-header">
+            <span class="settings-mcp-name">${esc(name)}</span>
+            <div>
+              <select class="settings-select" style="width:auto;padding:4px 8px;font-size:12px" data-mcp-enabled="${esc(name)}">
+                <option value="true" selected>Enabled</option>
+                <option value="false">Disabled</option>
+              </select>
+              <button class="settings-hook-remove" data-mcp-remove="${esc(name)}" title="Remove">×</button>
+            </div>
+          </div>
+          <div class="settings-row"><label class="settings-label">Command</label><input class="settings-input" data-mcp-command="${esc(name)}" value="" placeholder="e.g. npx @anthropic/mcp-server" /></div>
+          <div class="settings-row"><label class="settings-label">Type</label>
+            <select class="settings-select" data-mcp-type="${esc(name)}">
+              <option value="local" selected>local</option>
+              <option value="remote">remote</option>
+            </select>
+          </div>`;
+        card.querySelector(".settings-hook-remove")!.onclick = () => card.remove();
+        list.appendChild(card);
+        card.querySelector("input")?.focus();
+      };
+    }
+
+    // Save
     (backdrop.querySelector("#settingsSaveBtn") as HTMLElement).onclick = async () => {
       const btn = backdrop.querySelector("#settingsSaveBtn") as HTMLElement;
       btn.textContent = "Saving...";
       btn.setAttribute("disabled", "true");
       try {
         const updated = { ...cfg };
-        updated.model = { ...updated.model, provider: (backdrop.querySelector("#s_model_provider") as HTMLInputElement).value, name: (backdrop.querySelector("#s_model_name") as HTMLInputElement).value, api_key: (backdrop.querySelector("#s_model_api_key") as HTMLInputElement).value, base_url: (backdrop.querySelector("#s_model_base_url") as HTMLInputElement).value };
+
+        // Model
+        const providerSel = backdrop.querySelector("#s_model_provider") as HTMLSelectElement;
+        updated.model = {
+          ...updated.model,
+          provider: providerSel.value === "" ? (backdrop.querySelector("#s_model_name") as HTMLInputElement).value.includes("claude") ? "anthropic" : "openai" : providerSel.value,
+          name: (backdrop.querySelector("#s_model_name") as HTMLInputElement).value,
+          api_key: (backdrop.querySelector("#s_model_api_key") as HTMLInputElement).value,
+          base_url: (backdrop.querySelector("#s_model_base_url") as HTMLInputElement).value,
+        };
+
+        // Approval
         updated.approval = { ...updated.approval, policy: (backdrop.querySelector("#s_approval_policy") as HTMLSelectElement).value };
+
+        // Memory
         updated.memory = { ...updated.memory, context_window_tokens: parseInt((backdrop.querySelector("#s_memory_tokens") as HTMLInputElement).value) || 200000 };
+
+        // Tool
         updated.tool = { ...updated.tool, max_rounds: parseInt((backdrop.querySelector("#s_tool_max_rounds") as HTMLInputElement).value) || 0 };
-        updated.mcp = { ...updated.mcp, enabled: (backdrop.querySelector("#s_mcp_enabled") as HTMLSelectElement).value === "true" };
-        updated.prompt = { ...updated.prompt, profile: (backdrop.querySelector("#s_prompt_profile") as HTMLInputElement).value };
+
+        // MCP
+        const mcpEnabled = (backdrop.querySelector("#s_mcp_enabled") as HTMLSelectElement).value === "true";
+        const newMcpServers: Record<string, any> = {};
+        backdrop.querySelectorAll<HTMLElement>(".settings-mcp-card").forEach(card => {
+          const sname = card.dataset.mcpServer!;
+          const cmdStr = (card.querySelector(`[data-mcp-command="${sname}"]`) as HTMLInputElement)?.value || "";
+          const srvEnabled = (card.querySelector(`[data-mcp-enabled="${sname}"]`) as HTMLSelectElement)?.value !== "false";
+          const srvType = (card.querySelector(`[data-mcp-type="${sname}"]`) as HTMLSelectElement)?.value || "local";
+          const existing = mcpServers[sname] || {};
+          newMcpServers[sname] = {
+            ...existing,
+            type: srvType,
+            command: cmdStr.split(" ").filter(Boolean),
+            enabled: srvEnabled,
+          };
+        });
+        updated.mcp = { ...updated.mcp, enabled: mcpEnabled, servers: newMcpServers };
+
+        // Sandbox
+        updated.sandbox = { ...updated.sandbox, mode: (backdrop.querySelector("#s_sandbox_mode") as HTMLSelectElement).value };
+
+        // Prompt
+        updated.prompt = { ...updated.prompt, profile: (backdrop.querySelector("#s_prompt_profile") as HTMLSelectElement).value };
+
+        // Hooks — rebuild from DOM
+        const newHooks: Record<string, string[]> = {};
+        for (const ht of hookTypes) {
+          newHooks[ht] = Array.from(backdrop.querySelectorAll<HTMLInputElement>(`[data-hook="${ht}"]`)).map(i => i.value).filter(Boolean);
+        }
+        updated.hooks = newHooks;
+
+        // Remove skill_index metadata before saving
+        delete (updated as any)._skill_index;
+
         await api.saveConfigJson(updated);
         btn.textContent = "Saved";
         setTimeout(() => { btn.textContent = "Save"; btn.removeAttribute("disabled"); }, 1500);
