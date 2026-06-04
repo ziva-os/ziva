@@ -1885,44 +1885,18 @@ function renderPendingBar() {
 
 // ---- Cancel ----
 async function cancelTurn() {
-  const { activeSid, questionPending } = store.get();
+  const { activeSid } = store.get();
   if (!activeSid) return;
-  if (questionPending) {
-    // A question is mid-flight. Instead of cancelling the whole turn
-    // (which surfaces a `cancelled` envelope to the model and the
-    // chat history), resolve the question future with a "user
-    // abandoned" answer — the same path as the "还是聊聊吧" button.
-    // The model continues normally; the user can send a new message.
-    try {
-      await api.replyQuestion(activeSid, "（用户放弃当前选项，希望直接讨论这个话题）");
-    } catch { /* 404 = no pending question; fall through to cancel */ }
-    // Lock the visible question card so the user sees the action
-    // landed. There can be at most one unanswered card on screen.
-    const pendingCard = document.querySelector(".question-card:not(.question-card-answered):not(.question-card-cancelled)") as HTMLElement | null;
-    if (pendingCard) {
-      pendingCard.querySelector(".question-input-row")?.remove();
-      pendingCard.querySelector(".question-options")?.remove();
-      pendingCard.querySelector(".question-footer")?.remove();
-      pendingCard.classList.add("question-card-answered");
-      const replyDiv = document.createElement("div");
-      replyDiv.className = "question-reply";
-      replyDiv.textContent = "You: 还是聊聊吧";
-      pendingCard.appendChild(replyDiv);
-    }
-    store.set({ questionPending: false });
-    // Turn is still running — the model will keep streaming its
-    // follow-up. Don't touch isRunning.
-    setTimeout(() => {
-      const prompt = document.getElementById("prompt") as HTMLTextAreaElement | null;
-      prompt?.focus();
-    }, 50);
-    return;
-  }
-  // Stop button while running = user really wants to stop. Drop any
-  // queued message too — the queue is for "send after this turn", not
-  // for "send after I cancel and start a fresh turn". If the user
-  // wanted the queued text, they can leave it in the chip and edit it
-  // out before pressing Enter again.
+  // Cancel the turn outright. Lock any pending question cards so
+  // the user sees them as cancelled, then send the cancel API call.
+  const pendingCards = document.querySelectorAll(".question-card:not(.question-card-answered):not(.question-card-cancelled)");
+  pendingCards.forEach(card => {
+    (card as HTMLElement).querySelector(".question-input-row")?.remove();
+    (card as HTMLElement).querySelector(".question-options")?.remove();
+    (card as HTMLElement).querySelector(".question-footer")?.remove();
+    card.classList.add("question-card-cancelled");
+  });
+  store.set({ questionPending: false });
   if (getActivePending() != null) clearPendingMessage();
   try { await api.cancelTurn(activeSid); } catch { /* ignore */ }
   setActiveRunning(false);
