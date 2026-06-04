@@ -1366,6 +1366,16 @@ function appendToolCard(
       const resultText = String((output as any).result);
       body += `<div class="section-label">Output</div>`;
       body += `<div class="section-content">${renderMarkdown(resultText)}</div>`;
+    } else if (typeof output === "object" && output !== null && ((output as any).type === "image" || (output as any).image_url || (output as any).url)) {
+      // Tool returned an image — render it inline
+      const imgUrl = (output as any).image_url || (output as any).url || "";
+      if (imgUrl) {
+        body += `<div class="section-label">Output</div>`;
+        body += `<div class="section-content tool-output-image"><img src="${esc(imgUrl)}" alt="tool output" loading="lazy" /></div>`;
+      }
+    } else if (typeof output === "string" && /^data:image\//.test(output)) {
+      body += `<div class="section-label">Output</div>`;
+      body += `<div class="section-content tool-output-image"><img src="${esc(output)}" alt="tool output" loading="lazy" /></div>`;
     } else {
       const outStr = typeof output === "string" ? output : JSON.stringify(output, null, 2);
       body += `<div class="section-label">Output</div>`;

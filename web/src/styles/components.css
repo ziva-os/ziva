@@ -1552,6 +1552,18 @@
 .automation-form-status.success { color: var(--accent); }
 .automation-form-status.error { color: var(--red); }
 
+/* ============ Tool Output Image ============ */
+.tool-output-image {
+  padding: 4px 0;
+}
+.tool-output-image img {
+  max-width: 400px;
+  max-height: 300px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  object-fit: contain;
+}
+
 /* ============ User Message Image ============ */
 .user-image {
   margin-top: 6px;
