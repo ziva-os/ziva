@@ -19,10 +19,11 @@ export interface AnsweredQuestion {
   // multi-select. We store as a free-form string to keep the type
   // simple — the renderer just displays it verbatim.
   answer: string;
-  // Index of the user message in the messages array this question
-  // followed. Used by the restore step to place the card at the
-  // correct location in the rebuilt chat history.
-  afterUserMsgIdx: number;
+  // First 100 chars of the user message that triggered this
+  // question. Used during session-switch restore to find the right
+  // position via content matching (compaction can invalidate a
+  // stored index, but text matching is robust).
+  userMsgText: string;
 }
 
 export interface AppState {

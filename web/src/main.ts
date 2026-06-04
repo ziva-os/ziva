@@ -930,6 +930,12 @@ async function switchSession(sid: string) {
   pendingTools.clear();
   renderPendingBar();
   await loadHistory(sid);
+  // After rebuilding the chat DOM from history, re-insert answered
+  // question cards. This is the only path that restores them for
+  // *completed* turns (the running-turn replay below would handle
+  // the in-flight case, but it only fires if a turn is currently
+  // running).
+  restoreAnsweredQuestions(sid);
 
   try {
     const turns = await api.getTurns(sid);
@@ -1337,13 +1343,18 @@ function appendQuestionCard(question: string, options: string[], multiSelect: bo
   const lockCard = (answer: string) => {
     submitted = true;
     // Persist answered question so it survives session switches.
+    // We store a snippet of the user message that triggered this
+    // question (rather than a DOM index) so that even after the chat
+    // is rebuilt — e.g. session switch or compaction — we can locate
+    // the right insertion point via content matching.
     const sid = store.get().activeSid;
     if (sid) {
       const userMsgs = $("messages").querySelectorAll(".msg-user");
-      const afterIdx = userMsgs.length - 1;
+      const lastUserMsg = userMsgs[userMsgs.length - 1] as HTMLElement | undefined;
+      const userMsgText = (lastUserMsg?.textContent || "").slice(0, 100);
       const { answeredQuestions } = store.get();
       const list = answeredQuestions[sid] ? [...answeredQuestions[sid]] : [];
-      list.push({ question, options: [...options], multiSelect, answer, afterUserMsgIdx: afterIdx });
+      list.push({ question, options: [...options], multiSelect, answer, userMsgText });
       store.set({ answeredQuestions: { ...answeredQuestions, [sid]: list } });
     }
     card.querySelectorAll(".question-input-row").forEach(el => el.remove());
@@ -1451,6 +1462,52 @@ function appendQuestionCard(question: string, options: string[], multiSelect: bo
   removalObserver.observe($("messages"), { childList: true });
   updateSendStopButton();
   scrollBottom();
+}
+
+/**
+ * Re-insert answered question cards after `loadHistory` rebuilds the
+ * chat DOM. For each answered question we saved on this session, we
+ * look up the user message whose text starts with the snippet we
+ * stored at lockCard time and place the answered card right after
+ * it. If no match is found (e.g. the user message was compacted
+ * away), we append the card to the end so the user still sees that
+ * the question was answered.
+ */
+function restoreAnsweredQuestions(sid: string) {
+  const list = store.get().answeredQuestions[sid];
+  if (!list || list.length === 0) return;
+  const messages = $("messages");
+  for (const aq of list) {
+    // Skip if a card with this exact question text is already in
+    // the DOM (e.g. the running-turn replay path in switchSession
+    // already inserted it). Avoids duplicates on the second pass.
+    const allAnswered = messages.querySelectorAll(".question-card-answered .question-text");
+    let alreadyRendered = false;
+    allAnswered.forEach((el) => {
+      if ((el.textContent || "").trim() === aq.question) {
+        alreadyRendered = true;
+      }
+    });
+    if (alreadyRendered) continue;
+
+    const card = document.createElement("div");
+    card.className = "question-card question-card-answered";
+    card.innerHTML = `<div class="question-text">${esc(aq.question)}</div><div class="question-reply">You: ${esc(aq.answer)}</div>`;
+
+    let inserted = false;
+    if (aq.userMsgText) {
+      const userMsgs = messages.querySelectorAll(".msg-user");
+      for (const um of Array.from(userMsgs)) {
+        const text = (um.textContent || "").trim();
+        if (text.startsWith(aq.userMsgText) || text.includes(aq.userMsgText)) {
+          um.after(card);
+          inserted = true;
+          break;
+        }
+      }
+    }
+    if (!inserted) messages.appendChild(card);
+  }
 }
 
 function appendError(msg: string) {
