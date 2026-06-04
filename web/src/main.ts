@@ -1040,7 +1040,7 @@ async function switchSession(sid: string) {
             const args = tc.arguments || {};
             appendQuestionCard(
               String(args.question || ""),
-              (args.options as string[]) || [],
+              (args.options as unknown[]) || [],
               !!args.multi_select,
               tc.id,
             );
@@ -1187,7 +1187,7 @@ function renderMessages(target: HTMLElement, msgs: any[]): void {
           try { answer = JSON.parse(m.content).answer || ""; } catch {}
         }
         const q = String(args.question || "");
-        const opts = (args.options as string[]) || [];
+        const opts = (args.options as unknown[]) || [];
         const ms = !!args.multi_select;
         if (q) {
           const card = document.createElement("div");
@@ -1437,7 +1437,15 @@ function appendApprovalCard(requestId: string, toolName: string, args: Record<st
   currentAssistantEl = null;
 }
 
-function appendQuestionCard(question: string, options: string[], multiSelect: boolean = false, callId?: string) {
+function appendQuestionCard(question: string, rawOptions: unknown[], multiSelect: boolean = false, callId?: string) {
+  const options = rawOptions.map((o): string => {
+    if (typeof o === "string") return o;
+    if (typeof o === "object" && o !== null) {
+      const obj = o as Record<string, unknown>;
+      return String(obj.label ?? obj.value ?? JSON.stringify(o));
+    }
+    return String(o);
+  });
   showEmptyState(false);
   const card = document.createElement("div");
   card.className = "question-card";
@@ -1795,7 +1803,7 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
   } else if (t === "ask_user_question") {
     removeTyping();
     const q = String((ev.question as string) || "");
-    const opts = ((ev.options as string[]) || []) as string[];
+    const opts = (ev.options as unknown[]) || [];
     const ms = !!ev.multi_select;
     const cid = (ev.call_id as string) || undefined;
     // Skip if renderMessages already rendered an answered card for this

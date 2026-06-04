@@ -1,8 +1,18 @@
+import base64
 from pathlib import Path
+
+IMAGE_EXTENSIONS = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+}
 
 
 class ReadFileTool:
-    """Enhanced read file tool with line numbers, offset, limit, and binary detection."""
+    """Enhanced read file tool with line numbers, offset, limit, and image support."""
 
     DEFAULT_LIMIT = 2000
 
@@ -33,15 +43,18 @@ class ReadFileTool:
             },
         }
 
+    def _is_image_file(self, path: Path) -> str | None:
+        """Return MIME type if the file is an image, else None."""
+        return IMAGE_EXTENSIONS.get(path.suffix.lower())
+
     def _is_binary_file(self, path: Path) -> bool:
         """Check if a file is binary using null-byte detection and extension check."""
-        # Common binary extensions
         binary_extensions = {
             '.zip', '.tar', '.gz', '.7z', '.exe', '.dll', '.so', '.dylib', '.bin', '.dat',
             '.pyc', '.pyo', '.class', '.jar', '.war', '.obj', '.o', '.a', '.lib',
-            '.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.wasm'
+            '.ico', '.wasm'
         }
-        if path.suffix.lower() in binary_extensions:
+        if path.suffix.lower() in binary_extensions or path.suffix.lower() in IMAGE_EXTENSIONS:
             return True
 
         # Sample check for null bytes
@@ -54,7 +67,6 @@ class ReadFileTool:
                     return False
                 if b'\x00' in chunk:
                     return True
-                # Check for high ratio of non-printable chars
                 non_printable = sum(1 for b in chunk if b < 9 or (13 < b < 32))
                 if non_printable / len(chunk) > 0.3:
                     return True
@@ -104,6 +116,18 @@ class ReadFileTool:
                 return {
                     "content": "\n".join(output),
                     "metadata": {"type": "directory", "truncated": truncated}
+                }
+
+            # Check for image file — read as base64 data URL
+            mime = self._is_image_file(path)
+            if mime:
+                data = path.read_bytes()
+                b64 = base64.b64encode(data).decode("ascii")
+                data_url = f"data:{mime};base64,{b64}"
+                return {
+                    "type": "image",
+                    "image_url": data_url,
+                    "metadata": {"path": str(path), "size": len(data), "mime": mime},
                 }
 
             # Check for binary file

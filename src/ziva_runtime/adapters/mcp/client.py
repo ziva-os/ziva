@@ -13,6 +13,7 @@ class MCPServerConfig:
     url: str | None = None
     transport: str = "stdio"  # "stdio" or "http"
     environment: Dict[str, str] = field(default_factory=dict)
+    timeout: int = 120  # seconds
 
 
 class MCPToolWrapper:
@@ -81,7 +82,7 @@ class MCPClient:
             server = MCPServerStdio(
                 name=cfg.name,
                 params={"command": cfg.command, "args": cfg.args, "env": env},
-                client_session_timeout_seconds=30,
+                client_session_timeout_seconds=cfg.timeout,
             )
         else:
             raise ValueError(f"Unsupported MCP transport: {cfg.transport}")
@@ -145,6 +146,7 @@ def parse_mcp_config(config: Dict[str, Any]) -> List[MCPServerConfig]:
                 url=srv.get("url"),
                 transport=srv.get("type", "stdio"),
                 environment=srv.get("environment", {}),
+                timeout=int(srv.get("timeout", 120)),
             ))
     # List format: [{name, command, args, ...}]
     elif isinstance(servers, list):

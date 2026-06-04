@@ -524,11 +524,31 @@ class Runtime:
                     self._session_history.setdefault(session_id, []).append(ChatMessage(role="assistant", content=content))
                     self._persist_message(session_id, ChatMessage(role="assistant", content=content), is_subagent=is_sub, sub_call_id=sub_call_id)
                     return
-                result_content = json.dumps(tool_output, ensure_ascii=False) if isinstance(tool_output, dict) else str(tool_output)
-                tool_msg = ChatMessage(role="tool", content=result_content, tool_call_id=tc.id, name=tc.name)
-                working.append(tool_msg)
-                self._session_history.setdefault(session_id, []).append(tool_msg)
-                self._persist_message(session_id, tool_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
+                # Check if tool returned an image — inject as multi-part content
+                if (isinstance(tool_output, dict)
+                        and tool_output.get("type") == "image"
+                        and tool_output.get("image_url")):
+                    # Tool message tells the LLM the file was read
+                    summary = f"[Image file read: {tool_output.get('metadata', {}).get('path', 'unknown')}]"
+                    tool_msg = ChatMessage(role="tool", content=summary, tool_call_id=tc.id, name=tc.name)
+                    working.append(tool_msg)
+                    self._session_history.setdefault(session_id, []).append(tool_msg)
+                    self._persist_message(session_id, tool_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
+                    # Synthetic user message with image so the LLM can "see" it
+                    image_parts: list = [
+                        {"type": "text", "text": f"[Image from {tool_output.get('metadata', {}).get('path', 'file')}]"},
+                        {"type": "image_url", "image_url": {"url": tool_output["image_url"]}},
+                    ]
+                    img_msg = ChatMessage(role="user", content=image_parts)
+                    working.append(img_msg)
+                    self._session_history.setdefault(session_id, []).append(img_msg)
+                    self._persist_message(session_id, img_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
+                else:
+                    result_content = json.dumps(tool_output, ensure_ascii=False) if isinstance(tool_output, dict) else str(tool_output)
+                    tool_msg = ChatMessage(role="tool", content=result_content, tool_call_id=tc.id, name=tc.name)
+                    working.append(tool_msg)
+                    self._session_history.setdefault(session_id, []).append(tool_msg)
+                    self._persist_message(session_id, tool_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
 
             latency_ms = int((time.perf_counter() - round_start) * 1000)
             event = {"type": "round_complete", "round": round_idx, "latency_ms": latency_ms, "usage": final_usage}
