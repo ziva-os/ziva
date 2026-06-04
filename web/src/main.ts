@@ -185,7 +185,7 @@ function init() {
             <div class="slash-menu" id="slashMenu" style="display:none"></div>
             <div class="composer-toolbar">
               <div class="toolbar-left">
-                <button class="composer-action-btn" id="btnAttach" title="Attach image">📎</button>
+                <button class="composer-action-btn" id="btnAttach" title="Attach image">+</button>
                 <select id="approvalSelect" title="Mode">
                   <option value="suggest">Fast</option>
                   <option value="auto-edit">Auto Edit</option>
