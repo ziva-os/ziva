@@ -956,6 +956,9 @@ async function switchSession(sid: string) {
         }
         scrollBottom();
       }
+      // The turn is still running — show the typing indicator so the
+      // user sees the session as active, not idle.
+      appendTyping();
     }
   } catch (e) {
     console.error("Failed to fetch running turn events:", e);
@@ -1081,6 +1084,9 @@ function renderMessages(target: HTMLElement, msgs: any[]): void {
       if (!isPruned && toolName === "spawn_agent" && typeof output === "object" && output !== null) {
         subagentTools = (output as any).tools;
       }
+
+      // ask_user is rendered as a question/answered card, not a tool card.
+      if (toolName === "ask_user") continue;
 
       appendToolCard(toolName, args, "success", output, subagentTools, isPruned, target);
     }
