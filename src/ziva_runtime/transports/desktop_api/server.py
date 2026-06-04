@@ -147,12 +147,14 @@ class DesktopAPIServer:
 
     async def get_messages(self, request: web.Request) -> web.Response:
         sid = request.match_info["sid"]
-        session = self.store.get_session(sid)
-        if not session:
+        if not self.store.exists(sid):
             return web.json_response({"error": "session_not_found"}, status=404)
-        # Also include last_usage from session metadata for context ring
+        # Always read from FileStorage so we get messages persisted by the
+        # runtime during a running turn (tool results, assistant text, etc.).
+        # The in-memory _loaded_sessions cache may be stale if the runtime
+        # has persisted new messages since the session was first loaded.
         meta = FileStorage.get_session(self.runtime.project_id, sid) or {}
-        all_msgs = list(session.get("messages", []))
+        all_msgs = list(FileStorage.get_messages(self.runtime.project_id, sid))
         # By default, return the post-compact view (matches what the runtime
         # sees). With ?include_dropped=true, return the full history so the
         # UI's "expand earlier messages" affordance can render what was
