@@ -15,6 +15,19 @@ function esc(s: string): string {
   return d.innerHTML;
 }
 
+function previewText(content: unknown): string {
+  if (typeof content === "string") return content.slice(0, 60);
+  if (Array.isArray(content)) {
+    for (const p of content) {
+      if (typeof p === "object" && p !== null && (p as any).type === "text" && (p as any).text) {
+        return (p as any).text.slice(0, 60);
+      }
+    }
+    return "(image)";
+  }
+  return String(content).slice(0, 60);
+}
+
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 // ---- State ----
@@ -833,7 +846,7 @@ async function refreshSessions() {
       const msgData = await api.getMessages(s.id);
       const msgs = msgData.messages || [];
       const userMsg = msgs.find(m => m.role === "user");
-      s.preview = userMsg ? userMsg.content.slice(0, 60) : "Empty session";
+      s.preview = userMsg ? previewText(userMsg.content) : "Empty session";
       const turns = await api.getTurns(s.id);
       s.turnCount = turns.length;
       const hasRunning = turns.some(t => t.status === "running");
@@ -1686,7 +1699,7 @@ async function refreshSessionPreview(sid: string) {
     const data = await api.getMessages(sid);
     const userMsg = (data.messages || []).find(m => m.role === "user");
     if (!userMsg) return;
-    const preview = userMsg.content.slice(0, 60);
+    const preview = previewText(userMsg.content);
     const { sessions } = store.get();
     const s = sessions.find(x => x.id === sid);
     if (!s || s.preview === preview) return;
