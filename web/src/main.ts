@@ -749,7 +749,6 @@ async function refreshSessions() {
   }
 
   store.set({ sessions });
-  syncSubscriptions();
   renderSessions();
   const toEnrich = sessions.slice(0, 10);
   for (const s of toEnrich) {
@@ -906,7 +905,6 @@ async function createSession() {
   const sessions = [...store.get().sessions];
   sessions.unshift({ id, turnCount: 0, status: "idle", preview: "Empty session" });
   store.set({ sessions });
-  syncSubscriptions();
   renderSessions();
   await switchSession(id);
 }
@@ -953,7 +951,6 @@ async function deleteSession(sid: string) {
   await api.deleteSession(sid);
   const sessions = store.get().sessions.filter(s => s.id !== sid);
   store.set({ sessions });
-  syncSubscriptions();
   if (store.get().activeSid === sid) {
     store.set({ activeSid: null });
     $("messages").innerHTML = "";
@@ -1461,20 +1458,20 @@ function scrollBottom() {
 
 // ---- SSE Event Handling ----
 
-// Pool dispatches (sid, ev). For the active session we render live;
-// for background sessions we only sync the sidebar + per-session
-// running flag — the chat DOM is rebuilt from history on switch.
-const sseUnsubs: Map<string, () => void> = new Map();
-
-function handleSessionEvent(sid: string, ev: api.Event) {
+// Single global SSE connection delivers events for every session. Each
+// event carries a `session_id` field (set by the server's runtime._emit),
+// which we use to route to the right handler. For the active session we
+// render live; for background sessions we only sync the sidebar + per-
+// session running flag — the chat DOM is rebuilt from history on switch.
+function routeSSEEvent(ev: api.Event) {
+  const sid = (ev as any).session_id as string | undefined;
+  if (!sid) return;
   const { activeSid } = store.get();
   if (sid === activeSid) {
     handleEvent(ev, true);
-    return;
+  } else {
+    syncBackgroundSession(sid, ev);
   }
-  // Background session: keep sidebar + running flag in sync, but
-  // don't touch the chat DOM (it belongs to the active session).
-  syncBackgroundSession(sid, ev);
 }
 
 function syncBackgroundSession(sid: string, ev: api.Event) {
@@ -1531,7 +1528,7 @@ async function refreshSessionPreview(sid: string) {
 }
 
 // Replay any persisted events from a still-running turn on switch
-// (the live pool will then keep streaming new events for that sid).
+// (the live global stream will then keep streaming new events for that sid).
 async function replayRunningTurn(sid: string) {
   try {
     const turns = await api.getTurns(sid);
@@ -1550,28 +1547,9 @@ async function replayRunningTurn(sid: string) {
   }
 }
 
-function ensureSubscribed(sid: string) {
-  if (sseUnsubs.has(sid)) return;
-  const off = sse.subscribe(sid, handleSessionEvent);
-  sseUnsubs.set(sid, off);
-}
-
-function unsubscribeSession(sid: string) {
-  const off = sseUnsubs.get(sid);
-  if (off) { off(); sseUnsubs.delete(sid); }
-}
-
-// Wire up the pool: every known session is subscribed for its full
-// lifetime so the user can flip between them without losing events.
-function syncSubscriptions() {
-  const known = new Set(store.get().sessions.map(s => s.id));
-  for (const sid of sseUnsubs.keys()) {
-    if (!known.has(sid)) unsubscribeSession(sid);
-  }
-  for (const s of store.get().sessions) {
-    ensureSubscribed(s.id);
-  }
-}
+// One global subscription covers every session. Events for the active
+// sid render live; events for any other sid drive sidebar status only.
+sse.subscribe(routeSSEEvent);
 
 function handleEvent(ev: api.Event, updateScroll: boolean = true) {
   // Skip all sub-agent events — they are shown in a collapsed card, not individually

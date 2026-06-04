@@ -105,6 +105,7 @@ class DesktopAPIServer:
         self.app.router.add_post("/sessions/{sid}/compact", self.compact_session)
         self.app.router.add_post("/sessions/{sid}/prune", self.prune_session)
         self.app.router.add_post("/sessions/{sid}/cancel", self.cancel_turn)
+        self.app.router.add_get("/events", self.events_global)
         self.app.router.add_get("/sessions/{sid}/events", self.events)
         self.app.router.add_get("/sessions/{sid}/tools", self.get_tools_status)
         self.app.router.add_get("/sessions/{sid}/plan", self.get_plan)
@@ -434,6 +435,46 @@ class DesktopAPIServer:
             pass
         finally:
             self.runtime.event_bus.unsubscribe(sid, queue)
+        return resp
+
+    async def events_global(self, request: web.Request) -> web.StreamResponse:
+        """Single SSE stream that fans out every session's events.
+
+        Each event already carries a `session_id` field (set by
+        runtime._emit). The frontend's main.ts routes events to the
+        per-session handler by that field, so the UI only needs one
+        connection regardless of how many sessions exist. This replaces
+        the previous per-session `/sessions/{sid}/events` model in the
+        hot path; that endpoint is kept for backward compatibility but
+        no longer used by the web UI.
+
+        The connection stays open until the client disconnects. We
+        catch the same `ConnectionResetError` / `asyncio.CancelledError`
+        race as the per-session handler so an aborted client during
+        `resp.prepare` doesn't propagate as an unhandled error.
+        """
+        resp = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
+        queue = self.runtime.event_bus.subscribe_global()
+        try:
+            await resp.prepare(request)
+        except (ConnectionResetError, asyncio.CancelledError):
+            self.runtime.event_bus.unsubscribe_global(queue)
+            return resp
+        try:
+            while True:
+                event = await queue.get()
+                await resp.write(f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n".encode("utf-8"))
+        except (asyncio.CancelledError, ConnectionResetError):
+            pass
+        finally:
+            self.runtime.event_bus.unsubscribe_global(queue)
         return resp
 
     async def get_tools_status(self, request: web.Request) -> web.Response:

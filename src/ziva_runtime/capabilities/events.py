@@ -10,11 +10,13 @@ from typing import Any, DefaultDict, Deque, Dict, List
 class EventBus:
     _queues: DefaultDict[str, List[asyncio.Queue]]
     _history: DefaultDict[str, Deque[Dict[str, Any]]]
+    _global_queues: List[asyncio.Queue]
     _history_limit: int
 
     def __init__(self, history_limit: int = 500) -> None:
         self._queues = defaultdict(list)
         self._history = defaultdict(lambda: deque(maxlen=history_limit))
+        self._global_queues = []
         self._history_limit = history_limit
 
     def subscribe(self, session_id: str) -> asyncio.Queue:
@@ -22,9 +24,24 @@ class EventBus:
         self._queues[session_id].append(q)
         return q
 
+    def subscribe_global(self) -> asyncio.Queue:
+        """Subscribe to a single broadcast queue that fans out every
+        session's events. The frontend uses this so one SSE connection
+        can deliver events for N sessions; per-session routing happens
+        client-side from the `session_id` field on each event."""
+        q: asyncio.Queue = asyncio.Queue()
+        self._global_queues.append(q)
+        return q
+
+    def unsubscribe_global(self, queue: asyncio.Queue) -> None:
+        if queue in self._global_queues:
+            self._global_queues.remove(queue)
+
     async def publish(self, session_id: str, event: Dict[str, Any]) -> None:
         self._history[session_id].append(event)
         for q in list(self._queues.get(session_id, [])):
+            await q.put(event)
+        for q in list(self._global_queues):
             await q.put(event)
 
     def unsubscribe(self, session_id: str, queue: asyncio.Queue) -> None:
