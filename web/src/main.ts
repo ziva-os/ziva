@@ -935,20 +935,30 @@ async function switchSession(sid: string) {
     const activeTurn = turns.find(t => t.status === "running");
     if (activeTurn) {
       setActiveRunning(true);
-      if (activeTurn.events) {
-        // Only replay events that need live UI state not already
-        // rendered by renderMessages: tool_start/tool_end (for pending
-        // tool cards), ask_user_question (for interactive question
-        // cards), and turn_end. Skip text_delta and model_response
-        // because loadHistory already rendered the persisted assistant
-        // messages including thinking content — replaying them would
-        // duplicate the text.
-        const skipTypes = new Set(["delta", "model_response", "round_complete", "status"]);
-        for (const ev of activeTurn.events) {
-          if (skipTypes.has(ev.type as string)) continue;
-          handleEvent(ev, false);
+      // Detect pending ask_user calls from the message history.
+      // An ask_user is pending if there's an assistant message with an
+      // ask_user tool_call but no following tool result for that call_id.
+      // renderMessages already renders answered cards from tool results;
+      // here we only handle the interactive case (unanswered question).
+      const msgs = (await api.getMessages(sid)).messages || [];
+      const answeredIds = new Set<string>();
+      for (const m of msgs) {
+        if (m.role === "tool" && m.name === "ask_user" && m.tool_call_id) {
+          answeredIds.add(m.tool_call_id);
         }
-        scrollBottom();
+      }
+      for (const m of msgs) {
+        const tcs = m.tool_calls || [];
+        for (const tc of tcs) {
+          if (tc.name === "ask_user" && tc.id && !answeredIds.has(tc.id)) {
+            const args = tc.arguments || {};
+            appendQuestionCard(
+              String(args.question || ""),
+              (args.options as string[]) || [],
+              !!args.multi_select,
+            );
+          }
+        }
       }
       // The turn is still running — show the typing indicator so the
       // user sees the session as active, not idle.
