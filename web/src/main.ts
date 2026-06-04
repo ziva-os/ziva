@@ -931,24 +931,6 @@ async function switchSession(sid: string) {
   renderPendingBar();
   await loadHistory(sid);
 
-  // Restore answered question cards that were persisted before the
-  // user switched away. loadHistory rebuilds the chat DOM from server
-  // messages, so the answered cards are gone — re-insert them.
-  const answeredList = store.get().answeredQuestions[sid];
-  if (answeredList && answeredList.length > 0) {
-    const userMsgs = $("messages").querySelectorAll(".msg-user");
-    // Insert in reverse order so indices don't shift.
-    for (let i = answeredList.length - 1; i >= 0; i--) {
-      const aq = answeredList[i];
-      const afterEl = userMsgs[aq.afterUserMsgIdx];
-      if (!afterEl) continue;
-      const card = document.createElement("div");
-      card.className = "question-card question-card-answered";
-      card.innerHTML = `<div class="question-text">${esc(aq.question)}</div><div class="question-reply">You: ${esc(aq.answer)}</div>`;
-      afterEl.after(card);
-    }
-  }
-
   try {
     const turns = await api.getTurns(sid);
     const activeTurn = turns.find(t => t.status === "running");
@@ -1668,13 +1650,23 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     highlightCode(el.parentElement!);
     if (updateScroll) scrollBottom();
   } else if (t === "ask_user_question") {
-    // Render the question card immediately so the user sees it
-    // before the ask_user tool coroutine unblocks.
     removeTyping();
     const q = String((ev.question as string) || "");
     const opts = ((ev.options as string[]) || []) as string[];
     const ms = !!ev.multi_select;
-    appendQuestionCard(q, opts, ms);
+    // If the user already answered this question (e.g. after
+    // switching sessions back), render the answered card instead
+    // of the interactive one.
+    const activeSid = store.get().activeSid;
+    const answered = activeSid ? store.get().answeredQuestions[activeSid]?.find(aq => aq.question === q) : undefined;
+    if (answered) {
+      const card = document.createElement("div");
+      card.className = "question-card question-card-answered";
+      card.innerHTML = `<div class="question-text">${esc(q)}</div><div class="question-reply">You: ${esc(answered.answer)}</div>`;
+      $("messages").appendChild(card);
+    } else {
+      appendQuestionCard(q, opts, ms);
+    }
     if (updateScroll) scrollBottom();
   } else if (t === "tool_start") {
     removeTyping();
