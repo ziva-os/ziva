@@ -943,7 +943,7 @@ async function switchSession(sid: string) {
         // because loadHistory already rendered the persisted assistant
         // messages including thinking content — replaying them would
         // duplicate the text.
-        const skipTypes = new Set(["text_delta", "model_response", "round_complete", "status"]);
+        const skipTypes = new Set(["delta", "model_response", "round_complete", "status"]);
         for (const ev of activeTurn.events) {
           if (skipTypes.has(ev.type as string)) continue;
           handleEvent(ev, false);
