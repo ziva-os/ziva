@@ -1671,7 +1671,15 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     const q = String((ev.question as string) || "");
     const opts = ((ev.options as string[]) || []) as string[];
     const ms = !!ev.multi_select;
-    appendQuestionCard(q, opts, ms);
+    // Skip if renderMessages already rendered an answered card for this
+    // question (happens when replaying a running turn whose earlier
+    // ask_user calls have already been answered and persisted as tool
+    // results in the message history).
+    const existing = $("messages").querySelectorAll(".question-card-answered .question-text");
+    const alreadyAnswered = Array.from(existing).some(el => (el.textContent || "").trim() === q);
+    if (!alreadyAnswered) {
+      appendQuestionCard(q, opts, ms);
+    }
     if (updateScroll) scrollBottom();
   } else if (t === "tool_start") {
     removeTyping();
