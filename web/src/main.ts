@@ -936,7 +936,16 @@ async function switchSession(sid: string) {
     if (activeTurn) {
       setActiveRunning(true);
       if (activeTurn.events) {
+        // Only replay events that need live UI state not already
+        // rendered by renderMessages: tool_start/tool_end (for pending
+        // tool cards), ask_user_question (for interactive question
+        // cards), and turn_end. Skip text_delta and model_response
+        // because loadHistory already rendered the persisted assistant
+        // messages including thinking content — replaying them would
+        // duplicate the text.
+        const skipTypes = new Set(["text_delta", "model_response", "round_complete", "status"]);
         for (const ev of activeTurn.events) {
+          if (skipTypes.has(ev.type as string)) continue;
           handleEvent(ev, false);
         }
         scrollBottom();
