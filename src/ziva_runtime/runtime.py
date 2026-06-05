@@ -553,12 +553,23 @@ class Runtime:
             # Step 3: emit tool_end and process results in original order
             deferred_images: list[ChatMessage] = []
             for tool_output, is_not_found, tc in tool_results:
+                # Strip large image data from SSE event — the frontend loads
+                # images from _hidden messages in the message history instead
+                # of carrying multi-MB base64 through the SSE stream.
+                sse_output = tool_output
+                if (isinstance(tool_output, dict)
+                        and tool_output.get("type") == "image"
+                        and tool_output.get("image_url")):
+                    sse_output = {
+                        "type": "image",
+                        "metadata": tool_output.get("metadata", {}),
+                    }
                 event = {
                     "type": "tool_end",
                     "round": round_idx,
                     "tool": tc.name,
                     "arguments": tc.arguments,
-                    "output": tool_output,
+                    "output": sse_output,
                     "error_class": "tool_not_found" if is_not_found else None,
                     "call_id": tc.id,
                 }

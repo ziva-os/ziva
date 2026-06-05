@@ -1370,6 +1370,47 @@ function getAbbreviatedArg(args: Record<string, unknown>): string {
   return JSON.stringify(args).slice(0, 50);
 }
 
+async function loadHiddenImageForTool(sid: string, imagePath: string) {
+  try {
+    const data = await api.getMessages(sid, { includeDropped: true });
+    const msgs = data.messages || [];
+    for (const m of msgs) {
+      if (m.role === "user" && (m as any)._hidden && Array.isArray(m.content)) {
+        let textPart = "";
+        let imgUrl = "";
+        for (const part of m.content) {
+          if (typeof part === "object" && part !== null) {
+            if ((part as any).type === "text") textPart = (part as any).text || "";
+            if ((part as any).type === "image_url" && (part as any).image_url?.url) imgUrl = (part as any).image_url.url;
+          }
+        }
+        if (textPart && imgUrl) {
+          const pathMatch = textPart.match(/\[Image from (.+)\]/);
+          if (pathMatch && pathMatch[1] === imagePath) {
+            // Find the last tool card for read_file with this path and inject the image
+            const toolCards = document.querySelectorAll(".tool-card");
+            for (let i = toolCards.length - 1; i >= 0; i--) {
+              const card = toolCards[i];
+              const argsEl = card.querySelector(".tool-args");
+              if (argsEl && argsEl.textContent?.includes(imagePath)) {
+                const body = card.querySelector(".tool-card-body");
+                if (body && !body.querySelector("img")) {
+                  const imgDiv = document.createElement("div");
+                  imgDiv.className = "section-content tool-output-image";
+                  imgDiv.innerHTML = `<img src="${esc(imgUrl)}" alt="tool output" loading="lazy" />`;
+                  body.appendChild(imgDiv);
+                }
+                break;
+              }
+            }
+            return;
+          }
+        }
+      }
+    }
+  } catch { /* best-effort */ }
+}
+
 function appendToolCard(
   toolName: string,
   args: Record<string, unknown>,
@@ -1912,7 +1953,23 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
         const output = ev.output || {};
         subagentTools = output.tools;
       }
-      appendToolCard(ev.tool as string, (ev.arguments || {}) as Record<string, unknown>, status, ev.output, subagentTools);
+      // Image tool_end events have type:"image" but no image_url (stripped
+      // to keep SSE payloads small). Fetch the image from _hidden messages.
+      let output = ev.output;
+      if (output && typeof output === "object" && (output as any).type === "image" && !(output as any).image_url) {
+        const imgMeta = (output as any).metadata || {};
+        const imgPath = imgMeta.path || "";
+        if (imgPath) {
+          // Load _hidden messages to find the image URL
+          const sid = store.get().activeSid;
+          if (sid) {
+            loadHiddenImageForTool(sid, imgPath);
+          }
+          // Show placeholder while loading
+          output = { type: "image", metadata: imgMeta };
+        }
+      }
+      appendToolCard(ev.tool as string, (ev.arguments || {}) as Record<string, unknown>, status, output, subagentTools);
     }
     if (updateScroll) scrollBottom();
   } else if (t === "permission_request" || t === "approval_request") {

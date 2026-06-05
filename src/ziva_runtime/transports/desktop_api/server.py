@@ -480,7 +480,10 @@ class DesktopAPIServer:
         try:
             while True:
                 event = await queue.get()
-                await resp.write(f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n".encode("utf-8"))
+                payload = await asyncio.to_thread(
+                    lambda: f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n".encode("utf-8")
+                )
+                await resp.write(payload)
         except (asyncio.CancelledError, ConnectionResetError):
             pass
         finally:
