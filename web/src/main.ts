@@ -1442,7 +1442,9 @@ function appendQuestionCard(question: string, rawOptions: unknown[], multiSelect
     if (typeof o === "string") return o;
     if (typeof o === "object" && o !== null) {
       const obj = o as Record<string, unknown>;
-      return String(obj.label ?? obj.value ?? JSON.stringify(o));
+      const label = obj.label ?? obj.description ?? obj.value;
+      if (typeof label === "string" && label) return label;
+      return JSON.stringify(o);
     }
     return String(o);
   });

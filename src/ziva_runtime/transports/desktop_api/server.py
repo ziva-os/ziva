@@ -627,6 +627,8 @@ class DesktopAPIServer:
 
     async def cancel_turn(self, request: web.Request) -> web.Response:
         sid = request.match_info["sid"]
+        # Cancel all pending questions first so await_user_answer returns immediately
+        self.runtime.cancel_all_questions(sid)
         token = self._cancel_tokens.get(sid)
         if token:
             token.cancel()

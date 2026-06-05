@@ -246,11 +246,27 @@ class Runtime:
         final_content = ""
         final_usage = None
         final_finish_reason = "stop"
+        cancelled = False
         async for event in self._run_model_tool_loop(rendered_messages, sid, ctx):
             if event.get("type") == "model_response":
                 final_content = event.get("content", "")
                 final_usage = event.get("usage")
                 final_finish_reason = event.get("finish_reason", "stop")
+            if event.get("type") == "cancelled":
+                cancelled = True
+                final_finish_reason = "cancelled"
+                break
+
+        if cancelled:
+            result = ChatResult(
+                role="assistant",
+                content=final_content or "Turn cancelled by user.",
+                model=self.config["model"]["name"],
+                usage=final_usage,
+                finish_reason="cancelled",
+            )
+            await self._emit(sid, {"type": "turn_cancelled"})
+            return result
 
         # The loop already persisted the final assistant message; just construct ChatResult
         result = ChatResult(
@@ -550,6 +566,13 @@ class Runtime:
                     self._session_history.setdefault(session_id, []).append(tool_msg)
                     self._persist_message(session_id, tool_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
 
+            # If any tool was cancelled (user hit stop), abort the loop
+            if any(isinstance(o, dict) and o.get("status") == "cancelled" for o, _, _ in tool_results):
+                event = {"type": "cancelled", "round": round_idx}
+                yield _flag(event)
+                await self._emit(session_id, event)
+                return
+
             latency_ms = int((time.perf_counter() - round_start) * 1000)
             event = {"type": "round_complete", "round": round_idx, "latency_ms": latency_ms, "usage": final_usage}
             yield _flag(event)
@@ -677,6 +700,15 @@ class Runtime:
         else:
             fut.set_result({"status": "answered", "answer": answer})
         return True
+
+    def cancel_all_questions(self, session_id: str) -> None:
+        """Cancel all pending question futures for a session (called on turn cancel)."""
+        pending = self._pending_questions.pop(session_id, None)
+        if not pending:
+            return
+        for fut in pending.values():
+            if not fut.done():
+                fut.cancel()
 
     async def _execute_tool(self, call: ToolCall, ctx: RuntimeContext) -> Dict[str, Any]:
         # Check deny list (legacy, for backward compatibility)
@@ -936,10 +968,12 @@ class Runtime:
         # Approximate token->char conversion: 1 token ~ 4 chars for mixed content
         max_tool_output_chars = max_tool_tokens * 4
 
-        # Don't truncate error outputs or skill instructions
+        # Don't truncate error outputs, skill instructions, or image data
         if isinstance(output, dict) and output.get("error"):
             return output
         if tool_name == "read_skill":
+            return output
+        if isinstance(output, dict) and output.get("type") == "image":
             return output
 
         out_str = json.dumps(output, ensure_ascii=False) if isinstance(output, dict) else str(output)
