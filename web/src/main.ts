@@ -874,9 +874,6 @@ setInterval(async () => {
   for (const s of needTitle) {
     await refreshSessionPreview(s.id);
   }
-  // Also reconcile running sessions — catches missed turn_end events
-  // from SSE disconnects so the UI doesn't show stale "running" state.
-  await reconcileRunningSessions();
 }, 5000);
 
 interface SessionGroup { label: string; sessions: api.Session[] }
@@ -1053,6 +1050,18 @@ async function switchSession(sid: string) {
       // The turn is still running — show the typing indicator so the
       // user sees the session as active, not idle.
       appendTyping();
+    } else {
+      // No active turn — clear stale running state from missed turn_end
+      const { runningSessions, sessions: curSessions } = store.get();
+      if (runningSessions[sid]) {
+        const next = { ...runningSessions };
+        delete next[sid];
+        const s = curSessions.find(x => x.id === sid);
+        if (s) s.status = "done";
+        store.set({ runningSessions: next, sessions: [...curSessions] });
+        setActiveRunning(false);
+        renderSessions();
+      }
     }
   } catch (e) {
     console.error("Failed to fetch running turn events:", e);
