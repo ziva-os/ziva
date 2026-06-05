@@ -550,6 +550,7 @@ class Runtime:
             tool_results = await asyncio.gather(*[_run_tool(tc) for tc in final_tool_calls])
 
             # Step 3: emit tool_end and process results in original order
+            deferred_images: list[ChatMessage] = []
             for tool_output, is_not_found, tc in tool_results:
                 event = {
                     "type": "tool_end",
@@ -583,15 +584,14 @@ class Runtime:
                     working.append(tool_msg)
                     self._session_history.setdefault(session_id, []).append(tool_msg)
                     self._persist_message(session_id, tool_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
-                    # Synthetic user message with image so the LLM can "see" it
+                    # Defer the synthetic user image message — must come after ALL tool results
+                    # (APIs require consecutive tool-role messages before any user message)
                     image_parts: list = [
                         {"type": "text", "text": f"[Image from {tool_output.get('metadata', {}).get('path', 'file')}]"},
                         {"type": "image_url", "image_url": {"url": tool_output["image_url"]}},
                     ]
                     img_msg = ChatMessage(role="user", content=image_parts, _hidden=True)
-                    working.append(img_msg)
-                    self._session_history.setdefault(session_id, []).append(img_msg)
-                    self._persist_message(session_id, img_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
+                    deferred_images.append(img_msg)
                 elif isinstance(tool_output, dict) and tool_output.get("status") == "cancelled":
                     # User interrupted this tool execution (Claude Code style)
                     result_content = f"<tool_use_error>The user interrupted this tool execution ({tc.name})</tool_use_error>"
@@ -605,6 +605,12 @@ class Runtime:
                     working.append(tool_msg)
                     self._session_history.setdefault(session_id, []).append(tool_msg)
                     self._persist_message(session_id, tool_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
+
+            # Append deferred image messages after all tool results
+            for img_msg in deferred_images:
+                working.append(img_msg)
+                self._session_history.setdefault(session_id, []).append(img_msg)
+                self._persist_message(session_id, img_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
 
             # If any tool was cancelled (user hit stop), abort the loop
             if any(isinstance(o, dict) and o.get("status") == "cancelled" for o, _, _ in tool_results):

@@ -1123,18 +1123,28 @@ async function loadHistory(sid: string) {
 // expand affordance (target = .compact-dropped inside the collapse bar),
 // so the folded messages look identical to the live chat — just visually
 // scaled down via the wrapper's CSS.
-function _extractHiddenImageUrl(m: any): string | null {
-  if (!m || m.role !== "user" || !(m as any)._hidden || !Array.isArray(m.content)) return null;
-  for (const part of m.content) {
-    if (typeof part === "object" && part !== null && (part as any).type === "image_url" && (part as any).image_url?.url) {
-      return (part as any).image_url.url;
-    }
-  }
-  return null;
-}
-
 function renderMessages(target: HTMLElement, msgs: any[]): void {
   let pendingToolCalls: { id: string; name: string; arguments: Record<string, unknown> }[] = [];
+
+  // Build index of _hidden image URLs keyed by "[Image file read: <path>]" text
+  const hiddenImages = new Map<string, string>();
+  for (const m of msgs) {
+    if (m.role === "user" && (m as any)._hidden && Array.isArray(m.content)) {
+      let textPart = "";
+      let imgUrl = "";
+      for (const part of m.content) {
+        if (typeof part === "object" && part !== null) {
+          if ((part as any).type === "text") textPart = (part as any).text || "";
+          if ((part as any).type === "image_url" && (part as any).image_url?.url) imgUrl = (part as any).image_url.url;
+        }
+      }
+      if (textPart && imgUrl) {
+        // textPart is like "[Image from path]" — match to tool content "[Image file read: path]"
+        const pathMatch = textPart.match(/\[Image from (.+)\]/);
+        if (pathMatch) hiddenImages.set(`[Image file read: ${pathMatch[1]}]`, imgUrl);
+      }
+    }
+  }
 
   for (let mi = 0; mi < msgs.length; mi++) {
     const m = msgs[mi];
@@ -1183,10 +1193,10 @@ function renderMessages(target: HTMLElement, msgs: any[]): void {
         try { output = JSON.parse(m.content); } catch {}
       }
 
-      // If tool content is "[Image file read: ...]", look at the next _hidden
-      // message for the actual image URL so the tool card can render the image.
+      // If tool content is "[Image file read: ...]", look up the image URL
+      // from hiddenImages map (populated from _hidden user messages).
       if (typeof output === "string" && output.startsWith("[Image file read:")) {
-        const imgUrl = _extractHiddenImageUrl(msgs[mi + 1]);
+        const imgUrl = hiddenImages.get(output);
         if (imgUrl) output = { type: "image", image_url: imgUrl };
       }
 
