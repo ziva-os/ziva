@@ -7,7 +7,8 @@ import yaml
 
 
 DEFAULT_CONFIG: Dict[str, Any] = {
-    "model": {"provider": "openai_agents", "name": "gpt-4.1", "api_key": "", "base_url": "", "options": {}},
+    "model": {"name": "gpt-4.1"},
+    "providers": [{"name": "OpenAI", "api_type": "openai_compatible", "api_key": "", "base_url": "", "models": [{"name": "gpt-4.1"}]}],
     "prompt": {"profile": "default", "variables": {}},
     "tool": {"allow": [], "deny": [], "max_rounds": 3},
     "skill": {
@@ -58,10 +59,21 @@ def validate_config(config: Dict[str, Any]) -> None:
     model = config.get("model", {})
     if not isinstance(model, dict):
         raise ValueError("model must be an object")
-    if not isinstance(model.get("provider"), str) or not model.get("provider"):
-        raise ValueError("model.provider must be a non-empty string")
     if not isinstance(model.get("name"), str) or not model.get("name"):
         raise ValueError("model.name must be a non-empty string")
+
+    providers = config.get("providers")
+    if providers is not None:
+        if not isinstance(providers, list):
+            raise ValueError("providers must be a list")
+        for i, p in enumerate(providers):
+            if not isinstance(p, dict):
+                raise ValueError(f"providers[{i}] must be an object")
+            _expect_type(p, "api_type", str, f"providers[{i}]")
+            _expect_type(p, "api_key", str, f"providers[{i}]")
+            _expect_type(p, "base_url", str, f"providers[{i}]")
+            if "models" in p and not isinstance(p["models"], list):
+                raise ValueError(f"providers[{i}].models must be a list")
 
     prompt = config.get("prompt", {})
     if not isinstance(prompt, dict):

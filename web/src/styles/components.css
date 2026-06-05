@@ -1385,6 +1385,22 @@
 }
 .settings-mcp-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .settings-mcp-name { font-size: 13px; font-weight: 600; color: var(--ink); }
+.settings-provider-card {
+  border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-bottom: 12px;
+}
+.settings-provider-card-header {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+}
+.settings-provider-card-header .settings-provider-name {
+  font-weight: 600; font-size: 14px; border: none; background: transparent; padding: 4px 0;
+  color: var(--ink);
+}
+.settings-provider-card-header .settings-provider-name:focus {
+  outline: none; border-bottom: 1px solid var(--accent);
+}
+.settings-provider-models {
+  margin-bottom: 8px;
+}
 .settings-hook-row {
   display: flex; align-items: center; gap: 8px;
   border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; margin-bottom: 6px;

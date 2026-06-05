@@ -1123,13 +1123,25 @@ async function loadHistory(sid: string) {
 // expand affordance (target = .compact-dropped inside the collapse bar),
 // so the folded messages look identical to the live chat — just visually
 // scaled down via the wrapper's CSS.
+function _extractHiddenImageUrl(m: any): string | null {
+  if (!m || m.role !== "user" || !(m as any)._hidden || !Array.isArray(m.content)) return null;
+  for (const part of m.content) {
+    if (typeof part === "object" && part !== null && (part as any).type === "image_url" && (part as any).image_url?.url) {
+      return (part as any).image_url.url;
+    }
+  }
+  return null;
+}
+
 function renderMessages(target: HTMLElement, msgs: any[]): void {
   let pendingToolCalls: { id: string; name: string; arguments: Record<string, unknown> }[] = [];
 
-  for (const m of msgs) {
+  for (let mi = 0; mi < msgs.length; mi++) {
+    const m = msgs[mi];
     const isSub = (m as any)._subagent === true;
 
     if (m.role === "user") {
+      if ((m as any)._hidden) continue;
       appendUserMsg(m.content, target);
     } else if (m.role === "assistant") {
       if (isSub) {
@@ -1169,6 +1181,13 @@ function renderMessages(target: HTMLElement, msgs: any[]): void {
       const isPruned = typeof m.content === "string" && m.content === "[pruned]";
       if (!isPruned) {
         try { output = JSON.parse(m.content); } catch {}
+      }
+
+      // If tool content is "[Image file read: ...]", look at the next _hidden
+      // message for the actual image URL so the tool card can render the image.
+      if (typeof output === "string" && output.startsWith("[Image file read:")) {
+        const imgUrl = _extractHiddenImageUrl(msgs[mi + 1]);
+        if (imgUrl) output = { type: "image", image_url: imgUrl };
       }
 
       let subagentTools: string[] | undefined;
@@ -2475,7 +2494,6 @@ async function openSettingsModal() {
 
   try {
     const cfg = await api.getConfigJson();
-    const m = cfg.model || {};
     const ap = cfg.approval || {};
     const mem = cfg.memory || {};
     const tool = cfg.tool || {};
@@ -2543,6 +2561,50 @@ async function openSettingsModal() {
         </div>`;
     }
 
+    // Build providers HTML for Model tab
+    const rawProviders = (cfg.providers || []) as any[];
+    const defaultModelName = (cfg.model || {}).name || "";
+    let providersHtml = "";
+    const normProviders = rawProviders.map((p: any) => ({
+      name: p.name || "",
+      api_type: p.api_type || "openai_compatible",
+      api_key: p.api_key || "",
+      base_url: p.base_url || "",
+      models: (p.models || []).map((m2: any) => ({ name: m2.name || "", supports_image: !!m2.supports_image })),
+    }));
+    for (let pi = 0; pi < normProviders.length; pi++) {
+      const p = normProviders[pi];
+      const isOpenAI = p.api_type !== "anthropic";
+      let modelRows = "";
+      for (const model of p.models) {
+        modelRows += `
+          <div class="settings-model-row">
+            <input class="settings-input s-model-name" value="${esc(model.name)}" placeholder="Model name" style="flex:1" />
+            <label class="settings-model-check" title="Supports image input"><input type="checkbox" class="s-model-image" ${model.supports_image ? "checked" : ""} /> Image</label>
+            <label class="settings-model-check" title="Set as default model"><input type="radio" name="modelDefault" class="s-model-default" ${model.name === defaultModelName ? "checked" : ""} /> Default</label>
+            <button class="settings-hook-remove s-model-remove" title="Remove">×</button>
+          </div>`;
+      }
+      providersHtml += `
+        <div class="settings-provider-card" data-provider-idx="${pi}">
+          <div class="settings-provider-card-header">
+            <input class="settings-input settings-provider-name" data-field="provider_name" value="${esc(p.name)}" placeholder="Provider name" />
+            <button class="settings-hook-remove" data-provider-remove title="Remove provider">×</button>
+          </div>
+          <div class="settings-row"><label class="settings-label">API Type</label>
+            <select class="settings-select" data-field="api_type">
+              <option value="openai_compatible" ${isOpenAI ? "selected" : ""}>OpenAI Compatible</option>
+              <option value="anthropic" ${!isOpenAI ? "selected" : ""}>Anthropic</option>
+            </select>
+          </div>
+          <div class="settings-row"><label class="settings-label">API Key</label><input class="settings-input" type="password" data-field="api_key" value="${esc(p.api_key)}" /></div>
+          <div class="settings-row provider-base-url-row" style="${isOpenAI ? "" : "display:none"}"><label class="settings-label">Base URL</label><input class="settings-input" data-field="base_url" value="${esc(p.base_url)}" placeholder="e.g. https://api.openai.com/v1" /></div>
+          <div class="settings-section-title" style="margin-top:8px">Models</div>
+          <div class="settings-provider-models">${modelRows}</div>
+          <button class="settings-add-btn s-add-model-btn">+ Add Model</button>
+        </div>`;
+    }
+
     body.innerHTML = `
       <div class="settings-layout">
         <div class="settings-tabs">
@@ -2559,25 +2621,8 @@ async function openSettingsModal() {
           <!-- Model -->
           <div class="settings-panel active" data-panel="model">
             <div class="settings-panel-inner">
-              <div class="settings-section">
-                <div class="settings-section-title">Provider</div>
-                <div class="settings-row"><label class="settings-label">Type</label>
-                  <select class="settings-select" id="s_model_provider">
-                    <option value="openai_agents" ${m.provider === "openai_agents" ? "selected" : ""}>OpenAI Agents</option>
-                    <option value="anthropic" ${m.provider === "anthropic" ? "selected" : ""}>Anthropic</option>
-                    <option value="openai" ${m.provider === "openai" ? "selected" : ""}>OpenAI</option>
-                    <option value="" ${!m.provider ? "selected" : ""}>Custom</option>
-                  </select>
-                </div>
-                <div class="settings-row"><label class="settings-label">API Key</label><input class="settings-input" type="password" id="s_model_api_key" value="${esc(m.api_key || "")}" /></div>
-                <div class="settings-row"><label class="settings-label">Base URL</label><input class="settings-input" id="s_model_base_url" value="${esc(m.base_url || "")}" /></div>
-              </div>
-              <div class="settings-section">
-                <div class="settings-section-title">Models</div>
-                <div class="settings-desc">Add models and set one as default. Mark "Image" if the model supports vision input.</div>
-                <div id="sModelsList"></div>
-                <button class="settings-add-btn" id="addModelBtn">+ Add model</button>
-              </div>
+              <div id="sProvidersList">${providersHtml}</div>
+              <button class="settings-add-btn" id="addProviderBtn">+ Add Provider</button>
             </div>
           </div>
           <!-- Approval -->
@@ -2711,95 +2756,88 @@ async function openSettingsModal() {
       btn.onclick = () => (btn.closest(".settings-mcp-card") as HTMLElement)?.remove();
     });
 
-    // Models list management
-    const modelsList = (m.models || []) as Array<{ name: string; supports_image?: boolean }>;
-    const defaultModelName = m.name || "";
-    const modelsListEl = body.querySelector("#sModelsList") as HTMLElement;
+    // Provider card management
+    function wireProviderCardEvents(card: HTMLElement) {
+      // Remove provider
+      const removeBtn = card.querySelector("[data-provider-remove]") as HTMLElement | null;
+      if (removeBtn) removeBtn.onclick = () => card.remove();
 
-    function renderModelsList() {
-      const rows = modelsListEl.querySelectorAll(".settings-model-row");
-      const current: Array<{ name: string; supports_image: boolean; is_default: boolean }> = [];
-      rows.forEach((row) => {
-        const nameInput = row.querySelector(".s-model-name") as HTMLInputElement;
-        const imgCheck = row.querySelector(".s-model-image") as HTMLInputElement;
-        const defaultRadio = row.querySelector(".s-model-default") as HTMLInputElement;
-        if (nameInput) {
-          current.push({
-            name: nameInput.value.trim(),
-            supports_image: imgCheck?.checked ?? false,
-            is_default: defaultRadio?.checked ?? false,
-          });
-        }
-      });
-      modelsListEl.innerHTML = current.map((m, i) => `
-        <div class="settings-model-row">
-          <input class="settings-input s-model-name" value="${esc(m.name)}" placeholder="Model name" style="flex:1" />
-          <label class="settings-model-check" title="Supports image input"><input type="checkbox" class="s-model-image" ${m.supports_image ? "checked" : ""} /> Image</label>
-          <label class="settings-model-check" title="Set as default model"><input type="radio" name="modelDefault" class="s-model-default" ${m.is_default ? "checked" : ""} /> Default</label>
-          <button class="settings-hook-remove s-model-remove" title="Remove">×</button>
-        </div>
-      `).join("");
-      modelsListEl.querySelectorAll(".s-model-remove").forEach((btn) => {
+      // API type toggle → show/hide base URL
+      const apiTypeSel = card.querySelector("[data-field='api_type']") as HTMLSelectElement;
+      if (apiTypeSel) {
+        apiTypeSel.onchange = () => {
+          const row = card.querySelector(".provider-base-url-row") as HTMLElement;
+          if (row) row.style.display = apiTypeSel.value === "anthropic" ? "none" : "";
+        };
+      }
+
+      // Model rows: remove + default radio
+      card.querySelectorAll(".s-model-remove").forEach((btn) => {
         (btn as HTMLElement).onclick = () => (btn as HTMLElement).closest(".settings-model-row")!.remove();
       });
-      modelsListEl.querySelectorAll(".s-model-default").forEach((radio) => {
+      card.querySelectorAll(".s-model-default").forEach((radio) => {
         (radio as HTMLInputElement).onchange = () => {
-          modelsListEl.querySelectorAll(".s-model-default").forEach((r) => {
+          body.querySelectorAll(".s-model-default").forEach((r) => {
             if (r !== radio) (r as HTMLInputElement).checked = false;
           });
         };
       });
-    }
 
-    // Populate initial models
-    if (modelsList.length > 0) {
-      modelsListEl.innerHTML = modelsList.map((model: any) => `
-        <div class="settings-model-row">
-          <input class="settings-input s-model-name" value="${esc(model.name || "")}" placeholder="Model name" style="flex:1" />
-          <label class="settings-model-check" title="Supports image input"><input type="checkbox" class="s-model-image" ${model.supports_image ? "checked" : ""} /> Image</label>
-          <label class="settings-model-check" title="Set as default model"><input type="radio" name="modelDefault" class="s-model-default" ${model.name === defaultModelName ? "checked" : ""} /> Default</label>
-          <button class="settings-hook-remove s-model-remove" title="Remove">×</button>
-        </div>
-      `).join("");
-    } else {
-      // Single model from config (backward compat)
-      modelsListEl.innerHTML = `
-        <div class="settings-model-row">
-          <input class="settings-input s-model-name" value="${esc(m.name || "")}" placeholder="Model name" style="flex:1" />
-          <label class="settings-model-check" title="Supports image input"><input type="checkbox" class="s-model-image" /> Image</label>
-          <label class="settings-model-check" title="Set as default model"><input type="radio" name="modelDefault" class="s-model-default" checked /> Default</label>
-          <button class="settings-hook-remove s-model-remove" title="Remove">×</button>
-        </div>`;
-    }
-    modelsListEl.querySelectorAll(".s-model-remove").forEach((btn) => {
-      (btn as HTMLElement).onclick = () => (btn as HTMLElement).closest(".settings-model-row")!.remove();
-    });
-    modelsListEl.querySelectorAll(".s-model-default").forEach((radio) => {
-      (radio as HTMLInputElement).onchange = () => {
-        modelsListEl.querySelectorAll(".s-model-default").forEach((r) => {
-          if (r !== radio) (r as HTMLInputElement).checked = false;
-        });
-      };
-    });
-
-    const addModelBtn = body.querySelector("#addModelBtn") as HTMLElement;
-    if (addModelBtn) {
-      addModelBtn.onclick = () => {
-        const row = document.createElement("div");
-        row.className = "settings-model-row";
-        row.innerHTML = `
-          <input class="settings-input s-model-name" value="" placeholder="Model name" style="flex:1" />
-          <label class="settings-model-check" title="Supports image input"><input type="checkbox" class="s-model-image" /> Image</label>
-          <label class="settings-model-check" title="Set as default model"><input type="radio" name="modelDefault" class="s-model-default" /> Default</label>
-          <button class="settings-hook-remove s-model-remove" title="Remove">×</button>`;
-        row.querySelector(".s-model-remove")!.onclick = () => row.remove();
-        row.querySelector(".s-model-default")!.onchange = () => {
-          modelsListEl.querySelectorAll(".s-model-default").forEach((r) => {
-            if (r !== row.querySelector(".s-model-default")) (r as HTMLInputElement).checked = false;
-          });
+      // Add model button
+      const addModelBtn = card.querySelector(".s-add-model-btn") as HTMLElement | null;
+      if (addModelBtn) {
+        addModelBtn.onclick = () => {
+          const modelsDiv = card.querySelector(".settings-provider-models")!;
+          const row = document.createElement("div");
+          row.className = "settings-model-row";
+          row.innerHTML = `
+            <input class="settings-input s-model-name" value="" placeholder="Model name" style="flex:1" />
+            <label class="settings-model-check"><input type="checkbox" class="s-model-image" /> Image</label>
+            <label class="settings-model-check"><input type="radio" name="modelDefault" class="s-model-default" /> Default</label>
+            <button class="settings-hook-remove s-model-remove" title="Remove">×</button>`;
+          (row.querySelector(".s-model-remove") as HTMLElement).onclick = () => row.remove();
+          (row.querySelector(".s-model-default") as HTMLElement).onchange = () => {
+            body.querySelectorAll(".s-model-default").forEach((r) => {
+              if (r !== row.querySelector(".s-model-default")) (r as HTMLInputElement).checked = false;
+            });
+          };
+          modelsDiv.appendChild(row);
+          row.querySelector("input")?.focus();
         };
-        modelsListEl.appendChild(row);
-        row.querySelector("input")?.focus();
+      }
+    }
+
+    body.querySelectorAll(".settings-provider-card").forEach(card => {
+      wireProviderCardEvents(card as HTMLElement);
+    });
+
+    // Add provider
+    const addProviderBtn = body.querySelector("#addProviderBtn") as HTMLElement;
+    if (addProviderBtn) {
+      addProviderBtn.onclick = () => {
+        const list = body.querySelector("#sProvidersList")!;
+        const card = document.createElement("div");
+        card.className = "settings-provider-card";
+        card.dataset.providerIdx = String(list.children.length);
+        card.innerHTML = `
+          <div class="settings-provider-card-header">
+            <input class="settings-input settings-provider-name" data-field="provider_name" value="" placeholder="Provider name" />
+            <button class="settings-hook-remove" data-provider-remove title="Remove provider">×</button>
+          </div>
+          <div class="settings-row"><label class="settings-label">API Type</label>
+            <select class="settings-select" data-field="api_type">
+              <option value="openai_compatible" selected>OpenAI Compatible</option>
+              <option value="anthropic">Anthropic</option>
+            </select>
+          </div>
+          <div class="settings-row"><label class="settings-label">API Key</label><input class="settings-input" type="password" data-field="api_key" value="" /></div>
+          <div class="settings-row provider-base-url-row"><label class="settings-label">Base URL</label><input class="settings-input" data-field="base_url" value="" placeholder="e.g. https://api.openai.com/v1" /></div>
+          <div class="settings-section-title" style="margin-top:8px">Models</div>
+          <div class="settings-provider-models"></div>
+          <button class="settings-add-btn s-add-model-btn">+ Add Model</button>`;
+        wireProviderCardEvents(card);
+        list.appendChild(card);
+        card.querySelector("input")?.focus();
       };
     }
 
@@ -2831,7 +2869,7 @@ async function openSettingsModal() {
               <option value="remote">remote</option>
             </select>
           </div>`;
-        card.querySelector(".settings-hook-remove")!.onclick = () => card.remove();
+        (card.querySelector(".settings-hook-remove") as HTMLElement).onclick = () => card.remove();
         list.appendChild(card);
         card.querySelector("input")?.focus();
       };
@@ -2845,31 +2883,31 @@ async function openSettingsModal() {
       try {
         const updated = { ...cfg };
 
-        // Model
-        const providerSel = backdrop.querySelector("#s_model_provider") as HTMLSelectElement;
-        const modelsRows = backdrop.querySelectorAll(".settings-model-row");
-        const models: Array<{ name: string; supports_image: boolean }> = [];
+        // Model — collect from provider cards
+        const newProviders: any[] = [];
         let defaultName = "";
-        modelsRows.forEach((row) => {
-          const nameInput = row.querySelector(".s-model-name") as HTMLInputElement;
-          const imgCheck = row.querySelector(".s-model-image") as HTMLInputElement;
-          const defaultRadio = row.querySelector(".s-model-default") as HTMLInputElement;
-          const name = nameInput?.value.trim() || "";
-          if (!name) return;
-          const supports_image = imgCheck?.checked ?? false;
-          models.push({ name, supports_image });
-          if (defaultRadio?.checked) defaultName = name;
+        backdrop.querySelectorAll(".settings-provider-card").forEach(card => {
+          const pName = (card.querySelector("[data-field='provider_name']") as HTMLInputElement)?.value.trim() || "";
+          const apiType = (card.querySelector("[data-field='api_type']") as HTMLSelectElement)?.value || "openai_compatible";
+          const apiKey = (card.querySelector("[data-field='api_key']") as HTMLInputElement)?.value || "";
+          const baseUrl = (card.querySelector("[data-field='base_url']") as HTMLInputElement)?.value || "";
+          const models: Array<{ name: string; supports_image: boolean }> = [];
+          card.querySelectorAll(".settings-model-row").forEach(row => {
+            const name = (row.querySelector(".s-model-name") as HTMLInputElement)?.value.trim() || "";
+            if (!name) return;
+            const supports_image = (row.querySelector(".s-model-image") as HTMLInputElement)?.checked ?? false;
+            models.push({ name, supports_image });
+            if ((row.querySelector(".s-model-default") as HTMLInputElement)?.checked) defaultName = name;
+          });
+          if (models.length > 0) {
+            newProviders.push({ name: pName, api_type: apiType, api_key: apiKey, base_url: apiType === "anthropic" ? "" : baseUrl, models });
+          }
         });
-        if (!defaultName && models.length > 0) defaultName = models[0].name;
-        const provider = providerSel.value || (defaultName.includes("claude") ? "anthropic" : "openai");
-        updated.model = {
-          ...updated.model,
-          provider,
-          name: defaultName || updated.model?.name,
-          api_key: (backdrop.querySelector("#s_model_api_key") as HTMLInputElement).value,
-          base_url: (backdrop.querySelector("#s_model_base_url") as HTMLInputElement).value,
-          models,
-        };
+        if (!defaultName && newProviders.length > 0 && newProviders[0].models.length > 0) {
+          defaultName = newProviders[0].models[0].name;
+        }
+        updated.providers = newProviders;
+        updated.model = { name: defaultName || "" };
 
         // Approval
         updated.approval = { ...updated.approval, policy: (backdrop.querySelector("#s_approval_policy") as HTMLSelectElement).value };

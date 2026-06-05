@@ -29,6 +29,40 @@ from ziva_runtime.shared_types import ApprovalRequest, ApprovalPolicy, Cancellat
 from ziva_runtime.storage.file_storage import FileStorage, _project_hash
 
 
+def _create_adapter(config: dict) -> "ModelAdapter":
+    """Create the appropriate model adapter based on config provider/api_type."""
+    from ziva_runtime.adapters.openai_agents.provider import OpenAIChatAdapter
+
+    model_cfg = config.get("model", {})
+    model_name = model_cfg.get("name", "")
+    providers = config.get("providers", [])
+
+    # Find the provider that owns the current model
+    for p in providers:
+        models = p.get("models", [])
+        if any(m.get("name") == model_name for m in models):
+            api_type = p.get("api_type", "openai_compatible")
+            if api_type == "anthropic":
+                from ziva_runtime.adapters.anthropic.provider import AnthropicChatAdapter
+                return AnthropicChatAdapter(api_key=p.get("api_key"), base_url=p.get("base_url"))
+            else:
+                return OpenAIChatAdapter(
+                    base_url=p.get("base_url") or None,
+                    api_key=p.get("api_key") or None,
+                )
+
+    # Fallback: first provider if model not matched
+    if providers:
+        p = providers[0]
+        api_type = p.get("api_type", "openai_compatible")
+        if api_type == "anthropic":
+            from ziva_runtime.adapters.anthropic.provider import AnthropicChatAdapter
+            return AnthropicChatAdapter(api_key=p.get("api_key"), base_url=p.get("base_url"))
+        return OpenAIChatAdapter(base_url=p.get("base_url") or None, api_key=p.get("api_key") or None)
+
+    return OpenAIChatAdapter()
+
+
 def _detect_timezone() -> str:
     tz = os.environ.get("TZ")
     if tz:
@@ -184,10 +218,7 @@ class Runtime:
 
         config["_skill_index"] = skill_index
 
-        adapter = model_adapter or OpenAIAgentsAdapter(
-            base_url=config.get("model", {}).get("base_url") or None,
-            api_key=config.get("model", {}).get("api_key") or None,
-        )
+        adapter = model_adapter or _create_adapter(config)
         runtime = cls(
             config=config,
             registry=registry,
@@ -347,6 +378,8 @@ class Runtime:
         raw_max = self.config.get("tool", {}).get("max_rounds", 10)
         max_rounds = None if raw_max in (0, None, "0") else int(raw_max or 10)
         context_window = int(self.config.get("memory", {}).get("context_window_tokens", 200000) or 200000)
+        # Refresh adapter in case config changed (model/provider switch)
+        self.model_adapter = _create_adapter(self.config)
         working = list(messages)
         api_tools = self._build_tools_param(ctx)
         tool_call_history: Dict[str, int] = {}
@@ -555,7 +588,7 @@ class Runtime:
                         {"type": "text", "text": f"[Image from {tool_output.get('metadata', {}).get('path', 'file')}]"},
                         {"type": "image_url", "image_url": {"url": tool_output["image_url"]}},
                     ]
-                    img_msg = ChatMessage(role="user", content=image_parts)
+                    img_msg = ChatMessage(role="user", content=image_parts, _hidden=True)
                     working.append(img_msg)
                     self._session_history.setdefault(session_id, []).append(img_msg)
                     self._persist_message(session_id, img_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
@@ -950,6 +983,8 @@ class Runtime:
             record["_compaction_summary"] = True
         if message._compacted:
             record["_compacted"] = True
+        if message._hidden:
+            record["_hidden"] = True
         FileStorage.append_message(self.project_id, session_id, record)
         FileStorage.update_session(self.project_id, session_id, {
             "id": session_id,

@@ -695,16 +695,25 @@ class DesktopAPIServer:
 
     async def get_config(self, _request: web.Request) -> web.Response:
         model_cfg = self.runtime.config.get("model", {})
-        models_list = model_cfg.get("models", [])
-        available = [m.get("name", "") for m in models_list if m.get("name")]
+        providers = self.runtime.config.get("providers", [])
+
+        available: list[str] = []
+        models_list: list[dict] = []
+        for p in providers:
+            for m in p.get("models", []):
+                if m.get("name"):
+                    available.append(m["name"])
+                    models_list.append(m)
         if not available:
             available = [model_cfg.get("name", "unknown")]
+
         return web.json_response({
             "model": {
                 "current": model_cfg.get("name", "unknown"),
                 "available": available,
                 "models": models_list,
             },
+            "providers": providers,
             "approval": {
                 "current": self.runtime.config.get("approval", {}).get("policy", "suggest"),
                 "options": ["suggest", "auto-edit", "full-auto"],

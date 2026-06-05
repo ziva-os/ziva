@@ -27,6 +27,7 @@ class ChatMessage:
     # filtered out of the LLM context (the summary is the new starting
     # point, no "recent tail" is preserved — codex CLI / claude code style).
     _compacted: bool = False
+    _hidden: bool = False
 
 
 @dataclass
