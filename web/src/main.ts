@@ -2598,7 +2598,7 @@ async function openSettingsModal() {
             </select>
           </div>
           <div class="settings-row"><label class="settings-label">API Key</label><input class="settings-input" type="password" data-field="api_key" value="${esc(p.api_key)}" /></div>
-          <div class="settings-row provider-base-url-row" style="${isOpenAI ? "" : "display:none"}"><label class="settings-label">Base URL</label><input class="settings-input" data-field="base_url" value="${esc(p.base_url)}" placeholder="e.g. https://api.openai.com/v1" /></div>
+          <div class="settings-row"><label class="settings-label">Base URL</label><input class="settings-input" data-field="base_url" value="${esc(p.base_url)}" placeholder="e.g. https://api.openai.com/v1" /></div>
           <div class="settings-section-title" style="margin-top:8px">Models</div>
           <div class="settings-provider-models">${modelRows}</div>
           <button class="settings-add-btn s-add-model-btn">+ Add Model</button>
@@ -2762,15 +2762,6 @@ async function openSettingsModal() {
       const removeBtn = card.querySelector("[data-provider-remove]") as HTMLElement | null;
       if (removeBtn) removeBtn.onclick = () => card.remove();
 
-      // API type toggle → show/hide base URL
-      const apiTypeSel = card.querySelector("[data-field='api_type']") as HTMLSelectElement;
-      if (apiTypeSel) {
-        apiTypeSel.onchange = () => {
-          const row = card.querySelector(".provider-base-url-row") as HTMLElement;
-          if (row) row.style.display = apiTypeSel.value === "anthropic" ? "none" : "";
-        };
-      }
-
       // Model rows: remove + default radio
       card.querySelectorAll(".s-model-remove").forEach((btn) => {
         (btn as HTMLElement).onclick = () => (btn as HTMLElement).closest(".settings-model-row")!.remove();
@@ -2831,7 +2822,7 @@ async function openSettingsModal() {
             </select>
           </div>
           <div class="settings-row"><label class="settings-label">API Key</label><input class="settings-input" type="password" data-field="api_key" value="" /></div>
-          <div class="settings-row provider-base-url-row"><label class="settings-label">Base URL</label><input class="settings-input" data-field="base_url" value="" placeholder="e.g. https://api.openai.com/v1" /></div>
+          <div class="settings-row"><label class="settings-label">Base URL</label><input class="settings-input" data-field="base_url" value="" placeholder="e.g. https://api.openai.com/v1" /></div>
           <div class="settings-section-title" style="margin-top:8px">Models</div>
           <div class="settings-provider-models"></div>
           <button class="settings-add-btn s-add-model-btn">+ Add Model</button>`;
@@ -2900,7 +2891,7 @@ async function openSettingsModal() {
             if ((row.querySelector(".s-model-default") as HTMLInputElement)?.checked) defaultName = name;
           });
           if (models.length > 0) {
-            newProviders.push({ name: pName, api_type: apiType, api_key: apiKey, base_url: apiType === "anthropic" ? "" : baseUrl, models });
+            newProviders.push({ name: pName, api_type: apiType, api_key: apiKey, base_url: baseUrl, models });
           }
         });
         if (!defaultName && newProviders.length > 0 && newProviders[0].models.length > 0) {
