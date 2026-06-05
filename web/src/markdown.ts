@@ -1,5 +1,7 @@
-import { marked } from "marked";
+import { marked, type TokenizerExtension, type RendererExtension, type Tokens } from "marked";
 import Prism from "prismjs";
+import katex from "katex";
+import "katex/dist/katex.min.css";
 import "prismjs/components/prism-python";
 import "prismjs/components/prism-bash";
 import "prismjs/components/prism-json";
@@ -11,12 +13,62 @@ import "prismjs/components/prism-sql";
 import "prismjs/components/prism-diff";
 import "prismjs/components/prism-markdown";
 
+// KaTeX math extensions for marked
+interface MathToken {
+  type: string;
+  raw: string;
+  text: string;
+}
+
+const inlineMath: TokenizerExtension & RendererExtension = {
+  name: "inlineMath",
+  level: "inline",
+  start(src: string) {
+    return src.match(/\$/)?.index;
+  },
+  tokenizer(src: string) {
+    const match = src.match(/^\$([^\$]+?)\$/);
+    if (match) {
+      return { type: "inlineMath", raw: match[0], text: match[1].trim() };
+    }
+  },
+  renderer(token: Tokens.Generic) {
+    return renderKatex(token.text as string, false);
+  },
+};
+
+const blockMath: TokenizerExtension & RendererExtension = {
+  name: "blockMath",
+  level: "block",
+  start(src: string) {
+    return src.match(/\$\$/)?.index;
+  },
+  tokenizer(src: string) {
+    const match = src.match(/^\$\$([\s\S]+?)\$\$/);
+    if (match) {
+      return { type: "blockMath", raw: match[0], text: match[1].trim() };
+    }
+  },
+  renderer(token: Tokens.Generic) {
+    return `<div class="katex-display">${renderKatex(token.text as string, true)}</div>`;
+  },
+};
+
+function renderKatex(expr: string, displayMode: boolean): string {
+  try {
+    return katex.renderToString(expr, { displayMode, throwOnError: true });
+  } catch {
+    return `<span class="katex-error" title="LaTeX syntax error">${escapeHtml(expr)}</span>`;
+  }
+}
+
 const renderer = new marked.Renderer();
 marked.setOptions({
   renderer,
   breaks: true,
   gfm: true,
 });
+marked.use({ extensions: [blockMath, inlineMath] });
 
 // Custom code block rendering
 renderer.code = function (code: string, lang?: string): string {
