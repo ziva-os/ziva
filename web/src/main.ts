@@ -874,6 +874,9 @@ setInterval(async () => {
   for (const s of needTitle) {
     await refreshSessionPreview(s.id);
   }
+  // Also reconcile running sessions — catches missed turn_end events
+  // from SSE disconnects so the UI doesn't show stale "running" state.
+  await reconcileRunningSessions();
 }, 5000);
 
 interface SessionGroup { label: string; sessions: api.Session[] }
@@ -1781,6 +1784,44 @@ async function replayRunningTurn(sid: string) {
 // One global subscription covers every session. Events for the active
 // sid render live; events for any other sid drive sidebar status only.
 sse.subscribe(routeSSEEvent);
+
+// When SSE reconnects after a disconnect, reconcile running sessions
+// in case we missed turn_end / turn_failed events.
+sse.onReconnect(() => {
+  reconcileRunningSessions();
+});
+
+async function reconcileRunningSessions() {
+  const { runningSessions, sessions } = store.get();
+  const runningSids = Object.keys(runningSessions);
+  if (runningSids.length === 0) return;
+  for (const sid of runningSids) {
+    try {
+      const turns = await api.getTurns(sid);
+      const hasRunning = turns.some(t => t.status === "running");
+      if (!hasRunning) {
+        const next = { ...store.get().runningSessions };
+        delete next[sid];
+        const s = sessions.find(x => x.id === sid);
+        if (s) {
+          const lastTurn = turns[turns.length - 1];
+          s.status = lastTurn
+            ? (lastTurn.status === "failed" ? "failed" : "done")
+            : "idle";
+        }
+        store.set({ sessions: [...sessions], runningSessions: next });
+        // If this was the active session, update UI
+        if (sid === store.get().activeSid) {
+          removeTyping();
+          setActiveRunning(false);
+          updateSendStopButton();
+          await loadHistory(sid);
+        }
+        renderSessions();
+      }
+    } catch { /* best-effort */ }
+  }
+}
 
 function handleEvent(ev: api.Event, updateScroll: boolean = true) {
   // Skip all sub-agent events — they are shown in a collapsed card, not individually

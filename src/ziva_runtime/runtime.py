@@ -136,6 +136,7 @@ class Runtime:
     workspace_root: Path
     _mcp_client: Any | None = None
     _mcp_connected: bool = False
+    _mcp_connecting: bool = False
     _session_history: Dict[str, List[ChatMessage]] = field(default_factory=dict)
     _project_id: str | None = None
     # Per-session futures for the ask_user tool, keyed by call_id so
@@ -639,35 +640,45 @@ class Runtime:
     async def _connect_mcp_if_needed(self) -> None:
         if self._mcp_connected:
             return
-
-        from ziva_runtime.adapters.mcp.client import MCPClient, parse_mcp_config
-
-        mcp_configs = parse_mcp_config(self.config)
-        if not mcp_configs:
-            self._mcp_connected = True
+        # Prevent concurrent connection attempts from parallel sessions
+        if self._mcp_connecting:
+            # Spin until the other caller finishes connecting
+            while self._mcp_connecting:
+                await asyncio.sleep(0.1)
             return
 
+        self._mcp_connecting = True
         try:
-            client = MCPClient(mcp_configs)
-            tools = await client.connect_all()
-            # Register MCP tools in the registry
-            for tool in tools:
-                self.registry.register(
-                    capability_id=f"mcp.{tool._name}",
-                    kind="tool",
-                    instance=tool,
-                    manifest={
-                        "version": "0.0.1",
-                        "permissions": {"tool": [tool._name]},
-                        "enabled_by_default": True,
-                        "path": "mcp",
-                    },
-                )
-            self._mcp_client = client
-            self._mcp_connected = True
-        except Exception as e:
-            print(f"MCP initialization failed: {e}")
-            self._mcp_connected = True
+            from ziva_runtime.adapters.mcp.client import MCPClient, parse_mcp_config
+
+            mcp_configs = parse_mcp_config(self.config)
+            if not mcp_configs:
+                self._mcp_connected = True
+                return
+
+            try:
+                client = MCPClient(mcp_configs)
+                tools = await client.connect_all()
+                # Register MCP tools in the registry
+                for tool in tools:
+                    self.registry.register(
+                        capability_id=f"mcp.{tool._name}",
+                        kind="tool",
+                        instance=tool,
+                        manifest={
+                            "version": "0.0.1",
+                            "permissions": {"tool": [tool._name]},
+                            "enabled_by_default": True,
+                            "path": "mcp",
+                        },
+                    )
+                self._mcp_client = client
+                self._mcp_connected = True
+            except Exception as e:
+                print(f"MCP initialization failed: {e}")
+                self._mcp_connected = True
+        finally:
+            self._mcp_connecting = False
 
     def _build_tools_param(self, ctx: RuntimeContext | None = None) -> list[dict]:
         """Build OpenAI-format tools list from registered tools, filtered by context."""

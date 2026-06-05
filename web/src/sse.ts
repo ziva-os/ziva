@@ -24,12 +24,17 @@ export class SSEPool {
   private controller: AbortController | null = null;
   private retryCount = 0;
   private connected = false;
-  private readonly MAX_RETRIES = 3;
   private readonly BASE_DELAY = 1000;
   private readonly MAX_DELAY = 10000;
+  private reconnectCallbacks: Set<() => void> = new Set();
 
   isConnected(): boolean {
     return this.connected;
+  }
+
+  onReconnect(cb: () => void): () => void {
+    this.reconnectCallbacks.add(cb);
+    return () => this.reconnectCallbacks.delete(cb);
   }
 
   subscribe(handler: EventHandler): () => void {
@@ -69,8 +74,14 @@ export class SSEPool {
     try {
       const response = await fetch(`/events`, { signal });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const wasReconnect = this.retryCount > 0;
       this.connected = true;
       this.retryCount = 0;
+      if (wasReconnect) {
+        for (const cb of this.reconnectCallbacks) {
+          try { cb(); } catch { /* ignore */ }
+        }
+      }
 
       const reader = response.body?.getReader();
       if (!reader) throw new Error("No response body");
@@ -107,10 +118,6 @@ export class SSEPool {
 
       const retries = this.retryCount + 1;
       this.retryCount = retries;
-      if (retries > this.MAX_RETRIES) {
-        this.controller = null;
-        return;
-      }
       const delay = Math.min(this.BASE_DELAY * Math.pow(2, retries - 1), this.MAX_DELAY);
       setTimeout(() => {
         if (this.handlers.size > 0) this._doConnect();

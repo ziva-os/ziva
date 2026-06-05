@@ -221,9 +221,13 @@ class DesktopAPIServer:
                 turn["status"] = "done"
             except asyncio.CancelledError:
                 turn["status"] = "cancelled"
+                # Ensure frontend receives terminal event even if chat() didn't emit it
+                await self.runtime._emit(sid, {"type": "turn_cancelled"})
             except Exception as exc:
                 turn["status"] = "failed"
                 turn["error"] = {"message": str(exc), "class": exc.__class__.__name__}
+                # Emit turn_error so frontend exits "running" state instead of hanging
+                await self.runtime._emit(sid, {"type": "turn_error", "error": str(exc), "class": exc.__class__.__name__})
             finally:
                 self._cancel_tokens.pop(sid, None)
                 self._turn_tasks.pop(sid, None)
