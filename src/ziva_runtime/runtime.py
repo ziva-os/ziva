@@ -559,6 +559,13 @@ class Runtime:
                     working.append(img_msg)
                     self._session_history.setdefault(session_id, []).append(img_msg)
                     self._persist_message(session_id, img_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
+                elif isinstance(tool_output, dict) and tool_output.get("status") == "cancelled":
+                    # User interrupted this tool execution (Claude Code style)
+                    result_content = f"<tool_use_error>The user interrupted this tool execution ({tc.name})</tool_use_error>"
+                    tool_msg = ChatMessage(role="tool", content=result_content, tool_call_id=tc.id, name=tc.name)
+                    working.append(tool_msg)
+                    self._session_history.setdefault(session_id, []).append(tool_msg)
+                    self._persist_message(session_id, tool_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
                 else:
                     result_content = json.dumps(tool_output, ensure_ascii=False) if isinstance(tool_output, dict) else str(tool_output)
                     tool_msg = ChatMessage(role="tool", content=result_content, tool_call_id=tc.id, name=tc.name)
