@@ -140,7 +140,10 @@ class DesktopAPIServer:
 
     async def list_sessions(self, request: web.Request) -> web.Response:
         sessions = self.store.list_all()
-        items = [{"id": s["id"]} for s in sessions if "id" in s]
+        items = [
+            {"id": s["id"], "time": s.get("time")}
+            for s in sessions if "id" in s
+        ]
         return web.json_response({"sessions": items})
 
     async def get_messages(self, request: web.Request) -> web.Response:
@@ -411,10 +414,19 @@ class DesktopAPIServer:
                 },
             })
 
-        # On-disk layout: [new_summary, ...just-compacted_originals, ...old_compacted]
-        # Old compacted originals are appended at the end so each compact's
-        # originals form a contiguous block following its summary.
-        on_disk = [summary_msg] + list(compacted_originals) + old_compacted
+        # Split compacted_originals into non-summary messages (new compact's
+        # originals) and embedded summaries (from earlier compactions). Each
+        # embedded summary + its old_compacted originals form their own tier.
+        # Layout: [new_summary, *non_summary_compacted, *summary_tier1, *old_compacted_tier1, ...]
+        non_summary_compacted = []
+        embedded_summaries = []
+        for m in compacted_originals:
+            if m._compaction_summary:
+                embedded_summaries.append(m)
+            else:
+                non_summary_compacted.append(m)
+
+        on_disk = [summary_msg] + non_summary_compacted + embedded_summaries + old_compacted
         new_usage = self._apply_post_compact(sid, on_disk)
         return web.json_response({
             "success": True,

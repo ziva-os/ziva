@@ -850,17 +850,8 @@ async function refreshSessions() {
     };
   });
 
-  if (currentSessions.length > 0) {
-    // Preserve existing order; put new sessions at the top
-    const currentIds = new Set(currentSessions.map(s => s.id));
-    const newSessions = sessions.filter(s => !currentIds.has(s.id));
-    const oldOrdered = currentSessions.map(s => sessions.find(ns => ns.id === s.id)!).filter(Boolean);
-    sessions.length = 0;
-    sessions.push(...newSessions, ...oldOrdered);
-  } else {
-    // Initial load: sort by creation time
-    sessions.sort((a, b) => (b.time?.created || 0) - (a.time?.created || 0));
-  }
+  // Always sort by creation time so sessions never jump when a turn completes
+  sessions.sort((a, b) => (b.time?.created || 0) - (a.time?.created || 0));
 
   store.set({ sessions });
   renderSessions();
@@ -1148,12 +1139,18 @@ async function loadHistory(sid: string) {
   // Compaction layout on disk after N compacts:
   //   [summaryN, *compactedN..., *(summaryN-1), *compactedN-1..., ..., *originals...]
   // Each summary has _compaction_summary; older ones also have _compacted.
-  // Find all summaries and render independent collapse bars (show last 2).
+  // Find all summaries and compute each one's compacted range. A summary at
+  // index i owns messages from i+1 up to the next _compaction_summary boundary
+  // (exclusive). This lets summary2 "own" summary1 as part of its compacted
+  // originals, while summary1 has its own originals range.
   const summaries: Array<{ idx: number; end: number; count: number }> = [];
   for (let i = 0; i < fullMsgs.length; i++) {
     if ((fullMsgs[i] as any)._compaction_summary) {
       let end = i + 1;
-      while (end < fullMsgs.length && (fullMsgs[end] as any)._compacted && !(fullMsgs[end] as any)._compaction_summary) {
+      // Walk forward while compacted; stop at next _compaction_summary boundary
+      // (which belongs to the *next* summary's range) or at any non-compacted msg.
+      while (end < fullMsgs.length && (fullMsgs[end] as any)._compacted) {
+        if ((fullMsgs[end] as any)._compaction_summary) break;
         end++;
       }
       const count = end - i - 1;
@@ -1202,6 +1199,9 @@ function renderMessages(target: HTMLElement, msgs: any[]): void {
   for (let mi = 0; mi < msgs.length; mi++) {
     const m = msgs[mi];
     const isSub = (m as any)._subagent === true;
+
+    // Skip compaction summary messages — they are shown as collapse bars instead
+    if ((m as any)._compaction_summary) continue;
 
     if (m.role === "user") {
       if ((m as any)._hidden) continue;
@@ -2279,7 +2279,7 @@ async function cancelTurn() {
 // ---- Send ----
 async function sendMessage() {
   const text = ($("prompt") as HTMLTextAreaElement).value.trim();
-  if (!text) return;
+  if (!text && pendingImages.length === 0) return;
   if (!store.get().activeSid) await createSession();
   const sid = store.get().activeSid!;
 
