@@ -51,8 +51,30 @@ class MCPToolWrapper:
             return ToolResult(text=f"Error: mcp_server_not_found\nMCP server '{self._server_name}' not found", error=True)
         try:
             result = await server.call_tool(self._name, input_data)
-            if isinstance(result, dict):
-                return ToolResult(text=str(result))
+            # MCP CallToolResult has a .content list of TextContent / ImageContent.
+            # Extract text from content items; fall back to stringifying.
+            texts = []
+            images = []
+            contents = getattr(result, "content", None) or []
+            if not contents and isinstance(result, dict):
+                contents = result.get("content", [])
+            for item in contents:
+                if isinstance(item, dict):
+                    if item.get("type") == "text":
+                        texts.append(item.get("text", ""))
+                    elif item.get("type") == "image" and item.get("data"):
+                        images.append(f"data:{item.get('mimeType', 'image/png')};base64,{item['data']}")
+                elif hasattr(item, "type"):
+                    if item.type == "text":
+                        texts.append(getattr(item, "text", ""))
+                    elif item.type == "image":
+                        data = getattr(item, "data", "")
+                        if data:
+                            mime = getattr(item, "mimeType", "image/png")
+                            images.append(f"data:{mime};base64,{data}")
+            if texts or images:
+                return ToolResult(text="\n".join(texts), images=images)
+            # Fallback for non-standard results
             if hasattr(result, "model_dump"):
                 return ToolResult(text=str(result.model_dump()))
             return ToolResult(text=str(result))
