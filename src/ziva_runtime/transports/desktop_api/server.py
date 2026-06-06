@@ -375,10 +375,19 @@ class DesktopAPIServer:
         model_name = model_cfg.get("name", "")
         context_window = int(self.runtime.config.get("memory", {}).get("context_window_tokens", 200000) or 200000)
 
+        # Only compact the LLM-visible context (summary + new messages).
+        # Compacted originals from earlier compactions are preserved on disk
+        # but excluded from the new summary to avoid re-compressing old data.
+        from ziva_runtime.session.compaction import _llm_context
+        llm_visible = _llm_context(messages)
+        # Collect pre-existing compacted originals so they are preserved on
+        # disk after _apply_post_compact replaces the message file.
+        old_compacted = [m for m in messages if m._compacted]
+
         try:
             from ziva_runtime.session.compaction import compact_messages
             summary_list, compacted_originals = await compact_messages(
-                messages, context_window, model_name, self.runtime.model_adapter
+                llm_visible, context_window, model_name, self.runtime.model_adapter
             )
         except Exception as exc:
             return web.json_response({"error": "compact_failed", "message": str(exc)}, status=500)
@@ -402,7 +411,10 @@ class DesktopAPIServer:
                 },
             })
 
-        on_disk = [summary_msg] + list(compacted_originals)
+        # On-disk layout: [new_summary, ...just-compacted_originals, ...old_compacted]
+        # Old compacted originals are appended at the end so each compact's
+        # originals form a contiguous block following its summary.
+        on_disk = [summary_msg] + list(compacted_originals) + old_compacted
         new_usage = self._apply_post_compact(sid, on_disk)
         return web.json_response({
             "success": True,

@@ -15,6 +15,27 @@ function esc(s: string): string {
   return d.innerHTML;
 }
 
+// Lightbox for clicking on images to zoom
+function initLightbox() {
+  const overlay = document.createElement("div");
+  overlay.id = "lightbox";
+  overlay.style.cssText = "display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.85);cursor:pointer;align-items:center;justify-content:center";
+  overlay.innerHTML = '<img style="max-width:90vw;max-height:90vh;object-fit:contain;border-radius:8px;box-shadow:0 4px 24px rgba(0,0,0,0.5)" />';
+  overlay.onclick = () => { overlay.style.display = "none"; };
+  document.body.appendChild(overlay);
+
+  document.addEventListener("click", (e) => {
+    const target = e.target as HTMLElement;
+    if (target.tagName === "IMG" && target.closest(".msg-inner, .tool-output-image, .compact-dropped")) {
+      const img = overlay.querySelector("img") as HTMLImageElement;
+      img.src = (target as HTMLImageElement).src;
+      overlay.style.display = "flex";
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  });
+}
+
 function previewText(content: unknown): string {
   if (typeof content === "string") return content.slice(0, 60);
   if (Array.isArray(content)) {
@@ -39,6 +60,7 @@ const store = new Store<AppState>({
   // and queue bar.
   runningSessions: {},
   pendingMessages: {},
+  pendingSessionImages: {},
   compactingSessions: {},
   questionPending: false,
   config: { model: "unknown", models: [], approval: "suggest", workspace: "", tools: [] },
@@ -114,6 +136,7 @@ function formatRelativeTime(ts?: number): string {
 
 // ---- DOM Bootstrap — Ziva layout ----
 function init() {
+  initLightbox();
   const app = $("app");
   app.innerHTML = `
     <div class="ziva-layout">
@@ -1122,26 +1145,25 @@ async function loadHistory(sid: string) {
     updateContextProgress(0, 0);
   }
 
-  // Multiple compactions create a nested layout on disk:
-  //   [summary3, *summary2, *summary1, *orig1, ..., *new_msgs]
-  // Find all _compaction_summary indices and render independent collapse
-  // bars for each. Only show the most recent 2.
-  const summaryIndices: number[] = [];
-  fullMsgs.forEach((m, i) => {
-    if ((m as any)._compaction_summary) summaryIndices.push(i);
-  });
-  const recentSummaries = summaryIndices.slice(-2);
-  for (const idx of recentSummaries) {
-    // Compacted originals are the _compacted messages after this summary,
-    // stopping at the next non-_compacted message or next summary.
-    let end = idx + 1;
-    while (end < fullMsgs.length && (fullMsgs[end] as any)._compacted && !(fullMsgs[end] as any)._compaction_summary) {
-      end++;
+  // Compaction layout on disk after N compacts:
+  //   [summaryN, *compactedN..., *(summaryN-1), *compactedN-1..., ..., *originals...]
+  // Each summary has _compaction_summary; older ones also have _compacted.
+  // Find all summaries and render independent collapse bars (show last 2).
+  const summaries: Array<{ idx: number; end: number; count: number }> = [];
+  for (let i = 0; i < fullMsgs.length; i++) {
+    if ((fullMsgs[i] as any)._compaction_summary) {
+      let end = i + 1;
+      while (end < fullMsgs.length && (fullMsgs[end] as any)._compacted && !(fullMsgs[end] as any)._compaction_summary) {
+        end++;
+      }
+      const count = end - i - 1;
+      if (count > 0) summaries.push({ idx: i, end, count });
     }
-    const droppedCount = end - idx - 1;
-    if (droppedCount > 0) {
-      appendCompactBoundary(sid, droppedCount, idx, end);
-    }
+  }
+  // Only show the 2 most recent compacts (last entries in the array)
+  const recent = summaries.slice(-2);
+  for (const { idx, end, count } of recent) {
+    appendCompactBoundary(sid, count, idx, end);
   }
 
   renderMessages($("messages"), msgs);
@@ -1477,9 +1499,18 @@ function appendToolCard(
       body += `<div class="section-label">Output</div>`;
       body += `<div class="section-content tool-output-image"><img src="${esc(output)}" alt="tool output" loading="lazy" /></div>`;
     } else {
-      const outStr = typeof output === "string" ? output : JSON.stringify(output, null, 2);
-      body += `<div class="section-label">Output</div>`;
-      body += `<div class="section-content"><code>${esc(outStr)}</code></div>`;
+      // Prefer plain text from _text field (what the model sees), not the
+      // full metadata dict that SSE carries for structured data.
+      let outStr: string;
+      if (typeof output === "object" && output !== null && (output as any)._text) {
+        outStr = String((output as any)._text);
+        body += `<div class="section-label">Output</div>`;
+        body += `<div class="section-content">${renderMarkdown(outStr)}</div>`;
+      } else {
+        outStr = typeof output === "string" ? output : JSON.stringify(output, null, 2);
+        body += `<div class="section-label">Output</div>`;
+        body += `<div class="section-content"><code>${esc(outStr)}</code></div>`;
+      }
     }
   }
   if (subagentTools && subagentTools.length > 0) {
@@ -1830,7 +1861,12 @@ function syncBackgroundSession(sid: string, ev: api.Event) {
 async function refreshSessionPreview(sid: string) {
   try {
     const data = await api.getMessages(sid);
-    const userMsg = (data.messages || []).find(m => m.role === "user");
+    let userMsg = (data.messages || []).find(m => m.role === "user");
+    // If compacted, filtered view may have no user messages — check full history
+    if (!userMsg) {
+      const fullData = await api.getMessages(sid, { includeDropped: true });
+      userMsg = (fullData.messages || []).find(m => m.role === "user");
+    }
     if (!userMsg) return;
     const preview = previewText(userMsg.content);
     const { sessions } = store.get();
@@ -2048,13 +2084,26 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     // turn has closed. Look up by the active sid (the SSE stream is
     // per-session, so we never flush another session's queue here).
     const pending = getActivePending();
-    if (pending != null) {
+    const { activeSid: flushSid, pendingSessionImages } = store.get();
+    const queuedImages = flushSid ? (pendingSessionImages[flushSid] || []) : [];
+    if (pending != null || queuedImages.length > 0) {
       const promptEl = $("prompt") as HTMLTextAreaElement;
-      promptEl.value = pending;
+      promptEl.value = pending || "";
       promptEl.style.height = "auto";
       promptEl.style.height = Math.min(promptEl.scrollHeight, 160) + "px";
       $("charCount").textContent = String(promptEl.value.length);
+      // Restore queued images into the input
+      if (queuedImages.length > 0) {
+        pendingImages = [...queuedImages];
+        renderImagePreviews();
+      }
+      // Clear session-level queue
       setActivePending(null);
+      if (flushSid && pendingSessionImages[flushSid]) {
+        const next = { ...pendingSessionImages };
+        delete next[flushSid];
+        store.set({ pendingSessionImages: next });
+      }
       renderPendingBar();
       setTimeout(() => { sendMessage(); }, 30);
     }
@@ -2126,16 +2175,30 @@ function queuePromptMessage() {
   const promptEl = $("prompt") as HTMLTextAreaElement;
   const text = promptEl.value;
   const trimmed = text.trim();
-  if (!trimmed) return;
-  setActivePending(text);
+  if (!trimmed && pendingImages.length === 0) return;
+  setActivePending(text || "");
+  // Stash images per-session so they survive session switches
+  const { activeSid, pendingSessionImages } = store.get();
+  if (activeSid && pendingImages.length > 0) {
+    store.set({ pendingSessionImages: { ...pendingSessionImages, [activeSid]: [...pendingImages] } });
+  }
   promptEl.value = "";
   promptEl.style.height = "auto";
   $("charCount").textContent = "";
+  pendingImages = [];
+  renderImagePreviews();
   renderPendingBar();
 }
 
 function clearPendingMessage() {
   setActivePending(null);
+  // Clear queued images too
+  const { activeSid, pendingSessionImages } = store.get();
+  if (activeSid && pendingSessionImages[activeSid]) {
+    const next = { ...pendingSessionImages };
+    delete next[activeSid];
+    store.set({ pendingSessionImages: next });
+  }
   renderPendingBar();
 }
 
@@ -2157,20 +2220,39 @@ function renderPendingBar() {
   const text = $("pendingBarText");
   if (!bar || !text) return;
   const pending = getActivePending();
-  if (pending == null) {
+  const { activeSid, pendingSessionImages } = store.get();
+  const images = activeSid ? (pendingSessionImages[activeSid] || []) : [];
+  if (pending == null && images.length === 0) {
     bar.hidden = true;
     text.textContent = "";
+    // Remove any previously injected thumbnails
+    const oldThumbs = bar.querySelector(".pending-bar-images");
+    if (oldThumbs) oldThumbs.remove();
     return;
   }
   // Truncate the preview so a long queued message doesn't blow up
   // the composer's height. Full content is in the prompt when the
   // user clicks the chip to edit.
-  const preview = pending.length > 80
-    ? pending.slice(0, 80) + "…"
-    : pending;
+  const preview = (pending || "").length > 80
+    ? (pending || "").slice(0, 80) + "…"
+    : (pending || "");
   text.textContent = preview;
-  text.title = pending;
+  text.title = pending || "";
   bar.hidden = false;
+  // Show image thumbnails inside the pending bar
+  let thumbContainer = bar.querySelector(".pending-bar-images") as HTMLElement | null;
+  if (images.length > 0) {
+    if (!thumbContainer) {
+      thumbContainer = document.createElement("span");
+      thumbContainer.className = "pending-bar-images";
+      bar.insertBefore(thumbContainer, text);
+    }
+    thumbContainer.innerHTML = images.map(img =>
+      `<img src="${esc(img.dataUrl)}" alt="${esc(img.name)}" class="pending-bar-thumb" />`
+    ).join("");
+  } else if (thumbContainer) {
+    thumbContainer.remove();
+  }
 }
 
 // ---- Cancel ----
@@ -2216,7 +2298,7 @@ async function sendMessage() {
     const errorLabel = isPrune ? "Prune" : "Compaction";
 
     ensureCompactToast();
-    setCompactToastState("loading", loadingMsg);
+    setCompactToastState("loading", loadingMsg, sid);
 
     try {
       const startTime = Date.now();
@@ -2236,19 +2318,20 @@ async function sendMessage() {
         updateContextProgress(pct, result.last_usage.prompt_tokens);
       }
       await loadHistory(sid);
+      refreshSessionPreview(sid);
 
       // /compact can come back as a no-op when there's nothing to compress
       // (e.g. only 1 user message in the session, or the model returned
       // empty). Treat it as success but show a clear "nothing to compact"
       // message instead of pretending the context shrank.
       if (!isPrune && (result as any).noop) {
-        setCompactToastState("success", "Nothing to compact — context is already minimal");
+        setCompactToastState("success", "Nothing to compact — context is already minimal", sid);
       } else {
-        setCompactToastState("success", successMsg);
+        setCompactToastState("success", successMsg, sid);
       }
       setTimeout(() => hideCompactToast(), 3000);
     } catch (e: any) {
-      setCompactToastState("error", `${errorLabel} failed: ${e.message || "unknown error"}`);
+      setCompactToastState("error", `${errorLabel} failed: ${e.message || "unknown error"}`, sid);
       setTimeout(() => hideCompactToast(), 5000);
     }
     return;
