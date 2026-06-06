@@ -630,6 +630,11 @@ class DesktopAPIServer:
         if task:
             task.cancel()
         self._cancel_tokens.pop(sid, None)
+        # Clean up hook state for this session
+        for hook_rec in self.runtime.registry.list_kind("hook"):
+            clear = getattr(hook_rec.instance, "clear_session", None)
+            if clear:
+                clear(sid)
         return web.json_response({"deleted": True})
 
     async def cancel_turn(self, request: web.Request) -> web.Response:

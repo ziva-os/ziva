@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict
 
-from ziva_runtime.shared_types import RuntimeContext
+from ziva_runtime.shared_types import RuntimeContext, ToolResult
 
 
 class ReadSkillTool:
@@ -29,10 +29,10 @@ class ReadSkillTool:
             },
         }
 
-    async def run(self, input_data: Dict[str, Any], ctx: RuntimeContext) -> Dict[str, Any]:
+    async def run(self, input_data: Dict[str, Any], ctx: RuntimeContext) -> ToolResult:
         skill_name = input_data.get("name", "").strip()
         if not skill_name:
-            return {"error": "missing_name", "message": "name is required"}
+            return ToolResult(text="Error: missing_name\nname is required", error=True)
 
         skill_index = ctx.config.get("_skill_index", [])
         for skill in skill_index:
@@ -43,9 +43,9 @@ class ReadSkillTool:
                     # Resolve {baseDir} placeholder
                     base_dir = str(path.parent)
                     content = content.replace("{baseDir}", base_dir)
-                    return {"name": skill_name, "content": content}
+                    return ToolResult(text=content, metadata={"name": skill_name})
                 else:
-                    return {"error": "file_not_found", "message": f"Skill file not found: {path}"}
+                    return ToolResult(text=f"Error: file_not_found\nSkill file not found: {path}", error=True)
 
         available = [s["name"] for s in skill_index]
-        return {"error": "skill_not_found", "message": f"Skill '{skill_name}' not found. Available: {', '.join(available)}"}
+        return ToolResult(text=f"Error: skill_not_found\nSkill '{skill_name}' not found. Available: {', '.join(available)}", error=True)

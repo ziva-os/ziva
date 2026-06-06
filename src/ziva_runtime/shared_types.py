@@ -97,3 +97,11 @@ class StreamDelta:
     finish_reason: Optional[str] = None
     tool_calls: List[ToolCallItem] = field(default_factory=list)
     usage: Optional[Dict[str, int]] = None
+
+
+@dataclass
+class ToolResult:
+    text: str
+    images: list[str] = field(default_factory=list)
+    error: bool = False
+    metadata: dict = field(default_factory=dict)

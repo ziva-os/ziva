@@ -25,7 +25,7 @@ from ziva_runtime.permissions import (
 )
 from ziva_runtime.plugins.loader import load_plugins
 from ziva_runtime.session.compaction import compact_messages, is_overflow, _llm_context
-from ziva_runtime.shared_types import ApprovalRequest, ApprovalPolicy, CancellationToken, ChatMessage, ChatResult, RuntimeContext, ToolCall, ToolCallItem
+from ziva_runtime.shared_types import ApprovalRequest, ApprovalPolicy, CancellationToken, ChatMessage, ChatResult, RuntimeContext, ToolCall, ToolCallItem, ToolResult
 from ziva_runtime.storage.file_storage import FileStorage, _project_hash
 
 
@@ -383,7 +383,6 @@ class Runtime:
         self.model_adapter = _create_adapter(self.config)
         working = list(messages)
         api_tools = self._build_tools_param(ctx)
-        tool_call_history: Dict[str, int] = {}
         is_sub = ctx.metadata.get("_subagent", False) if ctx else False
         sub_call_id = ctx.metadata.get("_subagent_call_id") if ctx else None
 
@@ -521,49 +520,35 @@ class Runtime:
             self._persist_message(session_id, assistant_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
 
             # Parallel tool execution with ordered event emission
-            # Step 1: record call counts + emit tool_start for each call
             for tc in final_tool_calls:
-                sig = f"{tc.name}:{json.dumps(tc.arguments, sort_keys=True)}"
-                tool_call_history[sig] = tool_call_history.get(sig, 0) + 1
                 event = {"type": "tool_start", "round": round_idx, "tool": tc.name, "arguments": tc.arguments, "call_id": tc.id}
                 yield _flag(event)
                 await self._emit(session_id, event)
 
             # Step 2: execute all tools in parallel
-            async def _run_tool(tc: ToolCallItem) -> tuple[Any, bool, ToolCallItem]:
-                sig = f"{tc.name}:{json.dumps(tc.arguments, sort_keys=True)}"
-                count = tool_call_history.get(sig, 0)
+            async def _run_tool(tc: ToolCallItem) -> tuple[ToolResult, ToolCallItem]:
                 call_ctx = RuntimeContext(
                     session_id=ctx.session_id,
                     config=ctx.config,
                     metadata={**ctx.metadata, "_tool_call_id": tc.id},
                 )
                 tool_output = await self._execute_tool(ToolCall(name=tc.name, arguments=tc.arguments), call_ctx)
-                is_not_found = isinstance(tool_output, dict) and tool_output.get("error") == "tool_not_found"
-                if count >= 3 and not is_not_found:
-                    warning = f"<reminder>'{tc.name}' has been called {count} times with the same arguments. Check prior results or try a different approach.</reminder>"
-                    if isinstance(tool_output, dict):
-                        tool_output["_doom_warning"] = warning
-                    else:
-                        tool_output = str(tool_output) + "\n\n" + warning
-                return tool_output, is_not_found, tc
+                return tool_output, tc
 
             tool_results = await asyncio.gather(*[_run_tool(tc) for tc in final_tool_calls])
 
             # Step 3: emit tool_end and process results in original order
             deferred_images: list[ChatMessage] = []
-            for tool_output, is_not_found, tc in tool_results:
-                # Strip large image data from SSE event — the frontend loads
-                # images from _hidden messages in the message history instead
-                # of carrying multi-MB base64 through the SSE stream.
-                sse_output = tool_output
-                if (isinstance(tool_output, dict)
-                        and tool_output.get("type") == "image"
-                        and tool_output.get("image_url")):
-                    sse_output = {
-                        "type": "image",
-                        "metadata": tool_output.get("metadata", {}),
-                    }
+            for tool_output, tc in tool_results:
+                is_not_found = tool_output.error and "tool_not_found" in tool_output.text
+
+                # Build SSE output — metadata carries original structured data for frontend
+                sse_output = tool_output.metadata.copy()
+                sse_output["_text"] = tool_output.text
+                sse_output["_error"] = tool_output.error
+                if tool_output.images:
+                    sse_output = {"type": "image", "metadata": tool_output.metadata}
+
                 event = {
                     "type": "tool_end",
                     "round": round_idx,
@@ -586,34 +571,22 @@ class Runtime:
                     self._session_history.setdefault(session_id, []).append(ChatMessage(role="assistant", content=content))
                     self._persist_message(session_id, ChatMessage(role="assistant", content=content), is_subagent=is_sub, sub_call_id=sub_call_id)
                     return
-                # Check if tool returned an image — inject as multi-part content
-                if (isinstance(tool_output, dict)
-                        and tool_output.get("type") == "image"
-                        and tool_output.get("image_url")):
-                    # Tool message tells the LLM the file was read
-                    summary = f"[Image file read: {tool_output.get('metadata', {}).get('path', 'unknown')}]"
+
+                # Image handling
+                if tool_output.images:
+                    summary = f"[Image file read: {tool_output.metadata.get('path', 'unknown')}]"
                     tool_msg = ChatMessage(role="tool", content=summary, tool_call_id=tc.id, name=tc.name)
                     working.append(tool_msg)
                     self._session_history.setdefault(session_id, []).append(tool_msg)
                     self._persist_message(session_id, tool_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
-                    # Defer the synthetic user image message — must come after ALL tool results
-                    # (APIs require consecutive tool-role messages before any user message)
                     image_parts: list = [
-                        {"type": "text", "text": f"[Image from {tool_output.get('metadata', {}).get('path', 'file')}]"},
-                        {"type": "image_url", "image_url": {"url": tool_output["image_url"]}},
+                        {"type": "text", "text": f"[Image from {tool_output.metadata.get('path', 'file')}]"},
+                        {"type": "image_url", "image_url": {"url": tool_output.images[0]}},
                     ]
                     img_msg = ChatMessage(role="user", content=image_parts, _hidden=True)
                     deferred_images.append(img_msg)
-                elif isinstance(tool_output, dict) and tool_output.get("status") == "cancelled":
-                    # User interrupted this tool execution (Claude Code style)
-                    result_content = f"<tool_use_error>The user interrupted this tool execution ({tc.name})</tool_use_error>"
-                    tool_msg = ChatMessage(role="tool", content=result_content, tool_call_id=tc.id, name=tc.name)
-                    working.append(tool_msg)
-                    self._session_history.setdefault(session_id, []).append(tool_msg)
-                    self._persist_message(session_id, tool_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
                 else:
-                    result_content = json.dumps(tool_output, ensure_ascii=False) if isinstance(tool_output, dict) else str(tool_output)
-                    tool_msg = ChatMessage(role="tool", content=result_content, tool_call_id=tc.id, name=tc.name)
+                    tool_msg = ChatMessage(role="tool", content=tool_output.text, tool_call_id=tc.id, name=tc.name)
                     working.append(tool_msg)
                     self._session_history.setdefault(session_id, []).append(tool_msg)
                     self._persist_message(session_id, tool_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
@@ -623,13 +596,6 @@ class Runtime:
                 working.append(img_msg)
                 self._session_history.setdefault(session_id, []).append(img_msg)
                 self._persist_message(session_id, img_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
-
-            # If any tool was cancelled (user hit stop), abort the loop
-            if any(isinstance(o, dict) and o.get("status") == "cancelled" for o, _, _ in tool_results):
-                event = {"type": "cancelled", "round": round_idx}
-                yield _flag(event)
-                await self._emit(session_id, event)
-                return
 
             latency_ms = int((time.perf_counter() - round_start) * 1000)
             event = {"type": "round_complete", "round": round_idx, "latency_ms": latency_ms, "usage": final_usage}
@@ -778,22 +744,20 @@ class Runtime:
             if not fut.done():
                 fut.cancel()
 
-    async def _execute_tool(self, call: ToolCall, ctx: RuntimeContext) -> Dict[str, Any]:
+    async def _execute_tool(self, call: ToolCall, ctx: RuntimeContext) -> ToolResult:
         # Check deny list (legacy, for backward compatibility)
         deny_list = self.config.get("tool", {}).get("deny", [])
         if call.name in deny_list:
-            return {"error": "permission_denied", "message": f"Tool '{call.name}' is in the deny list"}
+            return ToolResult(text=f"Error: permission_denied\nTool '{call.name}' is in the deny list", error=True)
 
         # Check sub-agent tool restrictions
         is_subagent = ctx.metadata.get("_subagent")
         if is_subagent:
-            # Sub-agents can never use spawn_agent
             if call.name == "spawn_agent":
-                return {"error": "tool_blocked", "message": "Sub-agents cannot spawn further sub-agents"}
-            # If whitelist specified, only those tools are allowed
+                return ToolResult(text="Error: tool_blocked\nSub-agents cannot spawn further sub-agents", error=True)
             allowed_tools = ctx.metadata.get("_allowed_tools")
             if allowed_tools is not None and call.name not in allowed_tools:
-                return {"error": "tool_blocked", "message": f"Tool '{call.name}' is not available in this sub-agent"}
+                return ToolResult(text=f"Error: tool_blocked\nTool '{call.name}' is not available in this sub-agent", error=True)
 
         # Check approval policy
         approval_policy: ApprovalPolicy = self.config.get("approval", {}).get("policy", "suggest")
@@ -809,29 +773,23 @@ class Runtime:
                 break
 
         if approval_policy == "full-auto":
-            # Auto-approve all tools - no permission check needed
             pass
         elif approval_policy == "auto-edit":
-            # Auto-approve tools with fs permissions, deny shell tools
             if "shell" in tool_perms:
-                return {"error": "permission_denied", "message": f"Tool '{call.name}' requires shell access which is denied in auto-edit mode"}
+                return ToolResult(text=f"Error: permission_denied\nTool '{call.name}' requires shell access which is denied in auto-edit mode", error=True)
         elif approval_policy == "suggest":
-            # Use PermissionManager for real approval flow
             perm_manager = get_permission_manager()
 
-            # Build patterns and permission list from tool call
             patterns = []
             permissions = []
             metadata = {"tool": call.name, "arguments": call.arguments}
 
-            # Extract file paths from arguments for fs tools
             if "fs:read" in tool_perms or "fs:write" in tool_perms:
                 if "file_path" in call.arguments:
                     patterns.append(call.arguments["file_path"])
                 if "path" in call.arguments:
                     patterns.append(call.arguments["path"])
 
-            # Map tool permissions to permission manager permissions
             for perm in tool_perms:
                 if perm == "fs:read":
                     permissions.append("fs:read")
@@ -842,16 +800,13 @@ class Runtime:
                 elif perm == "tool":
                     permissions.append(call.name)
 
-            # Use "*" pattern if no specific paths extracted
             if not patterns:
                 patterns = ["*"]
 
-            # Build ruleset from config
             perm_config = self.config.get("permissions", {})
             ruleset = from_config(perm_config) if perm_config else []
 
             try:
-                # Event callback to emit permission.asked event
                 async def emit_permission_event(req_info: Dict[str, Any]) -> None:
                     await self._emit(
                         ctx.session_id,
@@ -861,7 +816,6 @@ class Runtime:
                         },
                     )
 
-                # Check permissions
                 for perm in permissions:
                     await perm_manager.ask(
                         sessionID=ctx.session_id,
@@ -874,12 +828,11 @@ class Runtime:
                         event_callback=emit_permission_event,
                     )
             except RejectedError:
-                return {"error": "permission_rejected", "message": f"Tool '{call.name}' was rejected by user"}
+                return ToolResult(text=f"Error: permission_rejected\nTool '{call.name}' was rejected by user", error=True)
             except DeniedError as e:
-                return {"error": "permission_denied", "message": str(e)}
+                return ToolResult(text=f"Error: permission_denied\n{e}", error=True)
             except Exception as e:
-                # For other errors, return error but don't block execution
-                return {"error": "permission_error", "message": str(e)}
+                return ToolResult(text=f"Error: permission_error\n{e}", error=True)
 
         # Execute the tool
         tool_timeouts = self.config.get("tool", {}).get("timeouts", {})
@@ -888,19 +841,21 @@ class Runtime:
             tool = tool_rec.instance
             spec = tool.spec()
             if spec.get("name") == call.name:
-                await self._run_hooks("before_tool", {"tool": call.name, "arguments": call.arguments}, ctx)
+                hook_result = await self._run_hooks("before_tool", {"tool": call.name, "arguments": call.arguments}, ctx)
                 if call.name in ("invoke_subagent", "spawn_agent"):
                     timeout = None
                 else:
                     timeout = tool_timeouts.get(call.name, default_timeout)
                 try:
-                    out = await asyncio.wait_for(tool.run(call.arguments, ctx), timeout=timeout)
+                    out = await asyncio.wait_for(tool.run(hook_result.get("arguments", call.arguments), ctx), timeout=timeout)
                 except asyncio.TimeoutError:
-                    return {"error": "timeout", "message": f"Tool '{call.name}' timed out after {timeout}s"}
-                await self._run_hooks("after_tool", {"tool": call.name, "output": out}, ctx)
-                out = self._maybe_truncate_tool_output(out, call.name, ctx.session_id)
-                return out if isinstance(out, dict) else {"result": out}
-        return {"error": "tool_not_found", "message": f"Tool '{call.name}' is not available"}
+                    return ToolResult(text=f"Error: timeout\nTool '{call.name}' timed out after {timeout}s", error=True)
+                if not isinstance(out, ToolResult):
+                    out = ToolResult(text=str(out))
+                hook_result = await self._run_hooks("after_tool", {"tool": call.name, "output": out, "arguments": call.arguments}, ctx)
+                out = hook_result.get("output", out)
+                return out
+        return ToolResult(text=f"Error: tool_not_found\nTool '{call.name}' is not available", error=True)
 
     def _apply_prompt(self, messages: List[ChatMessage], ctx: RuntimeContext) -> List[ChatMessage]:
         prompts = self.registry.list_kind("prompt")
@@ -947,12 +902,18 @@ class Runtime:
         store = mems[0].instance
         await store.put("last_turn", {"messages": [m.__dict__ for m in messages], "result": result.__dict__}, ctx)
 
-    async def _run_hooks(self, lifecycle: str, payload: Dict[str, Any], ctx: RuntimeContext) -> None:
+    async def _run_hooks(self, lifecycle: str, payload: Dict[str, Any], ctx: RuntimeContext) -> Dict[str, Any]:
+        from fnmatch import fnmatch
         for hook_rec in self.registry.list_kind("hook"):
             hook = hook_rec.instance
-            event_name = getattr(hook, "event_name", "")
-            if event_name == lifecycle:
-                await hook.handle(payload, ctx)
+            if getattr(hook, "event_name", "") != lifecycle:
+                continue
+            matcher = getattr(hook, "matcher", None)
+            if matcher and "tool" in payload:
+                if not fnmatch(payload["tool"], matcher):
+                    continue
+            payload = await hook.handle(payload, ctx)
+        return payload
 
     def list_tools(self) -> List[Dict[str, Any]]:
         specs = []
@@ -1026,51 +987,6 @@ class Runtime:
                 "last_usage": usage,
             })
 
-    def _maybe_truncate_tool_output(self, output: Any, tool_name: str, session_id: str) -> Any:
-        """Truncate very long tool outputs and save full content to a file.
-
-        Budget: 5% of the context window (approx 4 chars per token).
-        """
-        context_window = int(
-            self.config.get("memory", {}).get("context_window_tokens", 200000) or 200000
-        )
-        max_tool_tokens = int(context_window * 0.05)
-        # Approximate token->char conversion: 1 token ~ 4 chars for mixed content
-        max_tool_output_chars = max_tool_tokens * 4
-
-        # Don't truncate error outputs, skill instructions, or image data
-        if isinstance(output, dict) and output.get("error"):
-            return output
-        if tool_name == "read_skill":
-            return output
-        if isinstance(output, dict) and output.get("type") == "image":
-            return output
-
-        out_str = json.dumps(output, ensure_ascii=False) if isinstance(output, dict) else str(output)
-        if len(out_str) <= max_tool_output_chars:
-            return output
-
-        # Save full content to a file
-        truncated = out_str[:max_tool_output_chars] + "\n... (truncated)"
-        tmp_dir = Path(self.workspace_root) / "tmp"
-        tmp_dir.mkdir(exist_ok=True)
-        file_name = f"tool_output_{tool_name}_{int(time.time() * 1000)}.txt"
-        file_path = tmp_dir / file_name
-
-        try:
-            file_path.write_text(out_str, encoding="utf-8")
-        except Exception:
-            pass
-
-        note = (
-            f"\n<reminder>Output truncated. Full content saved to {file_path}. Use read_file to retrieve it.</reminder>"
-            if file_path.exists()
-            else ""
-        )
-        return {
-            "_truncated": True,
-            "preview": truncated + note,
-        }
 
     def list_sessions(self) -> List[dict]:
         """List all sessions for this project."""

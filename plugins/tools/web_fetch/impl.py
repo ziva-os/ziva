@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict
 
+from ziva_runtime.shared_types import ToolResult
+
 
 class WebFetchTool:
     """Fetch content from URLs."""
@@ -21,19 +23,19 @@ class WebFetchTool:
             },
         }
 
-    async def run(self, input_data: Dict[str, Any], ctx: Any) -> Dict[str, Any]:
+    async def run(self, input_data: Dict[str, Any], ctx: Any) -> ToolResult:
         url = input_data.get("url")
         if not url:
-            return {"error": "invalid_input", "message": "url is required"}
+            return ToolResult(text="Error: invalid_input\nurl is required", error=True)
 
         format_type = input_data.get("format", "markdown").lower()
         if format_type not in ("raw", "html", "markdown"):
-            return {"error": "invalid_input", "message": "format must be one of: raw, html, markdown"}
+            return ToolResult(text="Error: invalid_input\nformat must be one of: raw, html, markdown", error=True)
 
         try:
             import aiohttp
         except ImportError:
-            return {"error": "dependency_missing", "message": "aiohttp is required for web_fetch"}
+            return ToolResult(text="Error: dependency_missing\naiohttp is required for web_fetch", error=True)
 
         headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -45,7 +47,7 @@ class WebFetchTool:
                     url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)
                 ) as resp:
                     if resp.status != 200:
-                        return {"error": "fetch_failed", "message": f"HTTP {resp.status}"}
+                        return ToolResult(text=f"Error: fetch_failed\nHTTP {resp.status}", error=True)
 
                     content_type = resp.headers.get("Content-Type", "")
                     if "text/html" in content_type:
@@ -56,7 +58,7 @@ class WebFetchTool:
                         html = data.decode("utf-8", errors="ignore")
 
         except Exception as e:
-            return {"error": "fetch_failed", "message": str(e)}
+            return ToolResult(text=f"Error: fetch_failed\n{e}", error=True)
 
         # Process based on format
         if format_type == "raw":
@@ -67,12 +69,7 @@ class WebFetchTool:
             # Strip HTML tags and convert to readable text
             content = self._html_to_text(html)
 
-        return {
-            "url": url,
-            "format": format_type,
-            "content": content,
-            "original_size": len(html),
-        }
+        return ToolResult(text=content, metadata={"url": url, "format": format_type, "original_size": len(html)})
 
     def _html_to_text(self, html: str) -> str:
         """Convert HTML to plain text by stripping tags."""

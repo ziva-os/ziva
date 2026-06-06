@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, Dict
 
-from ziva_runtime.shared_types import ChatMessage, RuntimeContext
+from ziva_runtime.shared_types import ChatMessage, RuntimeContext, ToolResult
 
 # Tools that sub-agents are NOT allowed to use
 BLOCKED_TOOLS = {"spawn_agent"}
@@ -42,18 +42,18 @@ class SpawnAgentTool:
             },
         }
 
-    async def run(self, input_data: Dict[str, Any], ctx: RuntimeContext) -> Dict[str, Any]:
+    async def run(self, input_data: Dict[str, Any], ctx: RuntimeContext) -> ToolResult:
         # Prevent recursive spawning
         if ctx.metadata.get("_subagent"):
-            return {"error": "recursive_forbidden", "message": "Sub-agents cannot spawn further sub-agents"}
+            return ToolResult(text="Error: recursive_forbidden\nSub-agents cannot spawn further sub-agents", error=True)
 
         runtime = ctx.metadata.get("_runtime")
         if not runtime:
-            return {"error": "spawn_agent_unavailable", "message": "Runtime not accessible"}
+            return ToolResult(text="Error: spawn_agent_unavailable\nRuntime not accessible", error=True)
 
         task = input_data.get("task", "").strip()
         if not task:
-            return {"error": "missing_task", "message": "task is required"}
+            return ToolResult(text="Error: missing_task\ntask is required", error=True)
 
         instructions = input_data.get("instructions", "").strip()
         tool_whitelist = input_data.get("tools")  # optional list of allowed tool names
@@ -112,11 +112,12 @@ class SpawnAgentTool:
                     await runtime.event_bus.publish(ctx.session_id, event_copy)
 
         except Exception as exc:
-            return {
-                "error": "subagent_failed",
-                "message": str(exc),
-                "partial_result": result_content[:500] if result_content else None,
-            }
+            partial = result_content[:500] if result_content else ""
+            return ToolResult(
+                text=f"Error: subagent_failed\n{exc}\nPartial: {partial}",
+                error=True,
+                metadata={"partial_result": result_content},
+            )
 
         # Emit subagent end event
         if runtime.event_bus:
@@ -127,8 +128,7 @@ class SpawnAgentTool:
                 "result_length": len(result_content),
             })
 
-        return {
-            "result": result_content,
-            "tools_used": tool_count,
-            "tools": tool_names,
-        }
+        return ToolResult(
+            text=f"Agent completed ({tool_count} tools used)\n\n{result_content}",
+            metadata={"tools_used": tool_count, "tools": tool_names, "result": result_content},
+        )

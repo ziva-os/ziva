@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict
 
+from ziva_runtime.shared_types import ToolResult
+
 
 class ListTool:
     """List directory contents with metadata."""
@@ -21,17 +23,17 @@ class ListTool:
             },
         }
 
-    async def run(self, input_data: Dict[str, Any], ctx: Any) -> Dict[str, Any]:
+    async def run(self, input_data: Dict[str, Any], ctx: Any) -> ToolResult:
         path_str = input_data.get("path", ".")
         show_hidden = input_data.get("all", False)
 
         path = Path(path_str)
 
         if not path.exists():
-            return {"error": "path_not_found", "message": f"Path not found: {path_str}"}
+            return ToolResult(text=f"Error: path_not_found\nPath not found: {path_str}", error=True)
 
         if not path.is_dir():
-            return {"error": "not_a_directory", "message": f"Path is not a directory: {path_str}"}
+            return ToolResult(text=f"Error: not_a_directory\nPath is not a directory: {path_str}", error=True)
 
         try:
             entries = []
@@ -65,13 +67,17 @@ class ListTool:
                         }
                     )
 
-            return {
-                "path": str(path.absolute()),
-                "entries": entries,
-                "total": len(entries),
-            }
+            lines = []
+            for e in entries:
+                if e.get("type") == "dir":
+                    lines.append(f"{e['name']}/ (dir)")
+                else:
+                    size = e.get("size")
+                    size_str = f", {size/1024:.1f}KB" if size else ""
+                    lines.append(f"{e['name']} (file{size_str})")
+            return ToolResult(text="\n".join(lines), metadata={"path": str(path.absolute()), "entries": entries, "total": len(entries)})
 
         except PermissionError as e:
-            return {"error": "permission_denied", "message": f"Permission denied: {e}"}
+            return ToolResult(text=f"Error: permission_denied\nPermission denied: {e}", error=True)
         except Exception as e:
-            return {"error": "list_failed", "message": str(e)}
+            return ToolResult(text=f"Error: list_failed\n{e}", error=True)

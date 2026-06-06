@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 from plugins.tools._shared.diff_utils import create_diff
+from ziva_runtime.shared_types import ToolResult
 
 
 class WriteFileTool:
@@ -25,7 +26,7 @@ class WriteFileTool:
         content = input_data.get("content", "")
 
         if not file_path:
-            return {"error": "invalid_input", "message": "file_path is required"}
+            return ToolResult(text="Error: invalid_input\nfile_path is required", error=True)
 
         try:
             path = Path(file_path)
@@ -49,26 +50,20 @@ class WriteFileTool:
             with open(path, "w", encoding="utf-8") as f:
                 bytes_written = f.write(content)
 
-            result = {
-                "status": "ok",
-                "file_path": str(path),
-                "bytes_written": bytes_written,
-                "file_existed": file_existed,
-            }
-
-            # Include diff for existing files
-            if file_existed:
-                result["diff"] = diff
-
-            return result
+            if not file_existed:
+                line_count = content.count("\n") + 1
+                size_kb = bytes_written / 1024
+                return ToolResult(
+                    text=f"Wrote {line_count} lines ({size_kb:.1f}KB) to {path}",
+                    metadata={"file_path": str(path), "bytes_written": bytes_written, "file_existed": False}
+                )
+            else:
+                return ToolResult(
+                    text=f"Updated {path}",
+                    metadata={"file_path": str(path), "bytes_written": bytes_written, "file_existed": True, "diff": diff}
+                )
 
         except PermissionError:
-            return {
-                "error": "permission_denied",
-                "message": f"Permission denied writing to {file_path}",
-            }
+            return ToolResult(text=f"Error: permission_denied\nPermission denied writing to {file_path}", error=True)
         except OSError as e:
-            return {
-                "error": "write_failed",
-                "message": f"Failed to write file: {e}",
-            }
+            return ToolResult(text=f"Error: write_failed\nFailed to write file: {e}", error=True)

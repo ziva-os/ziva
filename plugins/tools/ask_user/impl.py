@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from ziva_runtime.shared_types import ToolResult
+
 
 class AskUserTool:
     """Ask the user a question when the agent needs clarification or more information."""
@@ -36,19 +38,19 @@ class AskUserTool:
             },
         }
 
-    async def run(self, input_data: Dict[str, Any], ctx: Any) -> Dict[str, Any]:
+    async def run(self, input_data: Dict[str, Any], ctx: Any) -> ToolResult:
         question = input_data.get("question", "").strip()
         if not question:
-            return {"error": "missing_question", "message": "question is required"}
+            return ToolResult(text="Error: missing_question\nquestion is required", error=True)
 
         options = input_data.get("options", [])
         multi_select = bool(input_data.get("multi_select", False))
         runtime = ctx.metadata.get("_runtime") if ctx else None
         if runtime is None:
-            return {
-                "error": "no_runtime",
-                "message": "ask_user requires a runtime context to wait for user input.",
-            }
+            return ToolResult(
+                text="Error: no_runtime\nask_user requires a runtime context to wait for user input.",
+                error=True,
+            )
 
         call_id = (ctx.metadata or {}).get("_tool_call_id", "") if ctx else ""
 
@@ -67,4 +69,11 @@ class AskUserTool:
             },
         )
 
-        return await runtime.await_user_answer(session_id=ctx.session_id, call_id=call_id)
+        raw = await runtime.await_user_answer(session_id=ctx.session_id, call_id=call_id)
+        if isinstance(raw, ToolResult):
+            return raw
+        if isinstance(raw, dict) and raw.get("status") == "cancelled":
+            return ToolResult(text="User cancelled the question.", metadata=raw)
+        if isinstance(raw, dict) and raw.get("status") == "answered":
+            return ToolResult(text=f"User answered: {raw.get('answer', '')}", metadata=raw)
+        return ToolResult(text=str(raw), metadata={"raw": raw})

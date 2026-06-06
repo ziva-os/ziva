@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Protocol
 
-from ziva_runtime.shared_types import RuntimeContext
+from ziva_runtime.shared_types import RuntimeContext, ToolResult
 
 
 class PromptProvider(Protocol):
@@ -11,7 +11,7 @@ class PromptProvider(Protocol):
 
 class Tool(Protocol):
     def spec(self) -> Dict[str, Any]: ...
-    async def run(self, input_data: Dict[str, Any], ctx: RuntimeContext) -> Dict[str, Any]: ...
+    async def run(self, input_data: Dict[str, Any], ctx: RuntimeContext) -> ToolResult: ...
 
 
 class Skill(Protocol):
@@ -21,7 +21,8 @@ class Skill(Protocol):
 
 class Hook(Protocol):
     event_name: str
-    async def handle(self, event: Dict[str, Any], ctx: RuntimeContext) -> None: ...
+    matcher: str | None
+    async def handle(self, payload: Dict[str, Any], ctx: RuntimeContext) -> Dict[str, Any]: ...
 
 
 class MemoryStore(Protocol):

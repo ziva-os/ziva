@@ -3,6 +3,8 @@ import os
 import re
 import shutil
 
+from ziva_runtime.shared_types import ToolResult
+
 
 # ANSI escape code pattern - improved to handle OSC 133 sequences
 ANSI_ESCAPE = re.compile(r'\x1b\[[0-9;]*[mGKHfABCDnsu]')
@@ -60,7 +62,7 @@ class ShellTool:
     async def run(self, input_data, ctx):
         command = input_data.get("command")
         if not command:
-            return {"error": "invalid_input", "message": "command is required"}
+            return ToolResult(text="Error: invalid_input\ncommand is required", error=True)
 
         timeout = min(int(input_data.get("timeout", 30)), self.MAX_TIMEOUT)
         workdir = input_data.get("workdir", os.getcwd())
@@ -92,12 +94,11 @@ class ShellTool:
                     await proc.wait()
                 except Exception:
                     pass
-                return {
-                    "exit_code": -1,
-                    "stdout": "",
-                    "stderr": f"Command timed out after {timeout} seconds",
-                    "timed_out": True
-                }
+                return ToolResult(
+                    text=f"Exit code: -1\nError: Command timed out after {timeout} seconds",
+                    error=True,
+                    metadata={"exit_code": -1, "timed_out": True}
+                )
 
             # Decode and clean stdout
             stdout_text = stdout.decode('utf-8', errors='replace') if stdout else ""
@@ -114,16 +115,22 @@ class ShellTool:
             stdout_text = stdout_text.strip()
             stderr_text = stderr_text.strip()
 
-            return {
-                "exit_code": exit_code,
-                "stdout": stdout_text if stdout_text else "(Command executed successfully with no output)" if exit_code == 0 else f"(Command failed with exit code {exit_code})",
-                "stderr": stderr_text,
-                "timed_out": False,
-            }
+            if exit_code == 0:
+                display_text = stdout_text if stdout_text else "(Command executed successfully with no output)"
+                return ToolResult(
+                    text=f"Exit code: 0\n{display_text}",
+                    metadata={"exit_code": exit_code, "stdout": stdout_text, "stderr": stderr_text}
+                )
+            else:
+                return ToolResult(
+                    text=f"Exit code: {exit_code}\n{stderr_text or stdout_text}",
+                    error=True,
+                    metadata={"exit_code": exit_code, "stdout": stdout_text, "stderr": stderr_text}
+                )
 
         except PermissionError:
-            return {"error": "permission_denied", "message": f"Permission denied executing command"}
+            return ToolResult(text="Error: permission_denied\nPermission denied executing command", error=True)
         except FileNotFoundError:
-            return {"error": "workdir_not_found", "message": f"Working directory not found: {workdir}"}
+            return ToolResult(text=f"Error: workdir_not_found\nWorking directory not found: {workdir}", error=True)
         except Exception as e:
-            return {"error": "execution_failed", "message": str(e)}
+            return ToolResult(text=f"Error: execution_failed\n{e}", error=True)

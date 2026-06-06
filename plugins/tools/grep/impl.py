@@ -3,6 +3,8 @@ import os
 import re
 import shutil
 
+from ziva_runtime.shared_types import ToolResult
+
 
 class GrepTool:
     """Search tool that shells out to ripgrep or grep for performance."""
@@ -52,21 +54,21 @@ class GrepTool:
         case_insensitive = input_data.get("case_insensitive", False)
 
         if not pattern:
-            return {"error": "invalid_input", "message": "pattern is required"}
+            return ToolResult(text="Error: invalid_input\npattern is required", error=True)
 
         # Validate regex pattern
         try:
             re.compile(pattern)
         except re.error as e:
-            return {"error": "invalid_regex", "message": str(e)}
+            return ToolResult(text=f"Error: invalid_regex\n{e}", error=True)
 
         path = os.path.abspath(path)
 
         if not os.path.exists(path):
-            return {"error": "path_not_found", "message": f"Path not found: {path}"}
+            return ToolResult(text=f"Error: path_not_found\nPath not found: {path}", error=True)
 
         if not os.path.isdir(path):
-            return {"error": "not_a_directory", "message": f"Path is not a directory: {path}"}
+            return ToolResult(text=f"Error: not_a_directory\nPath is not a directory: {path}", error=True)
 
         self._detect_tools()
 
@@ -117,15 +119,23 @@ class GrepTool:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
 
             if proc.returncode not in (0, 1):  # 0 = matches, 1 = no matches
-                return {"error": "search_failed", "message": stderr.decode("utf-8", errors="replace")}
+                return ToolResult(text=f"Error: search_failed\n{stderr.decode('utf-8', errors='replace')}", error=True)
 
             matches = self._parse_grep_output(stdout.decode("utf-8", errors="replace"), path, max_results)
-            return {"matches": matches, "total": len(matches), "truncated": len(matches) >= max_results}
+            files = set(m["file"] for m in matches)
+            total = len(matches)
+            truncated = total >= max_results
+            lines = [f"Found {total} matches in {len(files)} files:", ""]
+            for m in matches:
+                lines.append(f"{m['file']}:{m['line']}: {m['content']}")
+            if truncated:
+                lines.append(f"\n(Showing {len(matches)} of {total} results)")
+            return ToolResult(text="\n".join(lines), metadata={"matches": matches, "total": total, "truncated": truncated})
 
         except asyncio.TimeoutError:
-            return {"error": "timeout", "message": "Search timed out"}
+            return ToolResult(text="Error: timeout\nSearch timed out", error=True)
         except Exception as e:
-            return {"error": "search_failed", "message": str(e)}
+            return ToolResult(text=f"Error: search_failed\n{e}", error=True)
 
     async def _grep_search(self, pattern, path, max_results, file_pattern, context_lines, case_insensitive):
         """Search using system grep."""
@@ -160,15 +170,23 @@ class GrepTool:
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
 
             if proc.returncode not in (0, 1):
-                return {"error": "search_failed", "message": "grep search failed"}
+                return ToolResult(text="Error: search_failed\ngrep search failed", error=True)
 
             matches = self._parse_grep_output(stdout.decode("utf-8", errors="replace"), path, max_results)
-            return {"matches": matches, "total": len(matches), "truncated": len(matches) >= max_results}
+            files = set(m["file"] for m in matches)
+            total = len(matches)
+            truncated = total >= max_results
+            lines = [f"Found {total} matches in {len(files)} files:", ""]
+            for m in matches:
+                lines.append(f"{m['file']}:{m['line']}: {m['content']}")
+            if truncated:
+                lines.append(f"\n(Showing {len(matches)} of {total} results)")
+            return ToolResult(text="\n".join(lines), metadata={"matches": matches, "total": total, "truncated": truncated})
 
         except asyncio.TimeoutError:
-            return {"error": "timeout", "message": "Search timed out"}
+            return ToolResult(text="Error: timeout\nSearch timed out", error=True)
         except Exception as e:
-            return {"error": "search_failed", "message": str(e)}
+            return ToolResult(text=f"Error: search_failed\n{e}", error=True)
 
     async def _python_search(self, pattern, path, max_results, file_pattern, case_insensitive):
         """Fallback Python implementation with improved features."""
@@ -179,7 +197,7 @@ class GrepTool:
             flags = re.IGNORECASE if case_insensitive else 0
             regex = re.compile(pattern, flags)
         except re.error as e:
-            return {"error": "invalid_regex", "message": str(e)}
+            return ToolResult(text=f"Error: invalid_regex\n{e}", error=True)
 
         matches = []
 
@@ -190,7 +208,14 @@ class GrepTool:
 
                 for filename in files:
                     if len(matches) >= max_results:
-                        return {"matches": matches, "total": len(matches), "truncated": True}
+                        truncated = True
+                        files_set = set(m["file"] for m in matches)
+                        total = len(matches)
+                        lines = [f"Found {total} matches in {len(files_set)} files:", ""]
+                        for m in matches:
+                            lines.append(f"{m['file']}:{m['line']}: {m['content']}")
+                        lines.append(f"\n(Showing {len(matches)} of {total} results)")
+                        return ToolResult(text="\n".join(lines), metadata={"matches": matches, "total": total, "truncated": truncated})
 
                     filepath = os.path.join(root, filename)
 
@@ -216,7 +241,14 @@ class GrepTool:
                                             "content": line.rstrip("\n\r"),
                                         })
                                         if len(matches) >= max_results:
-                                            return {"matches": matches, "total": len(matches), "truncated": True}
+                                            truncated = True
+                                            files_set = set(m2["file"] for m2 in matches)
+                                            total = len(matches)
+                                            lines = [f"Found {total} matches in {len(files_set)} files:", ""]
+                                            for m2 in matches:
+                                                lines.append(f"{m2['file']}:{m2['line']}: {m2['content']}")
+                                            lines.append(f"\n(Showing {len(matches)} of {total} results)")
+                                            return ToolResult(text="\n".join(lines), metadata={"matches": matches, "total": total, "truncated": truncated})
                                 except re.error:
                                     pass
                     except (IOError, OSError):
@@ -224,7 +256,15 @@ class GrepTool:
         except OSError:
             pass
 
-        return {"matches": matches, "total": len(matches), "truncated": False}
+        files = set(m["file"] for m in matches)
+        total = len(matches)
+        truncated = False
+        lines = [f"Found {total} matches in {len(files)} files:", ""]
+        for m in matches:
+            lines.append(f"{m['file']}:{m['line']}: {m['content']}")
+        if truncated:
+            lines.append(f"\n(Showing {len(matches)} of {total} results)")
+        return ToolResult(text="\n".join(lines), metadata={"matches": matches, "total": total, "truncated": truncated})
 
     def _parse_grep_output(self, output, base_path, max_results):
         """Parse grep/ripgrep output into match objects."""

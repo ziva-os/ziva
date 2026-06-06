@@ -1,0 +1,5 @@
+id: hook.doom_loop
+type: hook
+version: 0.1.0
+entry: impl.py:DoomLoopHook
+enabled_by_default: true

@@ -2,6 +2,8 @@ import asyncio
 import base64
 from pathlib import Path
 
+from ziva_runtime.shared_types import ToolResult
+
 IMAGE_EXTENSIONS = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -49,16 +51,16 @@ class ReadFileTool:
         return IMAGE_EXTENSIONS.get(path.suffix.lower())
 
     @staticmethod
-    def _read_image_sync(path: Path, mime: str) -> dict:
+    def _read_image_sync(path: Path, mime: str) -> ToolResult:
         """Synchronous image read + base64 encode — run via to_thread()."""
         data = path.read_bytes()
         b64 = base64.b64encode(data).decode("ascii")
         data_url = f"data:{mime};base64,{b64}"
-        return {
-            "type": "image",
-            "image_url": data_url,
-            "metadata": {"path": str(path), "size": len(data), "mime": mime},
-        }
+        return ToolResult(
+            text=f"Image: {path.name} ({len(data)} bytes, {mime})",
+            images=[data_url],
+            metadata={"path": str(path), "size": len(data), "mime": mime},
+        )
 
     @staticmethod
     def _read_text_sync(path: Path, offset: int, limit: int) -> dict:
@@ -117,17 +119,17 @@ class ReadFileTool:
         limit = input_data.get("limit", self.DEFAULT_LIMIT)
 
         if not file_path:
-            return {"error": "invalid_input", "message": "file_path is required"}
+            return ToolResult(text="Error: invalid_input\nfile_path is required", error=True)
 
         if offset < 1:
-            return {"error": "invalid_input", "message": "offset must be >= 1"}
+            return ToolResult(text="Error: invalid_input\noffset must be >= 1", error=True)
 
         path = Path(file_path)
 
         try:
             # Check if path exists
             if not path.exists():
-                return {"error": "file_not_found", "message": f"File not found: {file_path}"}
+                return ToolResult(text=f"Error: file_not_found\nFile not found: {file_path}", error=True)
 
             # Directory Handling - list entries sorted
             if path.is_dir():
@@ -141,18 +143,12 @@ class ReadFileTool:
                 sliced = entries[start:end]
                 truncated = end < len(entries)
 
-                output = [
-                    f"<path>{path}</path>",
-                    "<type>directory</type>",
-                    "<entries>",
-                    "\n".join(sliced),
-                    f"\n(Showing {len(sliced)} of {len(entries)} entries. Use 'offset' parameter to read beyond entry {offset + len(sliced)})" if truncated else f"\n({len(entries)} entries)",
-                    "</entries>"
-                ]
-                return {
-                    "content": "\n".join(output),
-                    "metadata": {"type": "directory", "truncated": truncated}
-                }
+                lines = list(sliced)
+                if truncated:
+                    lines.append(f"\n(Showing {len(sliced)} of {len(entries)} entries)")
+                else:
+                    lines.append(f"\n({len(entries)} entries)")
+                return ToolResult(text="\n".join(lines), metadata={"type": "directory", "truncated": truncated})
 
             # Check for image file — read as base64 data URL (offloaded to thread)
             mime = self._is_image_file(path)
@@ -161,32 +157,21 @@ class ReadFileTool:
 
             # Check for binary file
             if self._is_binary_file(path):
-                return {"error": "binary_file", "message": f"Cannot read binary file: {file_path}"}
+                return ToolResult(text=f"Error: binary_file\nCannot read binary file: {file_path}", error=True)
 
             # Text File Reading with line numbers (offloaded to thread for large files)
             result = await asyncio.to_thread(self._read_text_sync, path, offset, limit)
 
-            output = [f"<path>{path}</path>", "<type>file</type>", "<content>"]
-            output.append("\n".join(result["lines"]))
-
-            last_read_line = result["last_read_line"]
-            next_offset = last_read_line + 1
-
+            lines = result["lines"]
             if result["truncated"]:
-                output.append(f"\n(Showing lines {offset}-{last_read_line}. Use offset={next_offset} to continue.)")
+                lines.append(f"\n(Showing lines {offset}-{result['last_read_line']}. Use offset={result['last_read_line']+1} to continue.)")
             else:
-                output.append(f"\n(End of file - total {result['total_lines']} lines)")
-
-            output.append("</content>")
-
-            return {
-                "content": "\n".join(output),
-                "metadata": {"type": "file", "total_lines": result["total_lines"], "truncated": result["truncated"]}
-            }
+                lines.append(f"\n(End of file - {result['total_lines']} lines)")
+            return ToolResult(text="\n".join(lines), metadata={"type": "file", "total_lines": result["total_lines"], "truncated": result["truncated"]})
 
         except PermissionError:
-            return {"error": "permission_denied", "message": f"Permission denied: {file_path}"}
+            return ToolResult(text=f"Error: permission_denied\nPermission denied: {file_path}", error=True)
         except IsADirectoryError:
-            return {"error": "is_directory", "message": f"Path is a directory: {file_path}"}
+            return ToolResult(text=f"Error: is_directory\nPath is a directory: {file_path}", error=True)
         except Exception as e:
-            return {"error": "read_failed", "message": f"Failed to read file: {e}"}
+            return ToolResult(text=f"Error: read_failed\nFailed to read file: {e}", error=True)

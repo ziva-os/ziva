@@ -5,6 +5,8 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict
 
+from ziva_runtime.shared_types import ToolResult
+
 
 class GlobTool:
     """Find files matching a glob pattern. Uses ripgrep when available for performance."""
@@ -28,18 +30,18 @@ class GlobTool:
             },
         }
 
-    async def run(self, input_data: Dict[str, Any], ctx: Any) -> Dict[str, Any]:
+    async def run(self, input_data: Dict[str, Any], ctx: Any) -> ToolResult:
         pattern = input_data.get("pattern")
         if not pattern:
-            return {"error": "invalid_input", "message": "pattern is required"}
+            return ToolResult(text="Error: invalid_input\npattern is required", error=True)
 
         root_path = Path(input_data.get("path", ".")).resolve()
 
         if not root_path.exists():
-            return {"error": "path_not_found", "message": f"Path not found: {root_path}"}
+            return ToolResult(text=f"Error: path_not_found\nPath not found: {root_path}", error=True)
 
         if not root_path.is_dir():
-            return {"error": "not_a_directory", "message": f"Path is not a directory: {root_path}"}
+            return ToolResult(text=f"Error: not_a_directory\nPath is not a directory: {root_path}", error=True)
 
         try:
             # Prefer ripgrep for performance
@@ -57,26 +59,24 @@ class GlobTool:
                 results = results[:self.MAX_RESULTS]
 
             # Build output and check size
-            output = {
-                "matches": results,
-                "total": len(results),
-                "truncated": truncated,
-            }
-            out_str = str(output)
-            if truncated:
-                output["note"] = f"Results are truncated to {self.MAX_RESULTS} matches. Narrow your pattern if needed."
+            matches = results
+            total = len(matches)
+            out_str = "\n".join(matches)
             if len(out_str) > self.MAX_OUTPUT_CHARS:
-                output["matches"] = results[:50]
-                output["total"] = len(output["matches"])
-                output["truncated"] = True
-                output["note"] = f"Output too large; limited to 50 matches. Use a more specific pattern."
+                matches = results[:50]
+                total = len(matches)
+                truncated = True
 
-            return output
+            lines = [f"{total} matches:"]
+            lines.extend(str(m) for m in matches)
+            if truncated:
+                lines.append(f"\n(Showing {len(matches)} of {total})")
+            return ToolResult(text="\n".join(lines), metadata={"matches": matches, "total": total, "truncated": truncated})
 
         except PermissionError as e:
-            return {"error": "permission_denied", "message": f"Permission denied: {e}"}
+            return ToolResult(text=f"Error: permission_denied\nPermission denied: {e}", error=True)
         except Exception as e:
-            return {"error": "glob_failed", "message": str(e)}
+            return ToolResult(text=f"Error: glob_failed\n{e}", error=True)
 
     async def _rg_glob(self, rg_path: str, pattern: str, root_path: Path) -> list[str]:
         """Use ripgrep --files --glob for fast file listing."""

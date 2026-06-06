@@ -2,6 +2,8 @@ import os
 import re
 from pathlib import Path
 
+from ziva_runtime.shared_types import ToolResult
+
 
 class ApplyPatchTool:
     """Apply file changes using Codex CLI compatible patch format.
@@ -66,7 +68,7 @@ class ApplyPatchTool:
 
         patch_content = input_data.get("patch", "")
         if not patch_content:
-            return {"error": "invalid_patch", "message": "patch or operation is required"}
+            return ToolResult(text="Error: invalid_patch\npatch or operation is required", error=True)
 
         # Legacy Ziva format
         if "*** Begin Patch" in patch_content and "*** End Patch" in patch_content:
@@ -76,7 +78,7 @@ class ApplyPatchTool:
         if patch_content.lstrip().startswith("---"):
             return self._parse_and_apply_unified(patch_content, base_dir)
 
-        return {"error": "invalid_patch", "message": "Unrecognized patch format"}
+        return ToolResult(text="Error: invalid_patch\nUnrecognized patch format", error=True)
 
     # ---------- Codex CLI style single operation ----------
 
@@ -89,33 +91,41 @@ class ApplyPatchTool:
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(content, encoding="utf-8")
-                return {"applied": 1, "files_changed": [str(path.relative_to(base_dir))]}
+                files = [str(path.relative_to(base_dir))]
+                return ToolResult(
+                    text=f"Applied 1 operations: {', '.join(files)}",
+                    metadata={"applied": 1, "files_changed": files}
+                )
             except Exception as e:
-                return {"error": "write_failed", "message": str(e)}
+                return ToolResult(text=f"Error: write_failed\n{e}", error=True)
 
         if op_type == "delete_file":
             if not path.exists():
-                return {"error": "file_not_found", "message": f"File not found: {path}"}
+                return ToolResult(text=f"Error: file_not_found\nFile not found: {path}", error=True)
             try:
                 path.unlink()
-                return {"applied": 1, "files_changed": [str(path.relative_to(base_dir))]}
+                files = [str(path.relative_to(base_dir))]
+                return ToolResult(
+                    text=f"Applied 1 operations: {', '.join(files)}",
+                    metadata={"applied": 1, "files_changed": files}
+                )
             except Exception as e:
-                return {"error": "delete_failed", "message": str(e)}
+                return ToolResult(text=f"Error: delete_failed\n{e}", error=True)
 
         if op_type == "update_file":
             if not path.exists():
-                return {"error": "file_not_found", "message": f"File not found: {path}"}
+                return ToolResult(text=f"Error: file_not_found\nFile not found: {path}", error=True)
             diff_text = op.get("diff", "")
             return self._apply_unified_diff_to_file(diff_text, path, base_dir)
 
-        return {"error": "unknown_operation", "message": f"Unknown operation type: {op_type}"}
+        return ToolResult(text=f"Error: unknown_operation\nUnknown operation type: {op_type}", error=True)
 
     # ---------- Legacy Ziva format ----------
 
     def _parse_and_apply_legacy(self, patch_content, base_dir):
         match = re.search(r"\*\*\* Begin Patch\s+(.*?)\s+\*\*\* End Patch", patch_content, re.DOTALL)
         if not match:
-            return {"error": "invalid_patch", "message": "Invalid legacy patch format"}
+            return ToolResult(text="Error: invalid_patch\nInvalid legacy patch format", error=True)
 
         body = match.group(1)
         applied = 0
@@ -125,18 +135,24 @@ class ApplyPatchTool:
         for op in self._parse_legacy_operations(body):
             try:
                 result = self._apply_legacy_operation(op, base_dir)
-                if result.get("error"):
-                    errors.append(result)
+                if isinstance(result, ToolResult) and result.error:
+                    errors.append({"message": result.text})
                 else:
                     applied += 1
-                    if result.get("file"):
-                        files_changed.append(result["file"])
+                    if isinstance(result, ToolResult) and result.metadata.get("file"):
+                        files_changed.append(result.metadata["file"])
             except Exception as e:
                 errors.append({"error": "operation_failed", "message": str(e)})
 
         if errors:
-            return {"applied": applied, "files_changed": files_changed, "errors": errors}
-        return {"applied": applied, "files_changed": files_changed}
+            return ToolResult(
+                text=f"Applied {applied} operations: {', '.join(files_changed)}\nErrors: {len(errors)}",
+                metadata={"applied": applied, "files_changed": files_changed, "errors": errors}
+            )
+        return ToolResult(
+            text=f"Applied {applied} operations: {', '.join(files_changed)}",
+            metadata={"applied": applied, "files_changed": files_changed}
+        )
 
     def _parse_legacy_operations(self, body):
         operations = []
@@ -197,26 +213,26 @@ class ApplyPatchTool:
             p = base_dir / op["path"]
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(op.get("content", ""))
-            return {"file": str(p.relative_to(base_dir))}
+            return ToolResult(text=f"Updated {str(p.relative_to(base_dir))}", metadata={"file": str(p.relative_to(base_dir))})
         if t == "delete":
             p = base_dir / op["path"]
             if p.exists():
                 p.unlink()
-            return {"file": str(p.relative_to(base_dir))}
+            return ToolResult(text=f"Updated {str(p.relative_to(base_dir))}", metadata={"file": str(p.relative_to(base_dir))})
         if t == "move":
             old = base_dir / op["old_path"]
             new = base_dir / op["new_path"]
             new.parent.mkdir(parents=True, exist_ok=True)
             old.rename(new)
-            return {"file": str(new.relative_to(base_dir))}
+            return ToolResult(text=f"Updated {str(new.relative_to(base_dir))}", metadata={"file": str(new.relative_to(base_dir))})
         if t == "update":
             return self._apply_legacy_update(op, base_dir)
-        return {"error": "unknown_operation", "message": f"Unknown: {t}"}
+        return ToolResult(text=f"Error: unknown_operation\nUnknown: {t}", error=True)
 
     def _apply_legacy_update(self, op, base_dir):
         path = base_dir / op["path"]
         if not path.exists():
-            return {"error": "file_not_found", "message": f"File not found: {op['path']}"}
+            return ToolResult(text=f"Error: file_not_found\nFile not found: {op['path']}", error=True)
         original_lines = path.read_text().split("\n")
         new_lines = original_lines.copy()
         errors = []
@@ -226,9 +242,13 @@ class ApplyPatchTool:
             except ValueError as e:
                 errors.append({"error": "hunk_mismatch", "message": str(e)})
         if errors:
-            return {"error": "hunk_failed", "message": "Failed to apply one or more hunks", "errors": errors}
+            msg = "Failed to apply one or more hunks"
+            return ToolResult(
+                text=f"Error: hunk_failed\n{msg}\n" + "\n".join(e.get("message", "") for e in errors),
+                error=True
+            )
         path.write_text("\n".join(new_lines))
-        return {"file": str(path.relative_to(base_dir))}
+        return ToolResult(text=f"Updated {str(path.relative_to(base_dir))}", metadata={"file": str(path.relative_to(base_dir))})
 
     def _apply_legacy_hunk(self, lines, hunk):
         old_start = hunk["old_start"] - 1
@@ -261,15 +281,24 @@ class ApplyPatchTool:
         file_diffs = self._split_unified_diff(patch_content)
         for diff_text, target_path in file_diffs:
             result = self._apply_unified_diff_to_file(diff_text, target_path, base_dir)
-            if result.get("error"):
-                errors.append(result)
+            if isinstance(result, ToolResult) and result.error:
+                errors.append({"message": result.text})
             else:
                 applied += 1
-                files_changed.append(result.get("file", str(target_path)))
+                if isinstance(result, ToolResult):
+                    files_changed.append(result.metadata.get("file", str(target_path)))
+                else:
+                    files_changed.append(str(target_path))
 
         if errors:
-            return {"applied": applied, "files_changed": files_changed, "errors": errors}
-        return {"applied": applied, "files_changed": files_changed}
+            return ToolResult(
+                text=f"Applied {applied} operations: {', '.join(files_changed)}\nErrors: {len(errors)}",
+                metadata={"applied": applied, "files_changed": files_changed, "errors": errors}
+            )
+        return ToolResult(
+            text=f"Applied {applied} operations: {', '.join(files_changed)}",
+            metadata={"applied": applied, "files_changed": files_changed}
+        )
 
     def _split_unified_diff(self, text):
         """Split a unified diff into (diff_text, target_path) pairs."""
@@ -304,10 +333,10 @@ class ApplyPatchTool:
         try:
             new_content = self._apply_unified_diff_text(original, diff_text)
         except ValueError as e:
-            return {"error": "diff_failed", "message": str(e), "file": str(target_path)}
+            return ToolResult(text=f"Error: diff_failed\n{e}", error=True)
 
         path.write_text(new_content, encoding="utf-8")
-        return {"file": str(path.relative_to(base_dir))}
+        return ToolResult(text=f"Updated {str(path.relative_to(base_dir))}", metadata={"file": str(path.relative_to(base_dir))})
 
     def _apply_unified_diff_text(self, original, diff_text):
         """Apply a unified diff to original text."""
