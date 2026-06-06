@@ -927,7 +927,6 @@ class Runtime:
                     for tc in msg_data.get("tool_calls", [])
                 ],
                 _compaction_summary=msg_data.get("_compaction_summary", False),
-                _compacted=msg_data.get("_compacted", False),
             ))
         return _llm_context(messages)
 
@@ -949,8 +948,6 @@ class Runtime:
             record["_subagent_call_id"] = sub_call_id
         if message._compaction_summary:
             record["_compaction_summary"] = True
-        if message._compacted:
-            record["_compacted"] = True
         if message._hidden:
             record["_hidden"] = True
         FileStorage.append_message(self.project_id, session_id, record)

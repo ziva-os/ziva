@@ -187,15 +187,6 @@ def _is_summary_msg(m: Any) -> bool:
     return bool(getattr(m, "_compaction_summary", False))
 
 
-def _is_compacted_msg(m: Any) -> bool:
-    """Return True if the message has been folded into a summary and is
-    kept on disk only for the UI's expand affordance. Accepts ChatMessage
-    objects or plain dicts."""
-    if isinstance(m, dict):
-        return bool(m.get("_compacted"))
-    return bool(getattr(m, "_compacted", False))
-
-
 def _llm_context(messages: List[Any]) -> List[Any]:
     """Return the messages that should be sent to the LLM as context.
 
@@ -213,11 +204,6 @@ def _llm_context(messages: List[Any]) -> List[Any]:
     if last_summary_idx < 0:
         return list(messages)
     return messages[last_summary_idx:]
-
-
-def _summary_only(messages: List[Any]) -> List[Any]:
-    """Same as _llm_context — the UI filtered view matches the LLM context."""
-    return _llm_context(messages)
 
 
 def _format_history(messages: List[ChatMessage]) -> str:
@@ -245,25 +231,15 @@ async def compact_messages(
     model_name: str,
     model_adapter: Any,
 ) -> Tuple[List[ChatMessage], List[ChatMessage]]:
-    """Compact message history into a summary, preserving originals on disk.
+    """Compact message history into a summary.
 
-    Aligned with codex CLI / claude code's `/compact` semantics: the LLM
-    context is replaced with a single model-generated summary, no "recent
-    tail" is preserved. Unlike those tools, ziva keeps the original
-    messages on disk (marked with `_compacted=True`) so the UI's collapse
-    bar can expand to show them on demand — this matches the user's mental
-    model of "compressed" rather than "destroyed".
+    The server appends the summary to the on-disk message list in
+    chronological order.  The UI shows collapse bars for folded messages,
+    and the LLM only sees the last summary + messages after it.
 
-    Returns `(summary_list, compacted_originals)`:
-      - `summary_list` is `[summary]` — what the LLM context and the
-        default UI view should use as the post-compact state.
-      - `compacted_originals` is the original `messages` list with
-        `_compacted=True` stamped on each entry. The on-disk layout
-        becomes `[summary] + compacted_originals`.
-
-    Pure summary — does NOT pre-prune tool outputs. Pruning is a separate
-    user-driven operation (/prune); mixing the two would lose the original
-    tool call structure that the summary is meant to summarize over.
+    Returns `(summary_list, [])` — the second element is unused (kept for
+    backward compatibility). The summary is appended to the on-disk message
+    list by the server's /compact endpoint in chronological order.
     """
     if not messages:
         return ([], [])
@@ -286,20 +262,11 @@ async def compact_messages(
         content=summary,
         _compaction_summary=True,
     )
-    originals = [
-        dataclasses.replace(m, _compacted=True) for m in messages
-    ]
-    return ([summary_msg], originals)
+    return ([summary_msg], [])
 
 
 def _simple_compact(messages: List[ChatMessage]) -> Tuple[List[ChatMessage], List[ChatMessage]]:
-    """Fallback compaction: truncate each message to 200 chars into one summary.
-
-    Returns `(summary_list, originals_with_compacted_flag)` matching the
-    shape of `compact_messages`. The originals are stamped with
-    `_compacted=True` so the on-disk layout can preserve them while still
-    hiding them from the LLM context.
-    """
+    """Fallback compaction: truncate each message to 200 chars into one summary."""
     summary_parts = []
     for m in messages:
         text = _text_of(m.content)
@@ -316,5 +283,4 @@ def _simple_compact(messages: List[ChatMessage]) -> Tuple[List[ChatMessage], Lis
         content=summary,
         _compaction_summary=True,
     )
-    originals = [dataclasses.replace(m, _compacted=True) for m in messages]
-    return ([summary_msg], originals)
+    return ([summary_msg], [])

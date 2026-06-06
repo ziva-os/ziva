@@ -23,11 +23,6 @@ class ChatMessage:
     name: Optional[str] = None
     tool_calls: List[ToolCallItem] = field(default_factory=list)
     _compaction_summary: bool = False
-    # True for the original messages that have been folded into a summary.
-    # Kept on disk so the UI can expand the collapse bar to show them, but
-    # filtered out of the LLM context (the summary is the new starting
-    # point, no "recent tail" is preserved — codex CLI / claude code style).
-    _compacted: bool = False
     _hidden: bool = False
 
 
