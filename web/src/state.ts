@@ -16,6 +16,7 @@ export interface AppState {
   // session. The render / input layer consults these by activeSid.
   runningSessions: Record<string, boolean>;
   pendingMessages: Record<string, string>;
+  compactingSessions: Record<string, boolean>;
   config: {
     model: string;
     models: string[];

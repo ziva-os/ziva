@@ -56,3 +56,7 @@ class EventBus:
     def clear_history(self, session_id: str) -> None:
         if session_id in self._history:
             del self._history[session_id]
+
+    def unsubscribe_all(self, session_id: str) -> None:
+        """Remove all subscriber queues for a session (called on session delete)."""
+        self._queues.pop(session_id, None)

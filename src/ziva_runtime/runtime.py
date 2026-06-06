@@ -25,7 +25,7 @@ from ziva_runtime.permissions import (
 )
 from ziva_runtime.plugins.loader import load_plugins
 from ziva_runtime.session.compaction import compact_messages, is_overflow, _llm_context
-from ziva_runtime.shared_types import ApprovalRequest, ApprovalPolicy, CancellationToken, ChatMessage, ChatResult, RuntimeContext, ToolCall, ToolCallItem, ToolResult
+from ziva_runtime.shared_types import ApprovalRequest, ApprovalPolicy, CancellationToken, ChatMessage, ChatResult, RuntimeContext, SessionState, ToolCall, ToolCallItem, ToolResult
 from ziva_runtime.storage.file_storage import FileStorage, _project_hash
 
 
@@ -132,19 +132,9 @@ class Runtime:
     registry: CapabilityRegistry
     model_adapter: ModelAdapter
     event_bus: EventBus
-    event_seq: Dict[str, int]
     workspace_root: Path
-    _mcp_client: Any | None = None
-    _mcp_connected: bool = False
-    _mcp_connecting: bool = False
-    _session_history: Dict[str, List[ChatMessage]] = field(default_factory=dict)
+    _sessions: Dict[str, SessionState] = field(default_factory=dict)
     _project_id: str | None = None
-    # Per-session futures for the ask_user tool, keyed by call_id so
-    # that multiple ask_user calls can be pending in parallel. The tool
-    # run() awaits the future set by the server's POST
-    # /sessions/{sid}/questions/reply handler. The future resolves to
-    # the user's answer (or None on cancel).
-    _pending_questions: Dict[str, Dict[str, asyncio.Future]] = field(default_factory=dict, init=False, repr=False)
 
     @property
     def project_id(self) -> str:
@@ -160,6 +150,11 @@ class Runtime:
                 },
             })
         return self._project_id
+
+    def _get_session(self, session_id: str) -> SessionState:
+        if session_id not in self._sessions:
+            self._sessions[session_id] = SessionState()
+        return self._sessions[session_id]
 
     @classmethod
     def create(
@@ -225,10 +220,7 @@ class Runtime:
             registry=registry,
             model_adapter=adapter,
             event_bus=EventBus(),
-            event_seq={},
             workspace_root=workspace_root,
-            _mcp_client=None,
-            _mcp_connected=False,
         )
 
         # Initialize PermissionManager with config
@@ -246,11 +238,11 @@ class Runtime:
         ctx.metadata["_runtime"] = self
 
         # Load session history from disk if not already loaded
-        history = self._session_history.setdefault(sid, [])
-        if not history:
+        session = self._get_session(sid)
+        if not session.history:
             loaded = self._load_session_from_disk(sid)
             if loaded:
-                history.extend(loaded)
+                session.history.extend(loaded)
             else:
                 # Create new session
                 FileStorage.create_session(self.project_id, {
@@ -259,14 +251,14 @@ class Runtime:
                 })
 
         # Append new user messages to session history
-        history.extend(new_messages)
+        session.history.extend(new_messages)
         for msg in new_messages:
             self._persist_message(sid, msg)
 
         await self._run_hooks("before_turn", {"messages": [m.__dict__ for m in new_messages]}, ctx)
         await self._emit(sid, {"type": "turn_start"})
 
-        rendered_messages = self._apply_prompt(list(history), ctx)
+        rendered_messages = self._apply_prompt(list(session.history), ctx)
         _last = rendered_messages[-1].content if rendered_messages else ""
         if isinstance(_last, list):
             _last = " ".join(p.get("text", "") for p in _last if isinstance(p, dict) and p.get("type") == "text")
@@ -308,7 +300,7 @@ class Runtime:
             usage=final_usage,
             finish_reason=final_finish_reason,
         )
-        await self._store_memory(list(history), result, ctx)
+        await self._store_memory(list(session.history), result, ctx)
         await self._run_hooks("after_turn", {"result": result.__dict__}, ctx)
         await self._emit(sid, {"type": "turn_end", "result": result.__dict__})
         return result
@@ -332,25 +324,25 @@ class Runtime:
         ctx = RuntimeContext(session_id=sid, config=self.config)
         ctx.metadata["_runtime"] = self
 
-        history = self._session_history.setdefault(sid, [])
-        if not history:
+        session = self._get_session(sid)
+        if not session.history:
             loaded = self._load_session_from_disk(sid)
             if loaded:
-                history.extend(loaded)
+                session.history.extend(loaded)
             else:
                 FileStorage.create_session(self.project_id, {
                     "id": sid,
                     "time": {"created": int(time.time() * 1000), "updated": int(time.time() * 1000)},
                 })
 
-        history.extend(new_messages)
+        session.history.extend(new_messages)
         for msg in new_messages:
             self._persist_message(sid, msg)
 
         await self._run_hooks("before_turn", {"messages": [m.__dict__ for m in new_messages]}, ctx)
         yield {"type": "turn_start", "session_id": sid}
 
-        rendered_messages = self._apply_prompt(list(history), ctx)
+        rendered_messages = self._apply_prompt(list(session.history), ctx)
         _last = rendered_messages[-1].content if rendered_messages else ""
         if isinstance(_last, list):
             _last = " ".join(p.get("text", "") for p in _last if isinstance(p, dict) and p.get("type") == "text")
@@ -374,7 +366,7 @@ class Runtime:
         cancellation_token: CancellationToken | None = None,
     ) -> AsyncIterator[Dict[str, Any]]:
 
-        await self._connect_mcp_if_needed()
+        await self._connect_mcp_if_needed(session_id)
         model_cfg = self.config["model"]
         raw_max = self.config.get("tool", {}).get("max_rounds", 10)
         max_rounds = None if raw_max in (0, None, "0") else int(raw_max or 10)
@@ -417,7 +409,7 @@ class Runtime:
             event = {"type": "model_response", "round": 0, "content": content, "usage": None, "finish_reason": "stop"}
             yield _flag(event)
             await self._emit(session_id, event)
-            self._session_history.setdefault(session_id, []).append(ChatMessage(role="assistant", content=content))
+            self._get_session(session_id).history.append(ChatMessage(role="assistant", content=content))
             self._persist_message(session_id, ChatMessage(role="assistant", content=content), is_subagent=is_sub, sub_call_id=sub_call_id)
             return
 
@@ -508,7 +500,7 @@ class Runtime:
                 await self._emit(session_id, event)
                 self.update_session_usage(session_id, final_usage)
                 # Persist final assistant message
-                self._session_history.setdefault(session_id, []).append(
+                self._get_session(session_id).history.append(
                     ChatMessage(role="assistant", content=full_content)
                 )
                 self._persist_message(session_id, ChatMessage(role="assistant", content=full_content), is_subagent=is_sub, sub_call_id=sub_call_id)
@@ -516,7 +508,7 @@ class Runtime:
 
             assistant_msg = ChatMessage(role="assistant", content=full_content, tool_calls=final_tool_calls)
             working.append(assistant_msg)
-            self._session_history.setdefault(session_id, []).append(assistant_msg)
+            self._get_session(session_id).history.append(assistant_msg)
             self._persist_message(session_id, assistant_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
 
             # Parallel tool execution with ordered event emission
@@ -568,7 +560,7 @@ class Runtime:
                     event = {"type": "model_response", "round": round_idx, "content": content, "usage": None, "finish_reason": "tool_not_found"}
                     yield _flag(event)
                     await self._emit(session_id, event)
-                    self._session_history.setdefault(session_id, []).append(ChatMessage(role="assistant", content=content))
+                    self._get_session(session_id).history.append(ChatMessage(role="assistant", content=content))
                     self._persist_message(session_id, ChatMessage(role="assistant", content=content), is_subagent=is_sub, sub_call_id=sub_call_id)
                     return
 
@@ -577,7 +569,7 @@ class Runtime:
                     summary = f"[Image file read: {tool_output.metadata.get('path', 'unknown')}]"
                     tool_msg = ChatMessage(role="tool", content=summary, tool_call_id=tc.id, name=tc.name)
                     working.append(tool_msg)
-                    self._session_history.setdefault(session_id, []).append(tool_msg)
+                    self._get_session(session_id).history.append(tool_msg)
                     self._persist_message(session_id, tool_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
                     image_parts: list = [
                         {"type": "text", "text": f"[Image from {tool_output.metadata.get('path', 'file')}]"},
@@ -588,13 +580,13 @@ class Runtime:
                 else:
                     tool_msg = ChatMessage(role="tool", content=tool_output.text, tool_call_id=tc.id, name=tc.name)
                     working.append(tool_msg)
-                    self._session_history.setdefault(session_id, []).append(tool_msg)
+                    self._get_session(session_id).history.append(tool_msg)
                     self._persist_message(session_id, tool_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
 
             # Append deferred image messages after all tool results
             for img_msg in deferred_images:
                 working.append(img_msg)
-                self._session_history.setdefault(session_id, []).append(img_msg)
+                self._get_session(session_id).history.append(img_msg)
                 self._persist_message(session_id, img_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
 
             latency_ms = int((time.perf_counter() - round_start) * 1000)
@@ -611,51 +603,54 @@ class Runtime:
         event = {"type": "round_complete", "round": round_idx}
         yield _flag(event)
         await self._emit(session_id, event)
-        self._session_history.setdefault(session_id, []).append(ChatMessage(role="assistant", content=content))
+        self._get_session(session_id).history.append(ChatMessage(role="assistant", content=content))
         self._persist_message(session_id, ChatMessage(role="assistant", content=content), is_subagent=is_sub, sub_call_id=sub_call_id)
 
-    async def _connect_mcp_if_needed(self) -> None:
-        if self._mcp_connected:
+    async def _connect_mcp_if_needed(self, session_id: str) -> None:
+        session = self._get_session(session_id)
+        if session.mcp_connected:
             return
-        # Prevent concurrent connection attempts from parallel sessions
-        if self._mcp_connecting:
-            # Spin until the other caller finishes connecting
-            while self._mcp_connecting:
+        if session.mcp_connecting:
+            while session.mcp_connecting:
                 await asyncio.sleep(0.1)
             return
 
-        self._mcp_connecting = True
+        session.mcp_connecting = True
         try:
             from ziva_runtime.adapters.mcp.client import MCPClient, parse_mcp_config
 
             mcp_configs = parse_mcp_config(self.config)
             if not mcp_configs:
-                self._mcp_connected = True
+                session.mcp_connected = True
                 return
 
             try:
                 client = MCPClient(mcp_configs)
                 tools = await client.connect_all()
-                # Register MCP tools in the registry
+                # Register MCP tools in the registry (only once, route-through)
                 for tool in tools:
-                    self.registry.register(
-                        capability_id=f"mcp.{tool._name}",
-                        kind="tool",
-                        instance=tool,
-                        manifest={
-                            "version": "0.0.1",
-                            "permissions": {"tool": [tool._name]},
-                            "enabled_by_default": True,
-                            "path": "mcp",
-                        },
-                    )
-                self._mcp_client = client
-                self._mcp_connected = True
+                    cap_id = f"mcp.{tool._name}"
+                    try:
+                        self.registry.get(cap_id)
+                    except KeyError:
+                        self.registry.register(
+                            capability_id=cap_id,
+                            kind="tool",
+                            instance=tool,
+                            manifest={
+                                "version": "0.0.1",
+                                "permissions": {"tool": [tool._name]},
+                                "enabled_by_default": True,
+                                "path": "mcp",
+                            },
+                        )
+                session.mcp_client = client
+                session.mcp_connected = True
             except Exception as e:
                 print(f"MCP initialization failed: {e}")
-                self._mcp_connected = True
+                session.mcp_connected = True
         finally:
-            self._mcp_connecting = False
+            session.mcp_connecting = False
 
     def _build_tools_param(self, ctx: RuntimeContext | None = None) -> list[dict]:
         """Build OpenAI-format tools list from registered tools, filtered by context."""
@@ -682,8 +677,9 @@ class Runtime:
         return tools
 
     async def _emit(self, session_id: str, event: Dict[str, Any]) -> None:
-        seq = self.event_seq.get(session_id, 0) + 1
-        self.event_seq[session_id] = seq
+        session = self._get_session(session_id)
+        session.event_seq += 1
+        seq = session.event_seq
         payload = {"session_id": session_id, "seq": seq, "ts": int(time.time() * 1000)}
         payload.update(event)
         await self.event_bus.publish(session_id, payload)
@@ -701,7 +697,8 @@ class Runtime:
         """
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
-        self._pending_questions.setdefault(session_id, {})[call_id] = fut
+        session = self._get_session(session_id)
+        session.pending_questions[call_id] = fut
         try:
             return await fut
         except asyncio.CancelledError:
@@ -710,22 +707,12 @@ class Runtime:
                 "message": "User cancelled the turn before answering.",
             }
         finally:
-            pending = self._pending_questions.get(session_id)
-            if pending and pending.get(call_id) is fut:
-                pending.pop(call_id, None)
-                if not pending:
-                    self._pending_questions.pop(session_id, None)
+            if session.pending_questions.get(call_id) is fut:
+                session.pending_questions.pop(call_id, None)
 
     def set_user_answer(self, session_id: str, answer: str | None, call_id: str = "") -> bool:
-        """Resolve the pending question future for `session_id` + `call_id`.
-
-        Returns True if a future was pending (and was set), False if
-        there was no question waiting — the caller (the HTTP handler)
-        can use that to 404 instead of claiming success.
-        """
-        pending = self._pending_questions.get(session_id)
-        if not pending:
-            return False
+        session = self._get_session(session_id)
+        pending = session.pending_questions
         fut = pending.get(call_id)
         if fut is None or fut.done():
             return False
@@ -736,13 +723,11 @@ class Runtime:
         return True
 
     def cancel_all_questions(self, session_id: str) -> None:
-        """Cancel all pending question futures for a session (called on turn cancel)."""
-        pending = self._pending_questions.pop(session_id, None)
-        if not pending:
-            return
-        for fut in pending.values():
+        session = self._get_session(session_id)
+        for fut in list(session.pending_questions.values()):
             if not fut.done():
                 fut.cancel()
+        session.pending_questions.clear()
 
     async def _execute_tool(self, call: ToolCall, ctx: RuntimeContext) -> ToolResult:
         # Check deny list (legacy, for backward compatibility)
@@ -999,14 +984,14 @@ class Runtime:
     def delete_session(self, session_id: str) -> None:
         """Delete a session and its messages."""
         FileStorage.delete_session(self.project_id, session_id)
-        if session_id in self._session_history:
-            del self._session_history[session_id]
+        self._sessions.pop(session_id, None)
 
     async def shutdown(self) -> None:
         """Gracefully shutdown runtime, disconnecting MCP servers."""
-        if self._mcp_client:
-            try:
-                await self._mcp_client.cleanup()
-            except Exception:
-                pass
-            self._mcp_connected = False
+        for session in list(self._sessions.values()):
+            if session.mcp_client:
+                try:
+                    await session.mcp_client.cleanup()
+                except Exception:
+                    pass
+                session.mcp_connected = False

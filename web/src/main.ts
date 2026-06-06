@@ -39,6 +39,7 @@ const store = new Store<AppState>({
   // and queue bar.
   runningSessions: {},
   pendingMessages: {},
+  compactingSessions: {},
   questionPending: false,
   config: { model: "unknown", models: [], approval: "suggest", workspace: "", tools: [] },
   connected: false,
@@ -1070,6 +1071,14 @@ async function switchSession(sid: string) {
   updateSendStopButton();
   refreshPlan();
   if ($("rightPanel").classList.contains("show")) refreshDiff();
+
+  // Show/hide compact toast based on session state
+  const { compactingSessions } = store.get();
+  if (compactingSessions[sid]) {
+    setCompactToastState("loading", "Compacting...");
+  } else {
+    hideCompactToast();
+  }
 }
 
 async function deleteSession(sid: string) {
@@ -1113,16 +1122,26 @@ async function loadHistory(sid: string) {
     updateContextProgress(0, 0);
   }
 
-  // If the session has been compacted, the on-disk layout is
-  //   [summary, u1, a1, u2, a2, ...]  (summary at index 0, originals after)
-  // and the filtered view returns just the summary. We render a collapse
-  // bar above it counting ALL pre-/compact messages (the compacted
-  // originals), so the visible UI shows only the summary until the user
-  // expands the bar.
-  const firstSummaryIdx = fullMsgs.findIndex(m => (m as any)._compaction_summary);
-  if (firstSummaryIdx >= 0) {
-    const droppedCount = fullMsgs.length - 1;
-    appendCompactBoundary(sid, droppedCount, firstSummaryIdx);
+  // Multiple compactions create a nested layout on disk:
+  //   [summary3, *summary2, *summary1, *orig1, ..., *new_msgs]
+  // Find all _compaction_summary indices and render independent collapse
+  // bars for each. Only show the most recent 2.
+  const summaryIndices: number[] = [];
+  fullMsgs.forEach((m, i) => {
+    if ((m as any)._compaction_summary) summaryIndices.push(i);
+  });
+  const recentSummaries = summaryIndices.slice(-2);
+  for (const idx of recentSummaries) {
+    // Compacted originals are the _compacted messages after this summary,
+    // stopping at the next non-_compacted message or next summary.
+    let end = idx + 1;
+    while (end < fullMsgs.length && (fullMsgs[end] as any)._compacted && !(fullMsgs[end] as any)._compaction_summary) {
+      end++;
+    }
+    const droppedCount = end - idx - 1;
+    if (droppedCount > 0) {
+      appendCompactBoundary(sid, droppedCount, idx, end);
+    }
   }
 
   renderMessages($("messages"), msgs);
@@ -1255,6 +1274,7 @@ function appendCompactBoundary(
   sid: string,
   droppedCount: number,
   summaryIdx: number,
+  compactEnd: number,
 ): void {
   const wrapper = document.createElement("div");
   wrapper.className = "compact-boundary";
@@ -1275,12 +1295,10 @@ function appendCompactBoundary(
     try {
       const data = await api.getMessages(sid, { includeDropped: true });
       const fullMsgs = data.messages || [];
-      // On-disk layout is [summary, ...compacted_originals]. Skip the
-      // summary at summaryIdx and render every compacted original using
-      // the same DOM as the live chat. The wrapper's CSS makes them
-      // slightly indented and smaller so they're visually distinct.
+      // Only render the compacted originals for THIS summary's range
+      // [summaryIdx+1, compactEnd)
       dropZone.innerHTML = "";
-      const originals = fullMsgs.filter((_, i) => i !== summaryIdx);
+      const originals = fullMsgs.slice(summaryIdx + 1, compactEnd);
       renderMessages(dropZone, originals);
       dropZone.dataset.loaded = "1";
     } catch (e) {
@@ -1720,7 +1738,20 @@ function ensureCompactToast(): HTMLElement {
   return toast;
 }
 
-function setCompactToastState(state: "loading" | "success" | "error", message: string): void {
+function setCompactToastState(state: "loading" | "success" | "error", message: string, sid?: string): void {
+  if (sid) {
+    const { compactingSessions } = store.get();
+    if (state === "loading") {
+      store.set({ compactingSessions: { ...compactingSessions, [sid]: true } });
+    } else {
+      const next = { ...compactingSessions };
+      delete next[sid];
+      store.set({ compactingSessions: next });
+    }
+  }
+  // Only show toast if it's for the active session
+  const { activeSid } = store.get();
+  if (sid && sid !== activeSid) return;
   const toast = ensureCompactToast();
   const spinner = toast.querySelector(".compact-spinner") as HTMLElement | null;
   const msg = toast.querySelector(".compact-toast-message") as HTMLElement | null;
@@ -2035,8 +2066,13 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
       const pct = Math.min(usage.prompt_tokens / contextWindow, 1);
       updateContextProgress(pct, usage.prompt_tokens);
     }
+  } else if (t === "status" && (ev as any).content === "compact") {
+    setCompactToastState("loading", "Auto compacting...", sid);
   } else if (t === "context_compacted") {
-    console.log("Context compacted at round", ev.round);
+    setCompactToastState("success", "Context compacted", sid);
+    // Reload history to render the new collapse bar
+    loadHistory(sid);
+    setTimeout(() => hideCompactToast(), 3000);
   } else if (t === "doom_loop_detected") {
     removeTyping();
   } else if (t === "turn_error") {
@@ -2641,7 +2677,7 @@ async function openSettingsModal() {
       mcpServersHtml += `
         <div class="settings-mcp-card" data-mcp-server="${esc(sname)}">
           <div class="settings-mcp-card-header">
-            <span class="settings-mcp-name">${esc(sname)}</span>
+            <input class="settings-input settings-mcp-name" data-mcp-name="${esc(sname)}" value="${esc(sname)}" placeholder="Server name" style="font-weight:600;font-size:13px" />
             <div>
               <select class="settings-select" style="width:auto;padding:4px 8px;font-size:12px" data-mcp-enabled="${esc(sname)}">
                 <option value="true" ${srv.enabled !== false ? "selected" : ""}>Enabled</option>
@@ -2949,19 +2985,18 @@ async function openSettingsModal() {
       };
     }
 
-    // MCP add server
+    // MCP add server — inline card, no prompt() dialog
     const addBtn = body.querySelector("#addMcpServer") as HTMLElement;
     if (addBtn) {
       addBtn.onclick = () => {
-        const name = prompt("MCP server name:");
-        if (!name) return;
+        const name = "server-" + Date.now().toString(36);
         const list = body.querySelector("#mcpServersList")!;
         const card = document.createElement("div");
         card.className = "settings-mcp-card";
         card.dataset.mcpServer = name;
         card.innerHTML = `
           <div class="settings-mcp-card-header">
-            <span class="settings-mcp-name">${esc(name)}</span>
+            <input class="settings-input settings-mcp-name" data-mcp-name="${esc(name)}" value="${esc(name)}" placeholder="Server name" style="font-weight:600;font-size:13px" />
             <div>
               <select class="settings-select" style="width:auto;padding:4px 8px;font-size:12px" data-mcp-enabled="${esc(name)}">
                 <option value="true" selected>Enabled</option>
@@ -3031,14 +3066,16 @@ async function openSettingsModal() {
         const newMcpServers: Record<string, any> = {};
         backdrop.querySelectorAll<HTMLElement>(".settings-mcp-card").forEach(card => {
           const sname = card.dataset.mcpServer!;
+          const nameInput = card.querySelector(`[data-mcp-name="${sname}"]`) as HTMLInputElement | null;
+          const displayName = (nameInput?.value?.trim()) || sname;
           const cmdStr = (card.querySelector(`[data-mcp-command="${sname}"]`) as HTMLInputElement)?.value || "";
           const srvEnabled = (card.querySelector(`[data-mcp-enabled="${sname}"]`) as HTMLSelectElement)?.value !== "false";
           const srvType = (card.querySelector(`[data-mcp-type="${sname}"]`) as HTMLSelectElement)?.value || "local";
           const existing = mcpServers[sname] || {};
-          newMcpServers[sname] = {
+          newMcpServers[displayName] = {
             ...existing,
             type: srvType,
-            command: cmdStr.split(" ").filter(Boolean),
+            command: cmdStr,
             enabled: srvEnabled,
           };
         });

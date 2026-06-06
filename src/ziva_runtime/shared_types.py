@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
 
@@ -105,3 +106,18 @@ class ToolResult:
     images: list[str] = field(default_factory=list)
     error: bool = False
     metadata: dict = field(default_factory=dict)
+
+
+@dataclass
+class SessionState:
+    history: list[ChatMessage] = field(default_factory=list)
+    event_seq: int = 0
+    pending_questions: dict[str, asyncio.Future] = field(default_factory=dict)
+    hook_states: dict[str, Any] = field(default_factory=dict)
+    mcp_client: Any = None
+    mcp_connected: bool = False
+    mcp_connecting: bool = False
+    cancel_token: CancellationToken | None = None
+    turn_task: asyncio.Task | None = None
+    event_queue: asyncio.Queue | None = None
+    event_history: deque = field(default_factory=lambda: deque(maxlen=100))

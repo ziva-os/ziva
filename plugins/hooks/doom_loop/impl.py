@@ -13,22 +13,22 @@ class DoomLoopHook:
     event_name: str = "after_tool"
     matcher: str | None = None
 
-    def __init__(self) -> None:
-        self._history: dict[str, dict[tuple[str, str], int]] = {}
-
     def _args_hash(self, arguments: dict) -> str:
         return hashlib.md5(json.dumps(arguments, sort_keys=True).encode()).hexdigest()[:12]
 
     async def handle(self, payload: Dict[str, Any], ctx: RuntimeContext) -> Dict[str, Any]:
+        runtime = ctx.metadata.get("_runtime")
+        if not runtime:
+            return payload
+
         tool_name = payload.get("tool", "")
         arguments = payload.get("arguments", {})
-        session_id = ctx.session_id
 
-        if session_id not in self._history:
-            self._history[session_id] = {}
+        session = runtime._get_session(ctx.session_id)
+        state = session.hook_states.setdefault("doom_loop", {})
+        counts: dict = state.setdefault("counts", {})
 
         key = (tool_name, self._args_hash(arguments))
-        counts = self._history[session_id]
         counts[key] = counts.get(key, 0) + 1
         count = counts[key]
 
@@ -42,6 +42,3 @@ class DoomLoopHook:
                 output.text += warning
 
         return payload
-
-    def clear_session(self, session_id: str) -> None:
-        self._history.pop(session_id, None)

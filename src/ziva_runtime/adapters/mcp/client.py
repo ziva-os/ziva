@@ -4,6 +4,8 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
+from ziva_runtime.shared_types import ToolResult
+
 
 @dataclass
 class MCPServerConfig:
@@ -17,13 +19,18 @@ class MCPServerConfig:
 
 
 class MCPToolWrapper:
-    """Wraps an MCP-discovered tool as a Ziva-compatible tool plugin."""
+    """Wraps an MCP-discovered tool as a Ziva-compatible tool plugin.
 
-    def __init__(self, tool_name: str, tool_description: str, tool_schema: Dict[str, Any], mcp_server: Any):
+    Tool spec (name, description, parameters) is registered once globally.
+    At run time, routes to the calling session's MCP client so each session
+    has its own stdio subprocess.
+    """
+
+    def __init__(self, tool_name: str, tool_description: str, tool_schema: Dict[str, Any], server_name: str):
         self._name = tool_name
         self._description = tool_description
         self._schema = tool_schema
-        self._server = mcp_server
+        self._server_name = server_name
 
     def spec(self) -> Dict[str, Any]:
         return {
@@ -32,21 +39,28 @@ class MCPToolWrapper:
             "input_schema": self._schema,
         }
 
-    async def run(self, input_data: Dict[str, Any], ctx: Any) -> Dict[str, Any]:
+    async def run(self, input_data: Dict[str, Any], ctx: Any) -> ToolResult:
+        runtime = ctx.metadata.get("_runtime")
+        if not runtime:
+            return ToolResult(text="Error: mcp_unavailable\nRuntime not accessible", error=True)
+        session = runtime._get_session(ctx.session_id)
+        if not session.mcp_client:
+            return ToolResult(text="Error: mcp_not_connected\nMCP not connected for this session", error=True)
+        server = session.mcp_client.get_server(self._server_name)
+        if not server:
+            return ToolResult(text=f"Error: mcp_server_not_found\nMCP server '{self._server_name}' not found", error=True)
         try:
-            result = await self._server.call_tool(self._name, input_data)
+            result = await server.call_tool(self._name, input_data)
             if isinstance(result, dict):
-                return result
+                return ToolResult(text=str(result))
             if hasattr(result, "model_dump"):
-                return result.model_dump()
-            return {"result": str(result)}
+                return ToolResult(text=str(result.model_dump()))
+            return ToolResult(text=str(result))
         except Exception as e:
-            # anyio cancel-scope errors from MCP stdio cleanup are
-            # benign — suppress them so the turn doesn't crash.
             msg = str(e)
             if "cancel scope" in msg:
-                return {"error": "mcp_connection_lost", "message": "MCP server connection closed"}
-            return {"error": "mcp_call_failed", "message": msg}
+                return ToolResult(text="Error: mcp_connection_lost\nMCP server connection closed", error=True)
+            return ToolResult(text=f"Error: mcp_call_failed\n{msg}", error=True)
 
 
 class MCPClient:
@@ -98,13 +112,16 @@ class MCPClient:
                 tool_name=name,
                 tool_description=desc,
                 tool_schema=schema,
-                mcp_server=server,
+                server_name=cfg.name,
             )
             self._tools.append(wrapper)
 
     @property
     def connected_servers(self) -> List[str]:
         return list(self._servers.keys())
+
+    def get_server(self, name: str) -> Any:
+        return self._servers.get(name)
 
     async def cleanup(self) -> None:
         """Gracefully close all MCP server connections in the current task."""

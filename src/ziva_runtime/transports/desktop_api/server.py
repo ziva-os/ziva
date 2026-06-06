@@ -92,8 +92,6 @@ class DesktopAPIServer:
         self.store = SessionStore(runtime=runtime)
         self.automations: Dict[str, Automation] = {}
         self._automation_tasks: Dict[str, asyncio.Task] = {}
-        self._cancel_tokens: Dict[str, CancellationToken] = {}
-        self._turn_tasks: Dict[str, asyncio.Task] = {}
         self._runner: web.AppRunner | None = None
         self.app = web.Application()
         self.app.router.add_get("/", self.index)
@@ -203,7 +201,8 @@ class DesktopAPIServer:
             session["messages"].append({"role": m.role, "content": m.content})
 
         token = CancellationToken()
-        self._cancel_tokens[sid] = token
+        session = self.runtime._get_session(sid)
+        session.cancel_token = token
 
         async def runner() -> None:
             try:
@@ -229,11 +228,13 @@ class DesktopAPIServer:
                 # Emit turn_error so frontend exits "running" state instead of hanging
                 await self.runtime._emit(sid, {"type": "turn_error", "error": str(exc), "class": exc.__class__.__name__})
             finally:
-                self._cancel_tokens.pop(sid, None)
-                self._turn_tasks.pop(sid, None)
+                s = self.runtime._sessions.get(sid)
+                if s:
+                    s.cancel_token = None
+                    s.turn_task = None
 
         task = asyncio.create_task(runner())
-        self._turn_tasks[sid] = task
+        session.turn_task = task
         return web.json_response({"accepted": True, "turn_id": turn_id})
 
     def _apply_post_compact(self, sid: str, working_set: List[ChatMessage]) -> Dict[str, Any]:
@@ -268,12 +269,12 @@ class DesktopAPIServer:
 
         session = self.store._ensure_loaded(sid)
         session["messages"] = list(records)
-        if hasattr(self.runtime, "_session_history"):
+        if sid in self.runtime._sessions:
             # Runtime cache holds ONLY the LLM-visible context — the
             # compacted originals are kept on disk for the UI but should
             # not bloat the next chat() call's prompt.
             from ziva_runtime.session.compaction import _llm_context
-            self.runtime._session_history[sid] = _llm_context(working_set)
+            self.runtime._sessions[sid].history = _llm_context(working_set)
 
         from ziva_runtime.session.compaction import estimate_tokens, _llm_context
         llm_visible = _llm_context(working_set)
@@ -625,28 +626,37 @@ class DesktopAPIServer:
         FileStorage.delete_session(self.runtime.project_id, sid)
         if sid in self.store._loaded_sessions:
             del self.store._loaded_sessions[sid]
-        # Cancel running turn if any
-        task = self._turn_tasks.pop(sid, None)
-        if task:
-            task.cancel()
-        self._cancel_tokens.pop(sid, None)
-        # Clean up hook state for this session
-        for hook_rec in self.runtime.registry.list_kind("hook"):
-            clear = getattr(hook_rec.instance, "clear_session", None)
-            if clear:
-                clear(sid)
+        # Pop session state — cancels turn, cleans up MCP client, etc.
+        session = self.runtime._sessions.pop(sid, None)
+        if session:
+            if session.turn_task:
+                session.turn_task.cancel()
+            if session.mcp_client:
+                try:
+                    await session.mcp_client.cleanup()
+                except Exception:
+                    pass
+            # Cancel any pending questions
+            for fut in list(session.pending_questions.values()):
+                if not fut.done():
+                    fut.cancel()
+        # Clean up EventBus queues and history
+        self.runtime.event_bus.unsubscribe_all(sid)
+        self.runtime.event_bus.clear_history(sid)
         return web.json_response({"deleted": True})
 
     async def cancel_turn(self, request: web.Request) -> web.Response:
         sid = request.match_info["sid"]
         # Cancel all pending questions first so await_user_answer returns immediately
         self.runtime.cancel_all_questions(sid)
-        token = self._cancel_tokens.get(sid)
-        if token:
-            token.cancel()
-        task = self._turn_tasks.pop(sid, None)
-        if task:
-            task.cancel()
+        session = self.runtime._sessions.get(sid)
+        if session:
+            if session.cancel_token:
+                session.cancel_token.cancel()
+            task = session.turn_task
+            session.turn_task = None
+            if task:
+                task.cancel()
         return web.json_response({"cancelled": True})
 
     async def update_session(self, request: web.Request) -> web.Response:
@@ -684,7 +694,12 @@ class DesktopAPIServer:
         return web.json_response({"reverted": reverted})
 
     async def get_mcp_status(self, _request: web.Request) -> web.Response:
-        mcp_client = getattr(self.runtime, "_mcp_client", None)
+        # Find the first session with MCP connected to report status
+        mcp_client = None
+        for session in self.runtime._sessions.values():
+            if session.mcp_client:
+                mcp_client = session.mcp_client
+                break
         if not mcp_client:
             return web.json_response({"servers": [], "connected": False, "tools": []})
 
@@ -701,7 +716,7 @@ class DesktopAPIServer:
 
         return web.json_response({
             "servers": servers,
-            "connected": self.runtime._mcp_connected,
+            "connected": True,
             "tools": mcp_tools,
         })
 
