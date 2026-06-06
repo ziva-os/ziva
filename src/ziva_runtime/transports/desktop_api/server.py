@@ -358,7 +358,7 @@ class DesktopAPIServer:
 
         try:
             from ziva_runtime.session.compaction import compact_messages
-            summary_list, _ = await compact_messages(
+            summary_list = await compact_messages(
                 llm_visible, context_window, model_name, self.runtime.model_adapter
             )
         except Exception as exc:

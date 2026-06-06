@@ -10,7 +10,7 @@ from __future__ import annotations
 import copy as _copy
 import dataclasses
 from dataclasses import dataclass
-from typing import Any, List, Tuple
+from typing import Any, List
 
 from ziva_runtime.shared_types import ChatMessage
 
@@ -230,42 +230,36 @@ async def compact_messages(
     context_window: int,
     model_name: str,
     model_adapter: Any,
-) -> Tuple[List[ChatMessage], List[ChatMessage]]:
+) -> List[ChatMessage]:
     """Compact message history into a summary.
 
     The server appends the summary to the on-disk message list in
     chronological order.  The UI shows collapse bars for folded messages,
     and the LLM only sees the last summary + messages after it.
-
-    Returns `(summary_list, [])` — the second element is unused (kept for
-    backward compatibility). The summary is appended to the on-disk message
-    list by the server's /compact endpoint in chronological order.
     """
     if not messages:
-        return ([], [])
+        return []
 
     if len(messages) < 3:
-        return ([], [])
+        return []
 
     try:
         agent = CompactAgent()
         summary = await agent.run(messages, model_name, model_adapter)
     except Exception:
-        # Fall back to simple truncation on model failure
         return _simple_compact(messages)
 
     if not summary.strip():
         return _simple_compact(messages)
 
-    summary_msg = ChatMessage(
+    return [ChatMessage(
         role="assistant",
         content=summary,
         _compaction_summary=True,
-    )
-    return ([summary_msg], [])
+    )]
 
 
-def _simple_compact(messages: List[ChatMessage]) -> Tuple[List[ChatMessage], List[ChatMessage]]:
+def _simple_compact(messages: List[ChatMessage]) -> List[ChatMessage]:
     """Fallback compaction: truncate each message to 200 chars into one summary."""
     summary_parts = []
     for m in messages:
@@ -278,9 +272,8 @@ def _simple_compact(messages: List[ChatMessage]) -> Tuple[List[ChatMessage], Lis
                 summary_parts.append(f"Assistant: {content}")
 
     summary = "[Earlier conversation summary]\n" + "\n".join(summary_parts)
-    summary_msg = ChatMessage(
+    return [ChatMessage(
         role="assistant",
         content=summary,
         _compaction_summary=True,
-    )
-    return ([summary_msg], [])
+    )]

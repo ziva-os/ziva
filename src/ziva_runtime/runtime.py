@@ -388,7 +388,7 @@ class Runtime:
         if isinstance(_last_user_text, list):
             _last_user_text = " ".join(p.get("text", "") for p in _last_user_text if isinstance(p, dict) and p.get("type") == "text")
         if _last_user_text.strip() == "/compact":
-            summary_list, _ = await compact_messages(
+            summary_list = await compact_messages(
                 working, context_window, model_cfg["name"], self.model_adapter
             )
             working = summary_list
@@ -422,7 +422,7 @@ class Runtime:
             if is_overflow(working, context_window):
                 yield _flag({"type": "status", "content": "compact", "round": round_idx})
                 await self._emit(session_id, {"type": "status", "content": "compact", "round": round_idx})
-                summary_list, _ = await compact_messages(
+                summary_list = await compact_messages(
                     working, context_window, model_cfg["name"], self.model_adapter
                 )
                 working = summary_list or working
