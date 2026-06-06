@@ -199,32 +199,25 @@ def _is_compacted_msg(m: Any) -> bool:
 def _llm_context(messages: List[Any]) -> List[Any]:
     """Return the messages that should be sent to the LLM as context.
 
-    On-disk layout after /compact is
-    `[summary, ...compacted_originals, ...new_messages_after_compact]`.
-    The LLM should see the summary plus any new messages (user prompts
-    and their assistant responses from after the compact) but NOT the
-    compacted originals — those are kept on disk only for the UI's
-    collapse bar expand affordance and would bloat the context window
-    (codex CLI / claude code style: summary replaces the history, no
-    "recent tail" is preserved).
-
-    If the session has never been compacted, the full list is returned.
-    Accepts ChatMessage objects or plain dicts; the dict form is what the
-    server reads from the session store / JSONL on disk.
+    On-disk layout is chronological:
+        [msg1, ..., summary1, msgN, ..., summary2, ...]
+    The LLM sees the *last* summary plus any messages after it.
+    If there is no summary, the full list is returned.
     """
-    return [m for m in messages if not _is_compacted_msg(m)]
+    # Find the last summary's index
+    last_summary_idx = -1
+    for i in range(len(messages) - 1, -1, -1):
+        if _is_summary_msg(messages[i]):
+            last_summary_idx = i
+            break
+    if last_summary_idx < 0:
+        return list(messages)
+    return messages[last_summary_idx:]
 
 
 def _summary_only(messages: List[Any]) -> List[Any]:
-    """Return the messages the UI should show by default after /compact.
-
-    Same shape as `_llm_context`: summary + any new messages after the
-    compact, with the compacted originals excluded. This way the live
-    chat shows the same conversation that the LLM sees, while the
-    collapse bar (driven by the `include_dropped=true` view) can still
-    expand to reveal the folded history.
-    """
-    return [m for m in messages if not _is_compacted_msg(m)]
+    """Same as _llm_context — the UI filtered view matches the LLM context."""
+    return _llm_context(messages)
 
 
 def _format_history(messages: List[ChatMessage]) -> str:

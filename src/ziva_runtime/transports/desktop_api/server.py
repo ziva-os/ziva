@@ -156,16 +156,15 @@ class DesktopAPIServer:
         # has persisted new messages since the session was first loaded.
         meta = FileStorage.get_session(self.runtime.project_id, sid) or {}
         all_msgs = list(FileStorage.get_messages(self.runtime.project_id, sid))
-        # By default, return the post-compact view (matches what the runtime
-        # sees). With ?include_dropped=true, return the full history so the
-        # UI's "expand earlier messages" affordance can render what was
-        # compressed away.
+        # By default, return the LLM-visible view (last summary + messages
+        # after it). With ?include_dropped=true, return the full chronological
+        # history so the UI's collapse bars can render folded messages.
         include_dropped = request.query.get("include_dropped") == "true"
         if include_dropped:
             msgs = all_msgs
         else:
-            from ziva_runtime.session.compaction import _summary_only
-            msgs = _summary_only(all_msgs)
+            from ziva_runtime.session.compaction import _llm_context
+            msgs = _llm_context(all_msgs)
         return web.json_response({
             "messages": msgs,
             "last_usage": meta.get("last_usage"),
@@ -243,16 +242,9 @@ class DesktopAPIServer:
     def _apply_post_compact(self, sid: str, working_set: List[ChatMessage]) -> Dict[str, Any]:
         """Rewrite disk + sync in-memory + runtime cache + refresh last_usage.
 
-        Used by /prune (working_set is the pruned list) and /compact
-        (working_set is `[summary, ...compacted_originals]`). Either way,
-        the on-disk file and the in-memory store are replaced with the
-        same content. `_compacted` flags are persisted so the UI's
-        collapse bar can identify which messages are folded.
-
-        `last_usage.prompt_tokens` is computed from the LLM-visible
-        subset (`_llm_context(working_set)`) — that's the actual cost
-        of the next turn, not the on-disk size which includes the
-        compacted originals that won't be sent to the model.
+        `last_usage.prompt_tokens` is computed from `_llm_context(working_set)`
+        — only the last summary + messages after it, which is the actual cost
+        of the next turn.
         """
         records = []
         for m in working_set:
@@ -265,17 +257,12 @@ class DesktopAPIServer:
             }
             if m._compaction_summary:
                 record["_compaction_summary"] = True
-            if m._compacted:
-                record["_compacted"] = True
             records.append(record)
         FileStorage.replace_messages(self.runtime.project_id, sid, records)
 
         session = self.store._ensure_loaded(sid)
         session["messages"] = list(records)
         if sid in self.runtime._sessions:
-            # Runtime cache holds ONLY the LLM-visible context — the
-            # compacted originals are kept on disk for the UI but should
-            # not bloat the next chat() call's prompt.
             from ziva_runtime.session.compaction import _llm_context
             self.runtime._sessions[sid].history = _llm_context(working_set)
 
@@ -304,7 +291,6 @@ class DesktopAPIServer:
                     for tc in msg_data.get("tool_calls", [])
                 ],
                 _compaction_summary=msg_data.get("_compaction_summary", False),
-                _compacted=msg_data.get("_compacted", False),
             ))
         return messages
 
@@ -351,23 +337,12 @@ class DesktopAPIServer:
     async def compact_session(self, request: web.Request) -> web.Response:
         """POST /sessions/{sid}/compact — generate a model summary.
 
-        Replaces the LLM-visible history with `[summary]` while preserving
-        the original messages on disk (stamped with `_compacted=True`).
-        Aligned with codex CLI / claude code semantics: no "recent tail"
-        is preserved in the LLM context, the summary is the new starting
-        point. The UI's collapse bar can still expand to show the
-        originals, so the user never loses their history — it just gets
-        folded.
-
-        /prune is a separate user-driven operation; /compact is a pure
-        summary and does NOT collapse tool outputs.
-
-        On-disk layout becomes `[summary, ...compacted_originals]`.
-
-        Returns a 200 with `noop=true` if there is nothing meaningful to
-        compress (e.g. fewer than 3 messages or the model + fallback both
-        produced no summary). The UI can treat this the same as a
-        successful no-op.
+        On-disk layout is chronological:
+            [msg1, msg2, ..., summary1, msg3, msg4, ..., summary2, ...]
+        Each summary's folded range is the messages between it and the
+        previous summary (or start of list).  The LLM only sees the
+        latest summary + any messages after it — equivalent to a fresh
+        session.  Returns `noop=true` if there's nothing to compress.
         """
         sid = request.match_info["sid"]
         if not self.store.exists(sid):
@@ -378,18 +353,12 @@ class DesktopAPIServer:
         model_name = model_cfg.get("name", "")
         context_window = int(self.runtime.config.get("memory", {}).get("context_window_tokens", 200000) or 200000)
 
-        # Only compact the LLM-visible context (summary + new messages).
-        # Compacted originals from earlier compactions are preserved on disk
-        # but excluded from the new summary to avoid re-compressing old data.
         from ziva_runtime.session.compaction import _llm_context
         llm_visible = _llm_context(messages)
-        # Collect pre-existing compacted originals so they are preserved on
-        # disk after _apply_post_compact replaces the message file.
-        old_compacted = [m for m in messages if m._compacted]
 
         try:
             from ziva_runtime.session.compaction import compact_messages
-            summary_list, compacted_originals = await compact_messages(
+            summary_list, _ = await compact_messages(
                 llm_visible, context_window, model_name, self.runtime.model_adapter
             )
         except Exception as exc:
@@ -397,9 +366,6 @@ class DesktopAPIServer:
 
         summary_msg = summary_list[0] if summary_list else None
         if summary_msg is None:
-            # Nothing to compact — too few messages or the model + fallback
-            # both produced no summary. Surface a graceful noop rather than
-            # a 500 so the UI can show a clear "nothing to compact" toast.
             from ziva_runtime.session.compaction import estimate_tokens
             current_tokens = estimate_tokens(messages)
             return web.json_response({
@@ -414,24 +380,13 @@ class DesktopAPIServer:
                 },
             })
 
-        # Split compacted_originals into non-summary messages (new compact's
-        # originals) and embedded summaries (from earlier compactions). Each
-        # embedded summary + its old_compacted originals form their own tier.
-        # Layout: [new_summary, *non_summary_compacted, *summary_tier1, *old_compacted_tier1, ...]
-        non_summary_compacted = []
-        embedded_summaries = []
-        for m in compacted_originals:
-            if m._compaction_summary:
-                embedded_summaries.append(m)
-            else:
-                non_summary_compacted.append(m)
-
-        on_disk = [summary_msg] + non_summary_compacted + embedded_summaries + old_compacted
+        # Append summary at the end — chronological order
+        on_disk = list(messages) + [summary_msg]
         new_usage = self._apply_post_compact(sid, on_disk)
         return web.json_response({
             "success": True,
             "message_count": 1,
-            "original_count": len(compacted_originals),
+            "original_count": len(llm_visible),
             "last_usage": new_usage,
         })
 

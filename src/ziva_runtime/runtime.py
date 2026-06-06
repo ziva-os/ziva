@@ -388,12 +388,9 @@ class Runtime:
         if isinstance(_last_user_text, list):
             _last_user_text = " ".join(p.get("text", "") for p in _last_user_text if isinstance(p, dict) and p.get("type") == "text")
         if _last_user_text.strip() == "/compact":
-            summary_list, _compacted = await compact_messages(
+            summary_list, _ = await compact_messages(
                 working, context_window, model_cfg["name"], self.model_adapter
             )
-            # LLM context is now just the summary — the originals are kept
-            # on disk (via the server's /compact endpoint) for the UI's
-            # expand affordance, but should not bloat this chat()'s prompt.
             working = summary_list
             had_summary = any(m._compaction_summary for m in working)
             event = {"type": "context_compacted", "round": 0, "note": "Manual compact triggered by /compact"}
@@ -425,12 +422,9 @@ class Runtime:
             if is_overflow(working, context_window):
                 yield _flag({"type": "status", "content": "compact", "round": round_idx})
                 await self._emit(session_id, {"type": "status", "content": "compact", "round": round_idx})
-                summary_list, _compacted = await compact_messages(
+                summary_list, _ = await compact_messages(
                     working, context_window, model_cfg["name"], self.model_adapter
                 )
-                # Drop the compacted originals from the in-flight LLM
-                # context; they're persisted to disk by the server's
-                # /compact endpoint (the runtime doesn't write here).
                 working = summary_list or working
                 event = {"type": "context_compacted", "round": round_idx}
                 yield _flag(event)

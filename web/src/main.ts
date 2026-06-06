@@ -1136,31 +1136,19 @@ async function loadHistory(sid: string) {
     updateContextProgress(0, 0);
   }
 
-  // Compaction layout on disk after N compacts:
-  //   [summaryN, *compactedN..., *(summaryN-1), *compactedN-1..., ..., *originals...]
-  // Each summary has _compaction_summary; older ones also have _compacted.
-  // Find all summaries and compute each one's compacted range. A summary at
-  // index i owns messages from i+1 up to the next _compaction_summary boundary
-  // (exclusive). This lets summary2 "own" summary1 as part of its compacted
-  // originals, while summary1 has its own originals range.
-  const summaries: Array<{ idx: number; end: number; count: number }> = [];
+  // Chronological layout: [msg1, ..., summary1, msgN, ..., summary2, ...]
+  // Each summary's folded range = messages between it and the previous summary
+  // (or start of list).  Show collapse bars for the last 2 compacts.
+  const summaryIndices: number[] = [];
   for (let i = 0; i < fullMsgs.length; i++) {
-    if ((fullMsgs[i] as any)._compaction_summary) {
-      let end = i + 1;
-      // Walk forward while compacted; stop at next _compaction_summary boundary
-      // (which belongs to the *next* summary's range) or at any non-compacted msg.
-      while (end < fullMsgs.length && (fullMsgs[end] as any)._compacted) {
-        if ((fullMsgs[end] as any)._compaction_summary) break;
-        end++;
-      }
-      const count = end - i - 1;
-      if (count > 0) summaries.push({ idx: i, end, count });
-    }
+    if ((fullMsgs[i] as any)._compaction_summary) summaryIndices.push(i);
   }
-  // Only show the 2 most recent compacts (last entries in the array)
-  const recent = summaries.slice(-2);
-  for (const { idx, end, count } of recent) {
-    appendCompactBoundary(sid, count, idx, end);
+  const recent = summaryIndices.slice(-2);
+  for (const si of recent) {
+    const prevSummary = summaryIndices[summaryIndices.indexOf(si) - 1];
+    const start = prevSummary !== undefined ? prevSummary + 1 : 0;
+    const count = si - start;
+    if (count > 0) appendCompactBoundary(sid, count, start, si);
   }
 
   renderMessages($("messages"), msgs);
@@ -1199,9 +1187,6 @@ function renderMessages(target: HTMLElement, msgs: any[]): void {
   for (let mi = 0; mi < msgs.length; mi++) {
     const m = msgs[mi];
     const isSub = (m as any)._subagent === true;
-
-    // Skip compaction summary messages — they are shown as collapse bars instead
-    if ((m as any)._compaction_summary) continue;
 
     if (m.role === "user") {
       if ((m as any)._hidden) continue;
@@ -1285,18 +1270,14 @@ function renderMessages(target: HTMLElement, msgs: any[]): void {
   }
 }
 
-// Render a collapse bar above a compaction summary message. On expand,
-// it fetches the full history (with include_dropped=true) and renders
-// the compacted originals inline above the bar using the same DOM as
-// the live chat (renderMessages → appendUserMsg / appendAssistantMsg /
-// appendToolCard), so the folded messages look identical to the live
-// chat — just visually scaled down via the wrapper's CSS. The summary
-// itself stays in its own bubble below the bar.
+// Render a collapse bar for a compaction layer. `start` and `end` define
+// the range of folded messages [start, end) in the full history. On expand,
+// fetches fullMsgs and renders that range inline.
 function appendCompactBoundary(
   sid: string,
   droppedCount: number,
-  summaryIdx: number,
-  compactEnd: number,
+  start: number,
+  end: number,
 ): void {
   const wrapper = document.createElement("div");
   wrapper.className = "compact-boundary";
@@ -1317,10 +1298,8 @@ function appendCompactBoundary(
     try {
       const data = await api.getMessages(sid, { includeDropped: true });
       const fullMsgs = data.messages || [];
-      // Only render the compacted originals for THIS summary's range
-      // [summaryIdx+1, compactEnd)
       dropZone.innerHTML = "";
-      const originals = fullMsgs.slice(summaryIdx + 1, compactEnd);
+      const originals = fullMsgs.slice(start, end);
       renderMessages(dropZone, originals);
       dropZone.dataset.loaded = "1";
     } catch (e) {
