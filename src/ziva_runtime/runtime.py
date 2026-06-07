@@ -447,10 +447,19 @@ class Runtime:
                 parts.append("\n".join(skill_lines))
             effective_prompt = "\n\n".join(parts)
 
+            thinking_config = None
+            if model_cfg.get("thinking_mode") and model_cfg.get("thinking_mode") != "disabled":
+                thinking_config = {
+                    "type": "enabled",
+                    "budget_tokens": int(model_cfg.get("thinking_budget_tokens", 4000)),
+                    "mode": model_cfg.get("thinking_mode", "medium")
+                }
+
             full_content = ""
             final_tool_calls: List[ToolCallItem] = []
             final_usage: Dict[str, int] | None = None
             final_finish_reason: str | None = None
+            final_reasoning_signature: str | None = None
 
             # Stream from model
             stream = self.model_adapter.chat_stream(
@@ -458,6 +467,7 @@ class Runtime:
                 model=model_cfg["name"],
                 system_prompt=effective_prompt,
                 tools=api_tools if api_tools else None,
+                thinking_config=thinking_config,
             )
             async for delta in stream:
                 if cancellation_token and cancellation_token.is_cancelled:
@@ -473,9 +483,16 @@ class Runtime:
                 if delta.tool_calls:
                     final_tool_calls = delta.tool_calls
                 if delta.usage:
-                    final_usage = delta.usage
+                    if final_usage is None:
+                        final_usage = dict(delta.usage)
+                    else:
+                        for k, v in delta.usage.items():
+                            if v:
+                                final_usage[k] = v
                 if delta.finish_reason:
                     final_finish_reason = delta.finish_reason
+                if delta.reasoning_signature:
+                    final_reasoning_signature = delta.reasoning_signature
 
             event = {
                 "type": "model_response",
@@ -494,13 +511,16 @@ class Runtime:
                 await self._emit(session_id, event)
                 self.update_session_usage(session_id, final_usage)
                 # Persist final assistant message
-                self._get_session(session_id).history.append(
-                    ChatMessage(role="assistant", content=full_content)
-                )
-                self._persist_message(session_id, ChatMessage(role="assistant", content=full_content), is_subagent=is_sub, sub_call_id=sub_call_id)
+                assistant_msg = ChatMessage(role="assistant", content=full_content)
+                if final_reasoning_signature:
+                    assistant_msg.reasoning_signature = final_reasoning_signature
+                self._get_session(session_id).history.append(assistant_msg)
+                self._persist_message(session_id, assistant_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
                 return
 
             assistant_msg = ChatMessage(role="assistant", content=full_content, tool_calls=final_tool_calls)
+            if final_reasoning_signature:
+                assistant_msg.reasoning_signature = final_reasoning_signature
             working.append(assistant_msg)
             self._get_session(session_id).history.append(assistant_msg)
             self._persist_message(session_id, assistant_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
@@ -926,6 +946,8 @@ class Runtime:
                     )
                     for tc in msg_data.get("tool_calls", [])
                 ],
+                reasoning_content=msg_data.get("reasoning_content"),
+                reasoning_signature=msg_data.get("reasoning_signature"),
                 _compaction_summary=msg_data.get("_compaction_summary", False),
             ))
         return _llm_context(messages)
@@ -942,6 +964,10 @@ class Runtime:
                 for tc in message.tool_calls
             ],
         }
+        if message.reasoning_content:
+            record["reasoning_content"] = message.reasoning_content
+        if message.reasoning_signature:
+            record["reasoning_signature"] = message.reasoning_signature
         if is_subagent:
             record["_subagent"] = True
         if sub_call_id:

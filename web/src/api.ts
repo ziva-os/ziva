@@ -26,6 +26,7 @@ export interface Automation {
   enabled: boolean;
   last_run?: number;
   last_result?: string;
+  schedule_time?: string;
 }
 
 export interface Status {
@@ -33,6 +34,7 @@ export interface Status {
   workspace: string;
   tools: string[];
   approval_policy: string;
+  context_window: number;
 }
 
 export interface Config {
@@ -72,7 +74,7 @@ export async function deleteSession(sid: string): Promise<void> {
   await api("DELETE", `/sessions/${sid}`);
 }
 
-export async function getMessages(sid: string, opts?: { includeDropped?: boolean }): Promise<{ messages: Record<string, any>[]; last_usage?: { prompt_tokens?: number; completion_tokens?: number } }> {
+export async function getMessages(sid: string, opts?: { includeDropped?: boolean }): Promise<{ messages: Record<string, any>[]; last_usage?: { prompt_tokens?: number; completion_tokens?: number }; model_name?: string }> {
   const qs = opts?.includeDropped ? "?include_dropped=true" : "";
   return api("GET", `/sessions/${sid}/messages${qs}`);
 }
@@ -209,10 +211,37 @@ export async function readSkillFile(path: string): Promise<SkillFile> {
   return api<SkillFile>("GET", `/skills/file?path=${encodeURIComponent(path)}`);
 }
 
-export async function createAutomation(name: string, prompt: string, intervalSeconds: number): Promise<{ id: string }> {
-  return api("POST", "/automations", { name, prompt, interval_seconds: intervalSeconds });
+export async function createAutomation(name: string, prompt: string, intervalSeconds: number, scheduleTime?: string): Promise<{ id: string }> {
+  const payload: Record<string, unknown> = { name, prompt, interval_seconds: intervalSeconds };
+  if (scheduleTime) payload.schedule_time = scheduleTime;
+  return api("POST", "/automations", payload);
 }
 
 export async function deleteAutomation(aid: string): Promise<void> {
-  await api("DELETE", `/automations/${aid}`);
+  return api("DELETE", `/automations/${aid}`);
+}
+
+export async function getGitBranches(sid: string): Promise<{ current: string; branches: string[] }> {
+  return api("GET", `/sessions/${sid}/git-branches`);
+}
+
+export async function gitCheckout(sid: string, branch: string, create: boolean = false): Promise<{ success: boolean }> {
+  return api("POST", `/sessions/${sid}/git-checkout`, { branch, create });
+}
+
+export async function chooseSystemFolder(): Promise<{ path?: string; error?: string }> {
+  try {
+    const res = await fetch("/api/system/choose-folder");
+    return await res.json();
+  } catch (e: any) {
+    return { error: e.message };
+  }
+}
+
+export async function getRecentWorkspaces(): Promise<{ workspaces: string[] }> {
+  return api("GET", "/api/workspace/recent");
+}
+
+export async function switchWorkspace(path: string): Promise<{ success: boolean }> {
+  return api("POST", "/api/workspace/switch", { path });
 }

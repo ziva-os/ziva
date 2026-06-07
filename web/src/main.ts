@@ -1130,12 +1130,20 @@ async function loadHistory(sid: string) {
   pendingTools.clear();
 
   // Restore context ring from persisted usage
-  if (filteredData.last_usage?.prompt_tokens) {
+  if (filteredData.last_usage?.prompt_tokens !== undefined) {
     const contextWindow = store.get().config.contextWindow || 200000;
     const pct = Math.min(filteredData.last_usage.prompt_tokens / contextWindow, 1);
     updateContextProgress(pct, filteredData.last_usage.prompt_tokens);
   } else {
     updateContextProgress(0, 0);
+  }
+  
+  // Sync model dropdown if session has a persisted model
+  if (filteredData.model_name) {
+    const sel = $("modelSelect") as HTMLSelectElement;
+    if (sel && Array.from(sel.options).some(o => o.value === filteredData.model_name)) {
+      sel.value = filteredData.model_name;
+    }
   }
 
   // Chronological layout: [msg1, ..., summary1, msgN, ..., summary2, ...]

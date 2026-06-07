@@ -5,7 +5,7 @@ import json
 import shlex
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -13,8 +13,8 @@ from aiohttp import web
 
 from ziva_runtime.permissions import get_permission_manager
 from ziva_runtime.runtime import Runtime
-from ziva_runtime.shared_types import CancellationToken, ChatMessage, ToolCallItem
-from ziva_runtime.storage.file_storage import FileStorage
+from ziva_runtime.shared_types import CancellationToken, ChatMessage, ChatResult, ToolCallItem
+from ziva_runtime.storage.file_storage import FileStorage, _project_hash
 
 
 @dataclass
@@ -27,6 +27,34 @@ class Automation:
     enabled: bool = True
     last_run: float | None = None
     last_result: str | None = None
+    last_error: str | None = None
+    next_run: float | None = None
+    run_count: int = 0
+    schedule_time: str | None = None  # HH:MM:SS format for daily runs
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Automation":
+        return cls(
+            id=str(data.get("id") or uuid.uuid4()),
+            name=str(data.get("name") or "unnamed"),
+            prompt=str(data.get("prompt") or ""),
+            interval_seconds=max(1, int(data.get("interval_seconds") or 300)),
+            session_id=str(data.get("session_id") or uuid.uuid4()),
+            enabled=bool(data.get("enabled", True)),
+            last_run=data.get("last_run"),
+            last_result=data.get("last_result"),
+            last_error=data.get("last_error"),
+            next_run=data.get("next_run"),
+            run_count=int(data.get("run_count") or 0),
+            schedule_time=data.get("schedule_time"),
+            created_at=float(data.get("created_at") or time.time()),
+            updated_at=float(data.get("updated_at") or time.time()),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass
@@ -89,6 +117,7 @@ class SessionStore:
 class DesktopAPIServer:
     def __init__(self, runtime: Runtime) -> None:
         self.runtime = runtime
+        self.runtime.automation_callback = self._reload_automations
         self.store = SessionStore(runtime=runtime)
         self.automations: Dict[str, Automation] = {}
         self._automation_tasks: Dict[str, asyncio.Task] = {}
@@ -108,10 +137,14 @@ class DesktopAPIServer:
         self.app.router.add_get("/sessions/{sid}/tools", self.get_tools_status)
         self.app.router.add_get("/sessions/{sid}/plan", self.get_plan)
         self.app.router.add_get("/sessions/{sid}/diff", self.get_diff)
+        self.app.router.add_get("/sessions/{sid}/git-branches", self.get_git_branches)
+        self.app.router.add_post("/sessions/{sid}/git-checkout", self.git_checkout)
         self.app.router.add_post("/sessions/{sid}/revert", self.revert_files)
         self.app.router.add_patch("/sessions/{sid}", self.update_session)
         self.app.router.add_post("/automations", self.create_automation)
         self.app.router.add_get("/automations", self.list_automations)
+        self.app.router.add_patch("/automations/{aid}", self.update_automation)
+        self.app.router.add_post("/automations/{aid}/run", self.run_automation_now)
         self.app.router.add_delete("/automations/{aid}", self.delete_automation)
         self.app.router.add_post("/api/permissions/{request_id}/reply", self.permission_reply)
         self.app.router.add_post("/sessions/{sid}/questions/reply", self.question_reply)
@@ -126,9 +159,134 @@ class DesktopAPIServer:
         self.app.router.add_put("/config/json", self.save_config_json)
         self.app.router.add_get("/skills", self.list_skills)
         self.app.router.add_get("/skills/file", self.read_skill_file)
+        self.app.router.add_get("/api/system/choose-folder", self.choose_folder)
+        self.app.router.add_get("/api/workspace/recent", self.get_recent_workspaces)
+        self.app.router.add_post("/api/workspace/switch", self.switch_workspace)
         # Serve static assets from build output
         static_dir = Path(__file__).resolve().parent / "static"
         self.app.router.add_static("/assets", static_dir / "assets")
+        self.app.on_startup.append(self._on_startup)
+        self.app.on_cleanup.append(self._on_cleanup)
+
+    async def _on_startup(self, _app: web.Application) -> None:
+        self._load_persisted_automations()
+        self._schedule_enabled_automations()
+
+    async def _on_cleanup(self, _app: web.Application) -> None:
+        await self._cancel_automation_tasks()
+
+    def _reload_automations(self) -> None:
+        """Called by tools when automations are modified via FileStorage."""
+        # Force reload from disk
+        self.automations.clear()
+        self._load_persisted_automations()
+        self._schedule_enabled_automations()
+
+    def _load_persisted_automations(self) -> None:
+        if self.automations:
+            return
+        for item in FileStorage.list_automations(self.runtime.project_id):
+            automation = Automation.from_dict(item)
+            if not automation.next_run and automation.enabled:
+                automation.next_run = time.time() + automation.interval_seconds
+            self.automations[automation.id] = automation
+
+    def _persist_automation(self, automation: Automation) -> None:
+        automation.updated_at = time.time()
+        FileStorage.upsert_automation(self.runtime.project_id, automation.to_dict())
+
+    def _automation_payload(self, automation: Automation) -> Dict[str, Any]:
+        return automation.to_dict()
+
+    def _next_run_timestamp(self, schedule_time: str | None, interval_seconds: int) -> float:
+        """Compute the next run timestamp based on schedule_time or interval."""
+        now = time.time()
+        if not schedule_time:
+            return now + interval_seconds
+        try:
+            hour, minute, second = map(int, schedule_time.split(":", 2))
+            local = time.localtime(now)
+            target = time.mktime((local.tm_year, local.tm_mon, local.tm_mday, hour, minute, second, 0, 0, -1))
+            if target <= now:
+                target += 86400  # schedule for tomorrow
+            return target
+        except (ValueError, TypeError):
+            return now + interval_seconds
+
+    def _schedule_enabled_automations(self) -> None:
+        for automation in list(self.automations.values()):
+            if automation.enabled and automation.id not in self._automation_tasks:
+                self._schedule_automation(automation)
+
+    def _schedule_automation(self, automation: Automation) -> None:
+        existing = self._automation_tasks.pop(automation.id, None)
+        if existing:
+            existing.cancel()
+        if not automation.enabled:
+            return
+        self._automation_tasks[automation.id] = asyncio.create_task(self._automation_runner(automation.id))
+
+    async def _automation_runner(self, automation_id: str) -> None:
+        while True:
+            automation = self.automations.get(automation_id)
+            if not automation or not automation.enabled:
+                return
+            now = time.time()
+            if automation.next_run is None:
+                automation.next_run = self._next_run_timestamp(automation.schedule_time, automation.interval_seconds)
+                self._persist_automation(automation)
+            await asyncio.sleep(max(0, automation.next_run - now))
+            automation = self.automations.get(automation_id)
+            if not automation or not automation.enabled:
+                return
+            await self._run_automation_once(automation, scheduled=True)
+
+    async def _run_automation_once(self, automation: Automation, *, scheduled: bool) -> ChatResult | None:
+        try:
+            if not self.store.exists(automation.session_id):
+                FileStorage.create_session(self.runtime.project_id, {
+                    "id": automation.session_id,
+                    "time": {"created": int(time.time() * 1000), "updated": int(time.time() * 1000)},
+                })
+            messages = [ChatMessage(role="user", content=automation.prompt)]
+            result = await self.runtime.chat(messages, session_id=automation.session_id)
+            automation.last_run = time.time()
+            automation.last_result = result.content[:500]
+            automation.last_error = None
+            automation.run_count += 1
+            automation.next_run = self._next_run_timestamp(automation.schedule_time, automation.interval_seconds) if automation.enabled else None
+            self._persist_automation(automation)
+            await self.runtime._emit(automation.session_id, {
+                "type": "automation_run",
+                "automation_id": automation.id,
+                "name": automation.name,
+                "scheduled": scheduled,
+                "status": "done",
+            })
+            return result
+        except Exception as exc:
+            automation.last_run = time.time()
+            automation.last_error = str(exc)
+            automation.next_run = self._next_run_timestamp(automation.schedule_time, automation.interval_seconds) if automation.enabled else None
+            self._persist_automation(automation)
+            await self.runtime._emit(automation.session_id, {
+                "type": "automation_run",
+                "automation_id": automation.id,
+                "name": automation.name,
+                "scheduled": scheduled,
+                "status": "failed",
+                "error": str(exc),
+                "class": exc.__class__.__name__,
+            })
+            return None
+
+    async def _cancel_automation_tasks(self) -> None:
+        tasks = list(self._automation_tasks.values())
+        self._automation_tasks.clear()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def index(self, _request: web.Request) -> web.Response:
         html = (Path(__file__).resolve().parent / "static" / "index.html").read_text(encoding="utf-8")
@@ -168,6 +326,7 @@ class DesktopAPIServer:
         return web.json_response({
             "messages": msgs,
             "last_usage": meta.get("last_usage"),
+            "model_name": meta.get("model_cfg", {}).get("name") if isinstance(meta.get("model_cfg"), dict) else None,
         })
 
     async def get_turns(self, request: web.Request) -> web.Response:
@@ -518,44 +677,140 @@ class DesktopAPIServer:
             diff_content = ""
         return web.json_response({"diff": diff_content})
 
-    async def create_automation(self, request: web.Request) -> web.Response:
+    async def get_git_branches(self, request: web.Request) -> web.Response:
+        sid = request.match_info["sid"]
+        if not self.store.exists(sid):
+            return web.json_response({"error": "session_not_found"}, status=404)
+
+        workspace = self.runtime.workspace_root
+        try:
+            # get current branch
+            proc = await asyncio.create_subprocess_shell(
+                "git rev-parse --abbrev-ref HEAD", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=str(workspace)
+            )
+            stdout, _ = await proc.communicate()
+            current = stdout.decode("utf-8").strip()
+
+            # get all branches
+            proc = await asyncio.create_subprocess_shell(
+                "git branch --format='%(refname:short)'", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=str(workspace)
+            )
+            stdout, _ = await proc.communicate()
+            branches = [b.strip() for b in stdout.decode("utf-8").splitlines() if b.strip()]
+            return web.json_response({"current": current, "branches": branches})
+        except Exception:
+            return web.json_response({"current": "main", "branches": ["main"]})
+
+    async def git_checkout(self, request: web.Request) -> web.Response:
+        sid = request.match_info["sid"]
+        if not self.store.exists(sid):
+            return web.json_response({"error": "session_not_found"}, status=404)
         payload = await request.json()
-        name = payload.get("name", "unnamed")
-        prompt = payload.get("prompt", "")
-        interval = int(payload.get("interval_seconds", 300))
+        branch = payload.get("branch")
+        create = payload.get("create", False)
+        
+        workspace = self.runtime.workspace_root
+        cmd = f"git checkout -b {shlex.quote(branch)}" if create else f"git checkout {shlex.quote(branch)}"
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=str(workspace)
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                return web.json_response({"error": stderr.decode("utf-8")}, status=400)
+            return web.json_response({"success": True})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def create_automation(self, request: web.Request) -> web.Response:
+        self._load_persisted_automations()
+        payload = await request.json()
+        name = str(payload.get("name") or "unnamed")
+        prompt = str(payload.get("prompt") or "")
+        interval = max(1, int(payload.get("interval_seconds") or 300))
+        run_immediately = bool(payload.get("run_immediately", False))
+        schedule_time = payload.get("schedule_time")
+        if schedule_time:
+            schedule_time = str(schedule_time).strip() or None
 
         if not prompt:
             return web.json_response({"error": "prompt is required"}, status=400)
 
         aid = str(uuid.uuid4())
         sid = self.store.create()
-        automation = Automation(id=aid, name=name, prompt=prompt, interval_seconds=interval, session_id=sid)
+        now = time.time()
+        next_run = now if run_immediately else self._next_run_timestamp(schedule_time, interval)
+        automation = Automation(
+            id=aid,
+            name=name,
+            prompt=prompt,
+            interval_seconds=interval,
+            session_id=sid,
+            schedule_time=schedule_time,
+            next_run=next_run,
+        )
         self.automations[aid] = automation
-
-        async def runner() -> None:
-            while automation.enabled:
-                try:
-                    messages = [ChatMessage(role="user", content=automation.prompt)]
-                    result = await self.runtime.chat(messages, session_id=automation.session_id)
-                    automation.last_run = time.time()
-                    automation.last_result = result.content[:500]
-                except Exception:
-                    automation.last_run = time.time()
-                await asyncio.sleep(automation.interval_seconds)
-
-        self._automation_tasks[aid] = asyncio.create_task(runner())
-        return web.json_response({"id": aid, "session_id": sid})
+        self._persist_automation(automation)
+        self._schedule_automation(automation)
+        return web.json_response({"id": aid, "session_id": sid, "automation": self._automation_payload(automation)})
 
     async def list_automations(self, _request: web.Request) -> web.Response:
-        items = []
-        for a in self.automations.values():
-            items.append({
-                "id": a.id, "name": a.name, "interval_seconds": a.interval_seconds,
-                "enabled": a.enabled, "last_run": a.last_run, "last_result": a.last_result,
-            })
+        self._load_persisted_automations()
+        self._schedule_enabled_automations()
+        items = [self._automation_payload(a) for a in self.automations.values()]
+        items.sort(key=lambda a: a.get("created_at") or 0, reverse=True)
         return web.json_response({"automations": items})
 
+
+    async def update_automation(self, request: web.Request) -> web.Response:
+        self._load_persisted_automations()
+        aid = request.match_info["aid"]
+        automation = self.automations.get(aid)
+        if not automation:
+            return web.json_response({"error": "not_found"}, status=404)
+        payload = await request.json()
+        reschedule = False
+        if "name" in payload:
+            automation.name = str(payload["name"] or "unnamed")
+        if "prompt" in payload:
+            prompt = str(payload["prompt"] or "")
+            if not prompt:
+                return web.json_response({"error": "prompt is required"}, status=400)
+            automation.prompt = prompt
+        if "interval_seconds" in payload:
+            automation.interval_seconds = max(1, int(payload["interval_seconds"] or 300))
+            automation.next_run = self._next_run_timestamp(automation.schedule_time, automation.interval_seconds)
+            reschedule = True
+        if "schedule_time" in payload:
+            st = payload.get("schedule_time")
+            automation.schedule_time = str(st).strip() if st else None
+            automation.next_run = self._next_run_timestamp(automation.schedule_time, automation.interval_seconds)
+            reschedule = True
+        if "enabled" in payload:
+            enabled = bool(payload["enabled"])
+            if automation.enabled != enabled:
+                automation.enabled = enabled
+                automation.next_run = self._next_run_timestamp(automation.schedule_time, automation.interval_seconds) if enabled else None
+                reschedule = True
+        self._persist_automation(automation)
+        if reschedule:
+            self._schedule_automation(automation)
+        return web.json_response({"ok": True, "automation": self._automation_payload(automation)})
+
+    async def run_automation_now(self, request: web.Request) -> web.Response:
+        self._load_persisted_automations()
+        aid = request.match_info["aid"]
+        automation = self.automations.get(aid)
+        if not automation:
+            return web.json_response({"error": "not_found"}, status=404)
+        result = await self._run_automation_once(automation, scheduled=False)
+        payload = {"ok": result is not None, "automation": self._automation_payload(automation)}
+        if result is not None:
+            payload["result"] = {"role": result.role, "content": result.content, "finish_reason": result.finish_reason}
+        return web.json_response(payload, status=200 if result is not None else 500)
+
     async def delete_automation(self, request: web.Request) -> web.Response:
+        self._load_persisted_automations()
         aid = request.match_info["aid"]
         automation = self.automations.get(aid)
         if not automation:
@@ -565,6 +820,7 @@ class DesktopAPIServer:
         if task:
             task.cancel()
         del self.automations[aid]
+        FileStorage.delete_automation(self.runtime.project_id, aid)
         return web.json_response({"deleted": True})
 
     async def permission_reply(self, request: web.Request) -> web.Response:
@@ -775,6 +1031,63 @@ class DesktopAPIServer:
         # Hot-reload the in-memory config
         self.runtime.config.update(payload)
         return web.json_response({"ok": True})
+    async def choose_folder(self, _request: web.Request) -> web.Response:
+        """Use osascript to open a native folder selection dialog."""
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                "osascript -e 'POSIX path of (choose folder with prompt \"Select Project Folder\")'",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await proc.communicate()
+            if proc.returncode == 0:
+                folder_path = stdout.decode("utf-8").strip()
+                if folder_path:
+                    return web.json_response({"path": folder_path})
+            return web.json_response({"error": "No folder selected"}, status=400)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def get_recent_workspaces(self, _request: web.Request) -> web.Response:
+        recent_path = Path.home() / ".ziva" / "recent_workspaces.json"
+        try:
+            if recent_path.exists():
+                return web.json_response({"workspaces": json.loads(recent_path.read_text())})
+        except Exception:
+            pass
+        return web.json_response({"workspaces": []})
+
+    async def switch_workspace(self, request: web.Request) -> web.Response:
+        payload = await request.json()
+        new_path = payload.get("path")
+        if not new_path:
+            return web.json_response({"error": "Missing path"}, status=400)
+        
+        target = Path(new_path).resolve()
+        if not target.is_dir():
+            return web.json_response({"error": "Not a valid directory"}, status=400)
+
+        # Update runtime workspace
+        self.runtime.workspace_root = target
+        self.runtime._project_id = _project_hash(target)
+
+        # Save to recent workspaces
+        recent_path = Path.home() / ".ziva" / "recent_workspaces.json"
+        try:
+            recent_path.parent.mkdir(parents=True, exist_ok=True)
+            workspaces = []
+            if recent_path.exists():
+                workspaces = json.loads(recent_path.read_text())
+            str_target = str(target)
+            if str_target in workspaces:
+                workspaces.remove(str_target)
+            workspaces.insert(0, str_target)
+            # keep top 20
+            recent_path.write_text(json.dumps(workspaces[:20]))
+        except Exception:
+            pass
+
+        return web.json_response({"success": True})
 
     async def get_status(self, _request: web.Request) -> web.Response:
         model = self.runtime.config.get("model", {})
@@ -783,6 +1096,7 @@ class DesktopAPIServer:
             "workspace": str(self.runtime.workspace_root),
             "tools": [t["name"] for t in self.runtime.list_tools()],
             "approval_policy": self.runtime.config.get("approval", {}).get("policy", "suggest"),
+            "context_window": int(self.runtime.config.get("memory", {}).get("context_window_tokens", 200000) or 200000),
         })
 
     async def list_skills(self, _request: web.Request) -> web.Response:
@@ -860,8 +1174,7 @@ class DesktopAPIServer:
 
     async def stop(self) -> None:
         """Gracefully stop the server."""
-        for task in self._automation_tasks.values():
-            task.cancel()
+        await self._cancel_automation_tasks()
         try:
             await self.runtime.shutdown()
         except Exception:

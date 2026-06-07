@@ -19,5 +19,5 @@ def load_layered_instructions(workspace_root: Path) -> str:
         if path.exists() and path.is_file():
             content = path.read_text(encoding="utf-8").strip()
             if content:
-                sections.append(f"# From {label} ({path})\n{content}")
+                sections.append(content)
     return "\n\n".join(sections)
