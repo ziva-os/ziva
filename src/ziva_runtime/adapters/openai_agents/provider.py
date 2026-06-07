@@ -7,13 +7,26 @@ from typing import Any, AsyncIterator, Iterable, Protocol
 from ziva_runtime.shared_types import ChatMessage, ChatResult, StreamDelta, ToolCallItem
 
 
-def _build_api_messages(messages: Iterable[ChatMessage], system_prompt: str | None = None) -> list[dict]:
+def _build_api_messages(messages: Iterable[ChatMessage], system_prompt: str | None = None, model: str = "", thinking_enabled: bool = False) -> list[dict]:
     api_messages: list[dict] = []
     if system_prompt:
         api_messages.append({"role": "system", "content": system_prompt})
     for m in messages:
         msg: dict[str, Any] = {"role": m.role, "content": m.content}
+        
+        if m.role == "assistant" and isinstance(m.content, str):
+            import re
+            thinking_matches = re.findall(r'(?i)<think[^>]*>([\s\S]*?)</think[^>]*>', m.content)
+            main_text = re.sub(r'(?i)<think[^>]*>[\s\S]*?</think[^>]*>', '', m.content).strip()
+            if thinking_matches:
+                msg["reasoning_content"] = "\n\n---\n\n".join([t.strip() for t in thinking_matches])
+                msg["content"] = main_text
+            elif getattr(m, "reasoning_content", None) is not None:
+                msg["reasoning_content"] = m.reasoning_content
+                
         if m.role == "assistant" and m.tool_calls:
+            if "reasoning_content" not in msg and (thinking_enabled or "kimi" in model.lower() or "deepseek" in model.lower() or "moonshot" in model.lower() or "minimax" in model.lower()):
+                msg["reasoning_content"] = ""
             msg["tool_calls"] = [
                 {
                     "id": tc.id,
@@ -27,6 +40,9 @@ def _build_api_messages(messages: Iterable[ChatMessage], system_prompt: str | No
         if m.role == "tool" and m.name:
             msg["name"] = m.name
         api_messages.append(msg)
+    print("=== API MESSAGES ===")
+    print(json.dumps(api_messages, indent=2, ensure_ascii=False))
+    print("====================")
     return api_messages
 
 
@@ -61,16 +77,22 @@ class OpenAIChatAdapter:
         model: str,
         system_prompt: str | None = None,
         tools: list[dict] | None = None,
+        thinking_config: dict[str, Any] | None = None,
     ) -> ChatResult:
         from openai import AsyncOpenAI
 
         client = AsyncOpenAI(base_url=self._base_url, api_key=self._api_key)
-        api_messages = _build_api_messages(messages, system_prompt)
+        thinking_enabled = thinking_config is not None and thinking_config.get("type") == "enabled"
+        api_messages = _build_api_messages(messages, system_prompt, model=model, thinking_enabled=thinking_enabled)
 
         kwargs: dict[str, Any] = {"model": model, "messages": api_messages}
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
+            
+        if thinking_config and thinking_config.get("type") == "enabled":
+            if model.startswith("o1") or model.startswith("o3"):
+                kwargs["reasoning_effort"] = thinking_config.get("mode", "medium")
 
         resp = await client.chat.completions.create(**kwargs)
         choice = resp.choices[0]
@@ -81,6 +103,9 @@ class OpenAIChatAdapter:
                 "prompt_tokens": resp.usage.prompt_tokens,
                 "completion_tokens": resp.usage.completion_tokens,
             }
+            if hasattr(resp.usage, "completion_tokens_details") and resp.usage.completion_tokens_details:
+                if hasattr(resp.usage.completion_tokens_details, "reasoning_tokens"):
+                    usage_dict["reasoning_tokens"] = resp.usage.completion_tokens_details.reasoning_tokens
 
         tool_calls: list[ToolCallItem] = []
         if choice.message.tool_calls:
@@ -110,40 +135,65 @@ class OpenAIChatAdapter:
         model: str,
         system_prompt: str | None = None,
         tools: list[dict] | None = None,
+        thinking_config: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamDelta]:
         from openai import AsyncOpenAI
 
         client = AsyncOpenAI(base_url=self._base_url, api_key=self._api_key)
-        api_messages = _build_api_messages(messages, system_prompt)
+        thinking_enabled = thinking_config is not None and thinking_config.get("type") == "enabled"
+        api_messages = _build_api_messages(messages, system_prompt, model=model, thinking_enabled=thinking_enabled)
 
         kwargs: dict[str, Any] = {"model": model, "messages": api_messages, "stream": True, "stream_options": {"include_usage": True}}
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
+        if thinking_config and thinking_config.get("type") == "enabled":
+            if model.startswith("o1") or model.startswith("o3"):
+                kwargs["reasoning_effort"] = thinking_config.get("mode", "medium")
+
         response = await client.chat.completions.create(**kwargs)
 
         tool_calls_acc: dict[int, dict] = {}
+        in_think_block = False
 
         async for chunk in response:
             # OpenAI sends usage in a final chunk with empty choices
             if not chunk.choices:
                 if hasattr(chunk, "usage") and chunk.usage:
+                    u = {
+                        "prompt_tokens": chunk.usage.prompt_tokens,
+                        "completion_tokens": chunk.usage.completion_tokens,
+                    }
+                    if hasattr(chunk.usage, "completion_tokens_details") and chunk.usage.completion_tokens_details:
+                        if hasattr(chunk.usage.completion_tokens_details, "reasoning_tokens"):
+                            u["reasoning_tokens"] = chunk.usage.completion_tokens_details.reasoning_tokens
                     yield StreamDelta(
                         content="",
                         finish_reason=None,
                         tool_calls=[],
-                        usage={
-                            "prompt_tokens": chunk.usage.prompt_tokens,
-                            "completion_tokens": chunk.usage.completion_tokens,
-                        },
+                        usage=u,
                     )
                 continue
 
             choice = chunk.choices[0]
             delta = choice.delta
-            content = delta.content or ""
             finish_reason = choice.finish_reason
+
+            reasoning = getattr(delta, "reasoning_content", None)
+            content = delta.content or ""
+
+            # Inject <think> wrappers if reasoning_content is present
+            if reasoning:
+                if not in_think_block:
+                    in_think_block = True
+                    content = f"<think>\n{reasoning}"
+                else:
+                    content = reasoning
+            elif in_think_block and not reasoning:
+                # We transitioned from reasoning to normal content
+                in_think_block = False
+                content = f"\n</think>\n{content}"
 
             if delta.tool_calls:
                 for tc_delta in delta.tool_calls:
@@ -176,12 +226,23 @@ class OpenAIChatAdapter:
                     "prompt_tokens": chunk.usage.prompt_tokens,
                     "completion_tokens": chunk.usage.completion_tokens,
                 }
+                if hasattr(chunk.usage, "completion_tokens_details") and chunk.usage.completion_tokens_details:
+                    if hasattr(chunk.usage.completion_tokens_details, "reasoning_tokens"):
+                        usage_dict["reasoning_tokens"] = chunk.usage.completion_tokens_details.reasoning_tokens
 
             yield StreamDelta(
                 content=content,
                 finish_reason=finish_reason,
                 tool_calls=final_tool_calls,
                 usage=usage_dict,
+            )
+
+        if in_think_block:
+            yield StreamDelta(
+                content="\n</think>\n",
+                finish_reason=None,
+                tool_calls=[],
+                usage=None,
             )
 
 

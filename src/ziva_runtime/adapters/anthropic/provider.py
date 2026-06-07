@@ -38,25 +38,65 @@ def _build_anthropic_messages(
 
         msg: dict[str, Any] = {"role": role}
 
-        # assistant with tool_calls
-        if role == "assistant" and m.tool_calls:
+        # assistant with tool_calls or extended thinking
+        if role == "assistant":
             parts: list[dict] = []
-            if m.content:
-                text = m.content if isinstance(m.content, str) else str(m.content)
-                if text:
-                    parts.append({"type": "text", "text": text})
-            for tc in m.tool_calls:
+            
+            # Extract thinking blocks if extended thinking signature is present OR if we have thinking tags
+            import re
+            content_str = m.content if isinstance(m.content, str) else str(m.content)
+            thinking_matches = re.findall(r'(?i)<think[^>]*>([\s\S]*?)</think[^>]*>', content_str) if isinstance(m.content, str) else []
+            
+            if thinking_matches or (hasattr(m, "reasoning_signature") and m.reasoning_signature):
+                main_text = re.sub(r'(?i)<think[^>]*>[\s\S]*?</think[^>]*>', '', content_str).strip() if isinstance(m.content, str) else content_str
+                thinking_text = "\n\n---\n\n".join([t.strip() for t in thinking_matches]) if thinking_matches else ""
+                
                 parts.append({
-                    "type": "tool_use",
-                    "id": tc.id,
-                    "name": tc.name,
-                    "input": tc.arguments,
+                    "type": "thinking",
+                    "thinking": thinking_text,
+                    "signature": getattr(m, "reasoning_signature", None) or "signature",
                 })
-            msg["content"] = parts
+                if main_text:
+                    parts.append({"type": "text", "text": main_text})
+            else:
+                # If no thinking found, but we MUST provide a thinking block for tool calls when thinking is enabled
+                # Let's add an empty thinking block just to satisfy strict APIs if tool_calls are present
+                if m.tool_calls:
+                    parts.append({
+                        "type": "thinking",
+                        "thinking": " ",
+                        "signature": "signature",
+                    })
+                if m.content:
+                    if isinstance(m.content, list):
+                        # Multi-part content for assistant is unlikely but possible
+                        for block in m.content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                parts.append({"type": "text", "text": block.get("text", "")})
+                            else:
+                                parts.append({"type": "text", "text": str(block)})
+                    else:
+                        text = str(m.content)
+                        if text:
+                            parts.append({"type": "text", "text": text})
+
+            if m.tool_calls:
+                for tc in m.tool_calls:
+                    parts.append({
+                        "type": "tool_use",
+                        "id": tc.id,
+                        "name": tc.name,
+                        "input": tc.arguments,
+                    })
+
+            if parts:
+                msg["content"] = parts
+            else:
+                msg["content"] = ""
             api_messages.append(msg)
             continue
 
-        # regular user/assistant
+        # regular user (assistant is handled above)
         if isinstance(m.content, list):
             # Multi-part content (e.g. image_url blocks)
             parts = []
@@ -119,6 +159,7 @@ class AnthropicChatAdapter:
         model: str,
         system_prompt: str | None = None,
         tools: list[dict] | None = None,
+        thinking_config: dict[str, Any] | None = None,
     ) -> ChatResult:
         from anthropic import AsyncAnthropic
 
@@ -131,11 +172,17 @@ class AnthropicChatAdapter:
             kwargs["system"] = system
         if anthropic_tools:
             kwargs["tools"] = anthropic_tools
+        if thinking_config:
+            kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_config.get("budget_tokens", 4000)}
 
         resp = await client.messages.create(**kwargs)
 
-        text_parts = [b.text for b in resp.content if b.type == "text"]
-        content = "".join(text_parts)
+        content = ""
+        for b in resp.content:
+            if getattr(b, "type", None) == "thinking":
+                content += f"<think>\n{getattr(b, 'thinking', '')}\n</think>\n"
+            elif getattr(b, "type", None) == "text":
+                content += getattr(b, "text", "")
 
         usage_dict = None
         if resp.usage:
@@ -146,11 +193,11 @@ class AnthropicChatAdapter:
 
         tool_calls = []
         for b in resp.content:
-            if b.type == "tool_use":
+            if getattr(b, "type", None) == "tool_use":
                 tool_calls.append(ToolCallItem(
-                    id=b.id,
-                    name=b.name,
-                    arguments=b.input if isinstance(b.input, dict) else {"raw": str(b.input)},
+                    id=getattr(b, "id", ""),
+                    name=getattr(b, "name", ""),
+                    arguments=getattr(b, "input", {}) if isinstance(getattr(b, "input", None), dict) else {"raw": str(getattr(b, "input", ""))},
                 ))
 
         return ChatResult(
@@ -168,6 +215,7 @@ class AnthropicChatAdapter:
         model: str,
         system_prompt: str | None = None,
         tools: list[dict] | None = None,
+        thinking_config: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamDelta]:
         from anthropic import AsyncAnthropic
 
@@ -180,26 +228,42 @@ class AnthropicChatAdapter:
             kwargs["system"] = system
         if anthropic_tools:
             kwargs["tools"] = anthropic_tools
+        if thinking_config:
+            kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_config.get("budget_tokens", 4000)}
 
         async with client.messages.stream(**kwargs) as stream:
             tool_calls_acc: dict[int, dict] = {}
+            thinking_blocks = set()
 
             async for event in stream:
-                if event.type == "content_block_delta":
-                    if hasattr(event.delta, "text"):
+                if event.type == "content_block_start":
+                    btype = getattr(event.content_block, "type", None)
+                    if btype == "tool_use":
+                        tool_calls_acc[event.index] = {
+                            "id": getattr(event.content_block, "id", ""),
+                            "name": getattr(event.content_block, "name", ""),
+                            "arguments": "",
+                        }
+                    elif btype == "thinking":
+                        thinking_blocks.add(event.index)
+                        sig = getattr(event.content_block, "signature", None)
+                        yield StreamDelta(content="<think>\n", finish_reason=None, tool_calls=[], usage=None, reasoning_signature=sig)
+
+                elif event.type == "content_block_delta":
+                    dtype = getattr(event.delta, "type", None)
+                    if dtype == "text_delta" and hasattr(event.delta, "text"):
                         yield StreamDelta(content=event.delta.text, finish_reason=None, tool_calls=[], usage=None)
-                    elif hasattr(event.delta, "partial_json"):
-                        idx = event.index
+                    elif dtype == "thinking_delta" and hasattr(event.delta, "thinking"):
+                        yield StreamDelta(content=event.delta.thinking, finish_reason=None, tool_calls=[], usage=None)
+                    elif dtype == "input_json_delta" and hasattr(event.delta, "partial_json"):
+                        idx = getattr(event, "index", -1)
                         if idx in tool_calls_acc:
                             tool_calls_acc[idx]["arguments"] += event.delta.partial_json
 
-                elif event.type == "content_block_start":
-                    if hasattr(event.content_block, "type") and event.content_block.type == "tool_use":
-                        tool_calls_acc[event.index] = {
-                            "id": event.content_block.id,
-                            "name": event.content_block.name,
-                            "arguments": "",
-                        }
+                elif event.type == "content_block_stop":
+                    idx = getattr(event, "index", -1)
+                    if idx in thinking_blocks:
+                        yield StreamDelta(content="\n</think>\n", finish_reason=None, tool_calls=[], usage=None)
 
                 elif event.type == "message_delta":
                     finish_reason = event.delta.stop_reason if hasattr(event.delta, "stop_reason") else None
