@@ -40,9 +40,6 @@ def _build_api_messages(messages: Iterable[ChatMessage], system_prompt: str | No
         if m.role == "tool" and m.name:
             msg["name"] = m.name
         api_messages.append(msg)
-    print("=== API MESSAGES ===")
-    print(json.dumps(api_messages, indent=2, ensure_ascii=False))
-    print("====================")
     return api_messages
 
 
