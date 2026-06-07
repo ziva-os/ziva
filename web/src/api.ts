@@ -149,7 +149,7 @@ export async function saveConfigJson(config: Record<string, any>): Promise<void>
   await api("PUT", "/config/json", config);
 }
 
-export async function updateSession(sid: string, updates: { name?: string }): Promise<void> {
+export async function updateSession(sid: string, updates: { name?: string; model_name?: string }): Promise<void> {
   await api("PATCH", `/sessions/${sid}`, updates);
 }
 

@@ -326,7 +326,7 @@ class DesktopAPIServer:
         return web.json_response({
             "messages": msgs,
             "last_usage": meta.get("last_usage"),
-            "model_name": meta.get("model_cfg", {}).get("name") if isinstance(meta.get("model_cfg"), dict) else None,
+            "model_name": meta.get("model_name") or (meta.get("model_cfg", {}).get("name") if isinstance(meta.get("model_cfg"), dict) else None),
         })
 
     async def get_turns(self, request: web.Request) -> web.Response:
@@ -902,6 +902,8 @@ class DesktopAPIServer:
         updates = {}
         if "name" in payload:
             updates["name"] = payload["name"]
+        if "model_name" in payload:
+            updates["model_name"] = payload["model_name"]
         if updates:
             FileStorage.update_session(self.runtime.project_id, sid, updates)
         return web.json_response({"ok": True})

@@ -268,11 +268,15 @@ class AnthropicChatAdapter:
                 elif event.type == "message_delta":
                     finish_reason = event.delta.stop_reason if hasattr(event.delta, "stop_reason") else None
                     usage_dict = None
-                    if hasattr(event, "usage") and event.usage:
-                        usage_dict = {
-                            "prompt_tokens": event.usage.input_tokens,
-                            "completion_tokens": event.usage.output_tokens,
-                        }
+                    usage = getattr(event, "usage", None)
+                    if usage:
+                        input_tokens = getattr(usage, "input_tokens", 0) or 0
+                        output_tokens = getattr(usage, "output_tokens", 0) or 0
+                        if input_tokens or output_tokens:
+                            usage_dict = {
+                                "prompt_tokens": input_tokens,
+                                "completion_tokens": output_tokens,
+                            }
 
                     final_tool_calls = []
                     if finish_reason == "tool_use" and tool_calls_acc:
@@ -294,13 +298,15 @@ class AnthropicChatAdapter:
                     )
 
                 elif event.type == "message_start":
-                    if hasattr(event.message, "usage") and event.message.usage:
-                        yield StreamDelta(
-                            content="",
-                            finish_reason=None,
-                            tool_calls=[],
-                            usage={
-                                "prompt_tokens": event.message.usage.input_tokens,
-                                "completion_tokens": 0,
-                            },
-                        )
+                    msg_usage = getattr(getattr(event, "message", None), "usage", None)
+                    if msg_usage:
+                        input_tokens = getattr(msg_usage, "input_tokens", 0) or 0
+                        if input_tokens:
+                            yield StreamDelta(
+                                content="",
+                                finish_reason=None,
+                                tool_calls=[],
+                                usage={
+                                    "prompt_tokens": input_tokens,
+                                },
+                            )

@@ -22,6 +22,8 @@ class ChatMessage:
     tool_call_id: Optional[str] = None
     name: Optional[str] = None
     tool_calls: List[ToolCallItem] = field(default_factory=list)
+    reasoning_content: Optional[str] = None
+    reasoning_signature: Optional[str] = None
     _compaction_summary: bool = False
     _hidden: bool = False
 
@@ -41,6 +43,7 @@ class ChatResult:
     usage: Optional[Dict[str, int]] = None
     finish_reason: Optional[str] = None
     tool_calls: List[ToolCallItem] = field(default_factory=list)
+    reasoning_signature: Optional[str] = None
 
 
 @dataclass
@@ -93,6 +96,7 @@ class StreamDelta:
     finish_reason: Optional[str] = None
     tool_calls: List[ToolCallItem] = field(default_factory=list)
     usage: Optional[Dict[str, int]] = None
+    reasoning_signature: Optional[str] = None
 
 
 @dataclass

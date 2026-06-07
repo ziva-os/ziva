@@ -91,7 +91,9 @@ export class SSEPool {
 
       while (this.controller === controller) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          throw new Error("SSE stream closed by server");
+        }
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");

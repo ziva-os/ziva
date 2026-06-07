@@ -390,6 +390,10 @@ function bindEvents() {
     const model = ($("modelSelect") as HTMLSelectElement).value;
     await api.updateConfig({ model: { name: model } });
     store.set({ config: { ...store.get().config, model } });
+    const { activeSid } = store.get();
+    if (activeSid) {
+      try { await api.updateSession(activeSid, { model_name: model }); } catch { /* ignore */ }
+    }
   };
 
   $("approvalSelect").onchange = async () => {
@@ -1007,6 +1011,10 @@ function renderSessions() {
 
 async function createSession() {
   const id = await api.createSession();
+  const currentModel = store.get().config.model;
+  if (currentModel) {
+    try { await api.updateSession(id, { model_name: currentModel }); } catch { /* ignore */ }
+  }
   const sessions = [...store.get().sessions];
   sessions.unshift({ id, turnCount: 0, status: "idle", preview: "Empty session" });
   store.set({ sessions });
@@ -1021,6 +1029,13 @@ async function switchSession(sid: string) {
   // can't leak the previous session's flags into the new one. Only
   // activeSid + questionPending (which is question-card specific)
   // get reset.
+  const oldSid = store.get().activeSid;
+  if (oldSid && oldSid !== sid) {
+    const sel = $("modelSelect") as HTMLSelectElement;
+    if (sel && sel.value) {
+      try { await api.updateSession(oldSid, { model_name: sel.value }); } catch { /* ignore */ }
+    }
+  }
   store.set({ activeSid: sid, questionPending: false });
   renderSessions();
   $("messages").innerHTML = "";
@@ -1138,11 +1153,16 @@ async function loadHistory(sid: string) {
     updateContextProgress(0, 0);
   }
   
-  // Sync model dropdown if session has a persisted model
-  if (filteredData.model_name) {
-    const sel = $("modelSelect") as HTMLSelectElement;
-    if (sel && Array.from(sel.options).some(o => o.value === filteredData.model_name)) {
-      sel.value = filteredData.model_name;
+  // Sync model dropdown only if the session has an explicit persisted model.
+  // New sessions save their creation-time model; older sessions without one
+  // are left as-is so switching between them doesn't clobber the UI.
+  const sel = $("modelSelect") as HTMLSelectElement;
+  if (sel && filteredData.model_name) {
+    if (Array.from(sel.options).some(o => o.value === filteredData.model_name)) {
+      if (sel.value !== filteredData.model_name) {
+        sel.value = filteredData.model_name;
+        // Don't dispatch change — we only want to sync the UI, not overwrite global config
+      }
     }
   }
 
@@ -1950,8 +1970,14 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     if (!sid || sid === activeSid) {
       setActiveRunning(true);
       appendTyping();
-      updateContextProgress(0, 0);
       updateSendStopButton();
+    }
+  } else if (t === "usage_update") {
+    const usage = ev.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
+    if (usage?.prompt_tokens !== undefined) {
+      const contextWindow = store.get().config.contextWindow || 200000;
+      const pct = Math.min(usage.prompt_tokens / contextWindow, 1);
+      updateContextProgress(pct, usage.prompt_tokens);
     }
   } else if (t === "delta") {
     removeTyping();

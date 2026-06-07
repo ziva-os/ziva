@@ -488,7 +488,13 @@ class Runtime:
                     else:
                         for k, v in delta.usage.items():
                             if v:
-                                final_usage[k] = v
+                                if k in final_usage and isinstance(v, (int, float)) and isinstance(final_usage[k], (int, float)):
+                                    final_usage[k] = max(final_usage[k], v)
+                                else:
+                                    final_usage[k] = v
+                    event = {"type": "usage_update", "usage": final_usage}
+                    yield _flag(event)
+                    await self._emit(session_id, event)
                 if delta.finish_reason:
                     final_finish_reason = delta.finish_reason
                 if delta.reasoning_signature:

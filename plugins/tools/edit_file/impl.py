@@ -5,394 +5,441 @@ from pathlib import Path
 from ziva_runtime.shared_types import ToolResult
 
 
-class ApplyPatchTool:
-    """Apply file changes using Codex CLI compatible patch format.
+def levenshtein(a: str, b: str) -> int:
+    if not a or not b:
+        return max(len(a), len(b))
+    matrix = [[0] * (len(b) + 1) for _ in range(len(a) + 1)]
+    for i in range(len(a) + 1):
+        matrix[i][0] = i
+    for j in range(len(b) + 1):
+        matrix[0][j] = j
+        
+    for i in range(1, len(a) + 1):
+        for j in range(1, len(b) + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            matrix[i][j] = min(
+                matrix[i - 1][j] + 1,
+                matrix[i][j - 1] + 1,
+                matrix[i - 1][j - 1] + cost
+            )
+    return matrix[len(a)][len(b)]
 
-    Supports three input styles:
-    1. Legacy Ziva multi-file patch string (*** Begin Patch ... *** End Patch)
-    2. Standard unified diff string
-    3. Codex CLI style single operation object
+
+SINGLE_CANDIDATE_SIMILARITY_THRESHOLD = 0.65
+MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD = 0.65
+
+
+def simple_replacer(content: str, find: str):
+    yield find
+
+
+def line_trimmed_replacer(content: str, find: str):
+    original_lines = content.split("\n")
+    search_lines = find.split("\n")
+    if search_lines and search_lines[-1] == "":
+        search_lines.pop()
+        
+    for i in range(len(original_lines) - len(search_lines) + 1):
+        matches = True
+        for j in range(len(search_lines)):
+            if original_lines[i + j].strip() != search_lines[j].strip():
+                matches = False
+                break
+        if matches:
+            match_start_index = sum(len(line) + 1 for line in original_lines[:i])
+            match_end_index = match_start_index
+            for k in range(len(search_lines)):
+                match_end_index += len(original_lines[i + k])
+                if k < len(search_lines) - 1:
+                    match_end_index += 1
+            yield content[match_start_index:match_end_index]
+
+
+def block_anchor_replacer(content: str, find: str):
+    original_lines = content.split("\n")
+    search_lines = find.split("\n")
+    
+    if len(search_lines) < 3:
+        return
+        
+    if search_lines and search_lines[-1] == "":
+        search_lines.pop()
+        
+    first_line_search = search_lines[0].strip()
+    last_line_search = search_lines[-1].strip()
+    search_block_size = len(search_lines)
+    max_line_delta = max(1, int(search_block_size * 0.25))
+    
+    candidates = []
+    for i in range(len(original_lines)):
+        if original_lines[i].strip() != first_line_search:
+            continue
+            
+        for j in range(i + 2, len(original_lines)):
+            if original_lines[j].strip() == last_line_search:
+                actual_block_size = j - i + 1
+                if abs(actual_block_size - search_block_size) <= max_line_delta:
+                    candidates.append({"start_line": i, "end_line": j})
+                break
+                
+    if not candidates:
+        return
+        
+    if len(candidates) == 1:
+        candidate = candidates[0]
+        start_line = candidate["start_line"]
+        end_line = candidate["end_line"]
+        actual_block_size = end_line - start_line + 1
+        
+        similarity = 0
+        lines_to_check = min(search_block_size - 2, actual_block_size - 2)
+        
+        if lines_to_check > 0:
+            for j in range(1, min(search_block_size - 1, actual_block_size - 1)):
+                original_line = original_lines[start_line + j].strip()
+                search_line = search_lines[j].strip()
+                max_len = max(len(original_line), len(search_line))
+                if max_len == 0:
+                    continue
+                distance = levenshtein(original_line, search_line)
+                similarity += (1 - distance / max_len) / lines_to_check
+                if similarity >= SINGLE_CANDIDATE_SIMILARITY_THRESHOLD:
+                    break
+        else:
+            similarity = 1.0
+            
+        if similarity >= SINGLE_CANDIDATE_SIMILARITY_THRESHOLD:
+            match_start_index = sum(len(line) + 1 for line in original_lines[:start_line])
+            match_end_index = match_start_index
+            for k in range(start_line, end_line + 1):
+                match_end_index += len(original_lines[k])
+                if k < end_line:
+                    match_end_index += 1
+            yield content[match_start_index:match_end_index]
+        return
+        
+    best_match = None
+    max_similarity = -1
+    
+    for candidate in candidates:
+        start_line = candidate["start_line"]
+        end_line = candidate["end_line"]
+        actual_block_size = end_line - start_line + 1
+        
+        similarity = 0
+        lines_to_check = min(search_block_size - 2, actual_block_size - 2)
+        
+        if lines_to_check > 0:
+            for j in range(1, min(search_block_size - 1, actual_block_size - 1)):
+                original_line = original_lines[start_line + j].strip()
+                search_line = search_lines[j].strip()
+                max_len = max(len(original_line), len(search_line))
+                if max_len == 0:
+                    continue
+                distance = levenshtein(original_line, search_line)
+                similarity += (1 - distance / max_len)
+            similarity /= lines_to_check
+        else:
+            similarity = 1.0
+            
+        if similarity > max_similarity:
+            max_similarity = similarity
+            best_match = candidate
+            
+    if max_similarity >= MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD and best_match:
+        start_line = best_match["start_line"]
+        end_line = best_match["end_line"]
+        match_start_index = sum(len(line) + 1 for line in original_lines[:start_line])
+        match_end_index = match_start_index
+        for k in range(start_line, end_line + 1):
+            match_end_index += len(original_lines[k])
+            if k < end_line:
+                match_end_index += 1
+        yield content[match_start_index:match_end_index]
+
+
+def whitespace_normalized_replacer(content: str, find: str):
+    def normalize_whitespace(text: str) -> str:
+        return re.sub(r'\s+', ' ', text).strip()
+        
+    normalized_find = normalize_whitespace(find)
+    lines = content.split("\n")
+    
+    for line in lines:
+        if normalize_whitespace(line) == normalized_find:
+            yield line
+        else:
+            normalized_line = normalize_whitespace(line)
+            if normalized_find in normalized_line:
+                words = find.strip().split()
+                if words:
+                    pattern = r'\s+'.join(re.escape(w) for w in words)
+                    try:
+                        match = re.search(pattern, line)
+                        if match:
+                            yield match.group(0)
+                    except re.error:
+                        pass
+                        
+    find_lines = find.split("\n")
+    if len(find_lines) > 1:
+        for i in range(len(lines) - len(find_lines) + 1):
+            block = "\n".join(lines[i:i + len(find_lines)])
+            if normalize_whitespace(block) == normalized_find:
+                yield block
+
+
+def indentation_flexible_replacer(content: str, find: str):
+    def remove_indentation(text: str) -> str:
+        lines = text.split("\n")
+        non_empty_lines = [line for line in lines if line.strip()]
+        if not non_empty_lines:
+            return text
+            
+        min_indent = min(len(line) - len(line.lstrip()) for line in non_empty_lines)
+        return "\n".join(line if not line.strip() else line[min_indent:] for line in lines)
+        
+    normalized_find = remove_indentation(find)
+    content_lines = content.split("\n")
+    find_lines = find.split("\n")
+    
+    for i in range(len(content_lines) - len(find_lines) + 1):
+        block = "\n".join(content_lines[i:i + len(find_lines)])
+        if remove_indentation(block) == normalized_find:
+            yield block
+
+
+def escape_normalized_replacer(content: str, find: str):
+    def unescape_string(s: str) -> str:
+        def repl(match):
+            c = match.group(1)
+            mapping = {
+                'n': '\n', 't': '\t', 'r': '\r', "'": "'", '"': '"',
+                '`': '`', '\\': '\\', '\n': '\n', '$': '$'
+            }
+            return mapping.get(c, match.group(0))
+        return re.sub(r'\\([ntr\'"`\\\n$])', repl, s)
+        
+    unescaped_find = unescape_string(find)
+    if unescaped_find in content:
+        yield unescaped_find
+        
+    lines = content.split("\n")
+    find_lines = unescaped_find.split("\n")
+    
+    for i in range(len(lines) - len(find_lines) + 1):
+        block = "\n".join(lines[i:i + len(find_lines)])
+        unescaped_block = unescape_string(block)
+        if unescaped_block == unescaped_find:
+            yield block
+
+
+def trimmed_boundary_replacer(content: str, find: str):
+    trimmed_find = find.strip()
+    if trimmed_find == find:
+        return
+        
+    if trimmed_find in content:
+        yield trimmed_find
+        
+    lines = content.split("\n")
+    find_lines = find.split("\n")
+    
+    for i in range(len(lines) - len(find_lines) + 1):
+        block = "\n".join(lines[i:i + len(find_lines)])
+        if block.strip() == trimmed_find:
+            yield block
+
+
+def context_aware_replacer(content: str, find: str):
+    find_lines = find.split("\n")
+    if len(find_lines) < 3:
+        return
+        
+    if find_lines and find_lines[-1] == "":
+        find_lines.pop()
+        
+    content_lines = content.split("\n")
+    first_line = find_lines[0].strip()
+    last_line = find_lines[-1].strip()
+    
+    for i in range(len(content_lines)):
+        if content_lines[i].strip() != first_line:
+            continue
+            
+        for j in range(i + 2, len(content_lines)):
+            if content_lines[j].strip() == last_line:
+                block_lines = content_lines[i:j + 1]
+                block = "\n".join(block_lines)
+                
+                if len(block_lines) == len(find_lines):
+                    matching_lines = 0
+                    total_non_empty_lines = 0
+                    
+                    for k in range(1, len(block_lines) - 1):
+                        block_line = block_lines[k].strip()
+                        find_line = find_lines[k].strip()
+                        
+                        if block_line or find_line:
+                            total_non_empty_lines += 1
+                            if block_line == find_line:
+                                matching_lines += 1
+                                
+                    if total_non_empty_lines == 0 or matching_lines / total_non_empty_lines >= 0.5:
+                        yield block
+                        break
+                break
+
+
+def multi_occurrence_replacer(content: str, find: str):
+    start_index = 0
+    while True:
+        index = content.find(find, start_index)
+        if index == -1:
+            break
+        yield find
+        start_index = index + len(find)
+
+
+def is_disproportionate_match(search: str, old_string: str) -> bool:
+    old_lines = len(old_string.split("\n"))
+    search_lines = len(search.split("\n"))
+    if search_lines >= max(old_lines + 3, old_lines * 2):
+        return True
+    if old_lines == 1:
+        return False
+    return len(search.strip()) > max(len(old_string.strip()) + 500, len(old_string.strip()) * 4)
+
+
+def replace_text(content: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
+    if old_string == new_string:
+        raise ValueError("No changes to apply: old_string and new_string are identical.")
+    if old_string == "":
+        raise ValueError("old_string cannot be empty when editing an existing file.")
+        
+    not_found = True
+    
+    replacers = [
+        simple_replacer,
+        line_trimmed_replacer,
+        block_anchor_replacer,
+        whitespace_normalized_replacer,
+        indentation_flexible_replacer,
+        escape_normalized_replacer,
+        trimmed_boundary_replacer,
+        context_aware_replacer,
+        multi_occurrence_replacer
+    ]
+    
+    for replacer in replacers:
+        for search in replacer(content, old_string):
+            index = content.find(search)
+            if index == -1:
+                continue
+            not_found = False
+            
+            if is_disproportionate_match(search, old_string):
+                raise ValueError("Refusing replacement because the matched span is much larger than old_string. Re-read the file and provide the full exact old_string for the intended replacement.")
+                
+            if replace_all:
+                return content.replace(search, new_string)
+                
+            last_index = content.rfind(search)
+            if index != last_index:
+                continue
+                
+            return content[:index] + new_string + content[index + len(search):]
+            
+    if not_found:
+        raise ValueError("Could not find old_string in the file. It must match exactly, including whitespace, indentation, and line endings.")
+        
+    raise ValueError("Found multiple matches for old_string. Provide more surrounding context to make the match unique.")
+
+
+class EditFileTool:
+    """Edit a file by replacing old_string with new_string.
+    
+    Mirrors opencode's robust multi-strategy replacement algorithm.
     """
 
     def spec(self):
         return {
             "name": "edit_file",
             "description": (
-                "Apply file changes using unified diffs. "
-                "Can create, delete, or update files. "
-                "Prefer this tool for all file edits."
+                "Edit a file by replacing old_string with new_string.\n"
+                "Uses a robust multi-strategy search to find the exact text block to replace.\n"
+                "You must provide enough surrounding context in old_string to ensure a unique match."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "patch": {
+                    "file_path": {
                         "type": "string",
-                        "description": "Patch content: either a unified diff or a legacy multi-file patch",
+                        "description": "The absolute path to the file to modify, or relative to cwd.",
                     },
-                    "operation": {
-                        "type": "object",
-                        "description": "Single file operation (Codex CLI style)",
-                        "properties": {
-                            "type": {
-                                "type": "string",
-                                "enum": ["create_file", "delete_file", "update_file"],
-                                "description": "Operation type",
-                            },
-                            "path": {
-                                "type": "string",
-                                "description": "File path relative to cwd",
-                            },
-                            "diff": {
-                                "type": "string",
-                                "description": "Unified diff content (for update_file) or full file content (for create_file)",
-                            },
-                        },
-                        "required": ["type", "path"],
+                    "old_string": {
+                        "type": "string",
+                        "description": "The text to replace.",
+                    },
+                    "new_string": {
+                        "type": "string",
+                        "description": "The text to replace it with (must be different from old_string).",
+                    },
+                    "replace_all": {
+                        "type": "boolean",
+                        "description": "Replace all occurrences of old_string (default false).",
                     },
                     "cwd": {
                         "type": "string",
-                        "description": "Current working directory for resolving paths (default: os.getcwd())",
+                        "description": "Current working directory for resolving relative paths (default: os.getcwd()).",
                     },
                 },
+                "required": ["file_path", "old_string", "new_string"],
             },
         }
 
     async def run(self, input_data, _ctx):
+        file_path_str = input_data.get("file_path")
+        if not file_path_str:
+            return ToolResult(text="Error: file_path is required", error=True)
+            
+        old_string = input_data.get("old_string")
+        new_string = input_data.get("new_string")
+        
+        if old_string is None or new_string is None:
+            return ToolResult(text="Error: old_string and new_string are required", error=True)
+            
+        replace_all = bool(input_data.get("replace_all", False))
+        
         cwd = input_data.get("cwd", os.getcwd())
-        base_dir = Path(cwd)
-
-        # Codex CLI style single operation
-        operation = input_data.get("operation")
-        if operation:
-            return self._apply_operation(operation, base_dir)
-
-        patch_content = input_data.get("patch", "")
-        if not patch_content:
-            return ToolResult(text="Error: invalid_patch\npatch or operation is required", error=True)
-
-        # Legacy Ziva format
-        if "*** Begin Patch" in patch_content and "*** End Patch" in patch_content:
-            return self._parse_and_apply_legacy(patch_content, base_dir)
-
-        # Standard unified diff
-        if patch_content.lstrip().startswith("---"):
-            return self._parse_and_apply_unified(patch_content, base_dir)
-
-        return ToolResult(text="Error: invalid_patch\nUnrecognized patch format", error=True)
-
-    # ---------- Codex CLI style single operation ----------
-
-    def _apply_operation(self, op, base_dir):
-        op_type = op.get("type")
-        path = base_dir / op.get("path", "")
-
-        if op_type == "create_file":
-            content = op.get("diff", "")
-            try:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(content, encoding="utf-8")
-                files = [str(path.relative_to(base_dir))]
-                return ToolResult(
-                    text=f"Applied 1 operations: {', '.join(files)}",
-                    metadata={"applied": 1, "files_changed": files}
-                )
-            except Exception as e:
-                return ToolResult(text=f"Error: write_failed\n{e}", error=True)
-
-        if op_type == "delete_file":
-            if not path.exists():
-                return ToolResult(text=f"Error: file_not_found\nFile not found: {path}", error=True)
-            try:
-                path.unlink()
-                files = [str(path.relative_to(base_dir))]
-                return ToolResult(
-                    text=f"Applied 1 operations: {', '.join(files)}",
-                    metadata={"applied": 1, "files_changed": files}
-                )
-            except Exception as e:
-                return ToolResult(text=f"Error: delete_failed\n{e}", error=True)
-
-        if op_type == "update_file":
-            if not path.exists():
-                return ToolResult(text=f"Error: file_not_found\nFile not found: {path}", error=True)
-            diff_text = op.get("diff", "")
-            return self._apply_unified_diff_to_file(diff_text, path, base_dir)
-
-        return ToolResult(text=f"Error: unknown_operation\nUnknown operation type: {op_type}", error=True)
-
-    # ---------- Legacy Ziva format ----------
-
-    def _parse_and_apply_legacy(self, patch_content, base_dir):
-        match = re.search(r"\*\*\* Begin Patch\s+(.*?)\s+\*\*\* End Patch", patch_content, re.DOTALL)
-        if not match:
-            return ToolResult(text="Error: invalid_patch\nInvalid legacy patch format", error=True)
-
-        body = match.group(1)
-        applied = 0
-        files_changed = []
-        errors = []
-
-        for op in self._parse_legacy_operations(body):
-            try:
-                result = self._apply_legacy_operation(op, base_dir)
-                if isinstance(result, ToolResult) and result.error:
-                    errors.append({"message": result.text})
-                else:
-                    applied += 1
-                    if isinstance(result, ToolResult) and result.metadata.get("file"):
-                        files_changed.append(result.metadata["file"])
-            except Exception as e:
-                errors.append({"error": "operation_failed", "message": str(e)})
-
-        if errors:
-            return ToolResult(
-                text=f"Applied {applied} operations: {', '.join(files_changed)}\nErrors: {len(errors)}",
-                metadata={"applied": applied, "files_changed": files_changed, "errors": errors}
-            )
-        return ToolResult(
-            text=f"Applied {applied} operations: {', '.join(files_changed)}",
-            metadata={"applied": applied, "files_changed": files_changed}
-        )
-
-    def _parse_legacy_operations(self, body):
-        operations = []
-        lines = body.split("\n")
-        i = 0
-        while i < len(lines):
-            line = lines[i].strip()
-            if line.startswith("*** Add File:"):
-                path = line[len("*** Add File:"):].strip()
-                content_lines = []
-                i += 1
-                while i < len(lines) and not lines[i].strip().startswith("***"):
-                    content_lines.append(lines[i])
-                    i += 1
-                operations.append({"type": "add", "path": path, "content": "\n".join(content_lines)})
-                continue
-            elif line.startswith("*** Delete File:"):
-                path = line[len("*** Delete File:"):].strip()
-                operations.append({"type": "delete", "path": path})
-                i += 1
-            elif line.startswith("*** Move File:"):
-                rest = line[len("*** Move File:"):].strip()
-                if " -> " in rest:
-                    old_path, new_path = rest.split(" -> ", 1)
-                    operations.append({"type": "move", "old_path": old_path.strip(), "new_path": new_path.strip()})
-                i += 1
-            elif line.startswith("*** Update File:"):
-                path = line[len("*** Update File:"):].strip()
-                hunks = []
-                i += 1
-                while i < len(lines):
-                    if lines[i].strip().startswith("***"):
-                        break
-                    hunk_match = re.match(r"^@@ -(\d+),?(\d*)\s+\+?(\d+),?(\d*)\s+@@", lines[i])
-                    if hunk_match:
-                        old_start = int(hunk_match.group(1))
-                        old_count = int(hunk_match.group(2)) if hunk_match.group(2) else 1
-                        new_start = int(hunk_match.group(3))
-                        new_count = int(hunk_match.group(4)) if hunk_match.group(4) else 1
-                        hunk_lines = []
-                        i += 1
-                        while i < len(lines):
-                            if lines[i].startswith("@@") or lines[i].strip().startswith("***"):
-                                break
-                            hunk_lines.append(lines[i])
-                            i += 1
-                        hunks.append({"old_start": old_start, "old_count": old_count, "new_start": new_start, "new_count": new_count, "lines": hunk_lines})
-                        continue
-                    i += 1
-                operations.append({"type": "update", "path": path, "hunks": hunks})
-            else:
-                i += 1
-        return operations
-
-    def _apply_legacy_operation(self, op, base_dir):
-        t = op["type"]
-        if t == "add":
-            p = base_dir / op["path"]
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(op.get("content", ""))
-            return ToolResult(text=f"Updated {str(p.relative_to(base_dir))}", metadata={"file": str(p.relative_to(base_dir))})
-        if t == "delete":
-            p = base_dir / op["path"]
-            if p.exists():
-                p.unlink()
-            return ToolResult(text=f"Updated {str(p.relative_to(base_dir))}", metadata={"file": str(p.relative_to(base_dir))})
-        if t == "move":
-            old = base_dir / op["old_path"]
-            new = base_dir / op["new_path"]
-            new.parent.mkdir(parents=True, exist_ok=True)
-            old.rename(new)
-            return ToolResult(text=f"Updated {str(new.relative_to(base_dir))}", metadata={"file": str(new.relative_to(base_dir))})
-        if t == "update":
-            return self._apply_legacy_update(op, base_dir)
-        return ToolResult(text=f"Error: unknown_operation\nUnknown: {t}", error=True)
-
-    def _apply_legacy_update(self, op, base_dir):
-        path = base_dir / op["path"]
-        if not path.exists():
-            return ToolResult(text=f"Error: file_not_found\nFile not found: {op['path']}", error=True)
-        original_lines = path.read_text().split("\n")
-        new_lines = original_lines.copy()
-        errors = []
-        for hunk in reversed(op["hunks"]):
-            try:
-                new_lines = self._apply_legacy_hunk(new_lines, hunk)
-            except ValueError as e:
-                errors.append({"error": "hunk_mismatch", "message": str(e)})
-        if errors:
-            msg = "Failed to apply one or more hunks"
-            return ToolResult(
-                text=f"Error: hunk_failed\n{msg}\n" + "\n".join(e.get("message", "") for e in errors),
-                error=True
-            )
-        path.write_text("\n".join(new_lines))
-        return ToolResult(text=f"Updated {str(path.relative_to(base_dir))}", metadata={"file": str(path.relative_to(base_dir))})
-
-    def _apply_legacy_hunk(self, lines, hunk):
-        old_start = hunk["old_start"] - 1
-        hunk_lines = hunk["lines"]
-        old_lines = []
-        new_lines = []
-        for hl in hunk_lines:
-            if hl.startswith("-"):
-                old_lines.append(hl[1:])
-            elif hl.startswith("+"):
-                new_lines.append(hl[1:])
-            elif hl.startswith(" "):
-                old_lines.append(hl[1:])
-                new_lines.append(hl[1:])
-        if old_start + len(old_lines) > len(lines):
-            raise ValueError(f"Hunk start {hunk['old_start']} exceeds file length")
-        expected = lines[old_start:old_start + len(old_lines)]
-        if expected != old_lines:
-            raise ValueError(f"Context mismatch at line {hunk['old_start']}")
-        return lines[:old_start] + new_lines + lines[old_start + len(old_lines):]
-
-    # ---------- Standard unified diff ----------
-
-    def _parse_and_apply_unified(self, patch_content, base_dir):
-        files_changed = []
-        errors = []
-        applied = 0
-
-        # Split into per-file diffs
-        file_diffs = self._split_unified_diff(patch_content)
-        for diff_text, target_path in file_diffs:
-            result = self._apply_unified_diff_to_file(diff_text, target_path, base_dir)
-            if isinstance(result, ToolResult) and result.error:
-                errors.append({"message": result.text})
-            else:
-                applied += 1
-                if isinstance(result, ToolResult):
-                    files_changed.append(result.metadata.get("file", str(target_path)))
-                else:
-                    files_changed.append(str(target_path))
-
-        if errors:
-            return ToolResult(
-                text=f"Applied {applied} operations: {', '.join(files_changed)}\nErrors: {len(errors)}",
-                metadata={"applied": applied, "files_changed": files_changed, "errors": errors}
-            )
-        return ToolResult(
-            text=f"Applied {applied} operations: {', '.join(files_changed)}",
-            metadata={"applied": applied, "files_changed": files_changed}
-        )
-
-    def _split_unified_diff(self, text):
-        """Split a unified diff into (diff_text, target_path) pairs."""
-        diffs = []
-        lines = text.splitlines()
-        i = 0
-        while i < len(lines):
-            if lines[i].startswith("--- "):
-                old_file = lines[i][4:].split("\t")[0].strip()
-                if i + 1 < len(lines) and lines[i + 1].startswith("+++ "):
-                    new_file = lines[i + 1][4:].split("\t")[0].strip()
-                    target = new_file.lstrip("b/")
-                    diff_lines = [lines[i], lines[i + 1]]
-                    i += 2
-                    while i < len(lines) and not lines[i].startswith("--- "):
-                        diff_lines.append(lines[i])
-                        i += 1
-                    diffs.append(("\n".join(diff_lines), target))
-                    continue
-            i += 1
-        return diffs
-
-    def _apply_unified_diff_to_file(self, diff_text, target_path, base_dir):
-        path = base_dir / target_path
-        if not path.exists():
-            # Treat as create if file doesn't exist
-            path.parent.mkdir(parents=True, exist_ok=True)
-            original = ""
-        else:
-            original = path.read_text(encoding="utf-8")
+        file_path = Path(cwd) / file_path_str
+        
+        if not file_path.exists():
+            return ToolResult(text=f"Error: File {file_path} not found", error=True)
+        if file_path.is_dir():
+            return ToolResult(text=f"Error: Path is a directory, not a file: {file_path}", error=True)
+            
+        try:
+            content = file_path.read_text(encoding="utf-8")
+        except Exception as e:
+            return ToolResult(text=f"Error: Could not read file {file_path}: {e}", error=True)
 
         try:
-            new_content = self._apply_unified_diff_text(original, diff_text)
-        except ValueError as e:
-            return ToolResult(text=f"Error: diff_failed\n{e}", error=True)
-
-        path.write_text(new_content, encoding="utf-8")
-        return ToolResult(text=f"Updated {str(path.relative_to(base_dir))}", metadata={"file": str(path.relative_to(base_dir))})
-
-    def _apply_unified_diff_text(self, original, diff_text):
-        """Apply a unified diff to original text."""
-        original_lines = original.splitlines() if original else []
-        result_lines = list(original_lines)
-
-        # Parse hunks
-        lines = diff_text.splitlines()
-        i = 0
-        # Skip header lines (--- and +++)
-        while i < len(lines) and not lines[i].startswith("@@"):
-            i += 1
-
-        hunks = []
-        while i < len(lines):
-            if lines[i].startswith("@@"):
-                m = re.match(r"@@ -(\d+),?(\d*)\s+\+(\d+),?(\d*)\s+@@", lines[i])
-                if m:
-                    old_start = int(m.group(1))
-                    old_count = int(m.group(2)) if m.group(2) else 1
-                    new_start = int(m.group(3))
-                    new_count = int(m.group(4)) if m.group(4) else 1
-                    hunk_lines = []
-                    i += 1
-                    while i < len(lines) and not lines[i].startswith("@@") and not lines[i].startswith("---"):
-                        hunk_lines.append(lines[i])
-                        i += 1
-                    hunks.append((old_start, old_count, new_start, new_count, hunk_lines))
-                    continue
-            i += 1
-
-        # Apply hunks in reverse order (bottom-up) to preserve line numbers
-        for old_start, old_count, new_start, new_count, hunk_lines in reversed(hunks):
-            old_lines = []
-            new_lines = []
-            for hl in hunk_lines:
-                if hl.startswith("-"):
-                    old_lines.append(hl[1:])
-                elif hl.startswith("+"):
-                    new_lines.append(hl[1:])
-                elif hl.startswith(" "):
-                    old_lines.append(hl[1:])
-                    new_lines.append(hl[1:])
-                elif hl == "\\ No newline at end of file":
-                    pass
-                else:
-                    # Context line without leading space (sometimes happens)
-                    old_lines.append(hl)
-                    new_lines.append(hl)
-
-            idx = old_start - 1
-            if idx > len(result_lines):
-                raise ValueError(f"Hunk start {old_start} exceeds file length {len(result_lines)}")
-            actual = result_lines[idx:idx + len(old_lines)]
-            if actual != old_lines:
-                raise ValueError(f"Context mismatch at line {old_start}: expected {old_lines[:2]}, got {actual[:2]}")
-            result_lines = result_lines[:idx] + new_lines + result_lines[idx + len(old_lines):]
-
-        return "\n".join(result_lines)
+            ending = "\r\n" if "\r\n" in content else "\n"
+            content_normalized = content.replace("\r\n", "\n")
+            old_string_normalized = old_string.replace("\r\n", "\n")
+            new_string_normalized = new_string.replace("\r\n", "\n")
+            
+            new_content_normalized = replace_text(
+                content_normalized, old_string_normalized, new_string_normalized, replace_all
+            )
+            
+            if ending == "\r\n":
+                new_content = new_content_normalized.replace("\n", "\r\n")
+            else:
+                new_content = new_content_normalized
+                
+            file_path.write_text(new_content, encoding="utf-8")
+            return ToolResult(text="Edit applied successfully.")
+        except Exception as e:
+            return ToolResult(text=f"Error: {str(e)}", error=True)

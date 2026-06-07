@@ -51,6 +51,10 @@ class FileStorage:
         return cls._project_dir(project_id) / "messages" / f"{session_id}.jsonl"
 
     @classmethod
+    def _automations_file(cls, project_id: str) -> Path:
+        return cls._project_dir(project_id) / "automations.json"
+
+    @classmethod
     @contextmanager
     def _lock(cls, path: Path, exclusive: bool = True):
         """File-based locking."""
@@ -218,6 +222,55 @@ class FileStorage:
         path = cls._project_dir(project_id) / "project.json"
         with cls._lock(path):
             cls.write_json(path, project_data)
+
+    # ============= Automation Operations =============
+
+    @classmethod
+    def list_automations(cls, project_id: str) -> List[dict]:
+        """List persisted automations for a project."""
+        path = cls._automations_file(project_id)
+        if not path.exists():
+            return []
+        with cls._lock(path, exclusive=False):
+            data = cls.read_json(path)
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        if isinstance(data, dict):
+            items = data.get("automations", [])
+            if isinstance(items, list):
+                return [item for item in items if isinstance(item, dict)]
+        return []
+
+    @classmethod
+    def replace_automations(cls, project_id: str, automations: List[dict]) -> None:
+        """Replace the persisted automation list."""
+        cls._ensure_dirs()
+        path = cls._automations_file(project_id)
+        with cls._lock(path):
+            cls.write_json(path, {"automations": automations})
+
+    @classmethod
+    def upsert_automation(cls, project_id: str, automation: dict) -> None:
+        automations = cls.list_automations(project_id)
+        aid = automation.get("id")
+        replaced = False
+        for idx, item in enumerate(automations):
+            if item.get("id") == aid:
+                automations[idx] = automation
+                replaced = True
+                break
+        if not replaced:
+            automations.append(automation)
+        cls.replace_automations(project_id, automations)
+
+    @classmethod
+    def delete_automation(cls, project_id: str, automation_id: str) -> bool:
+        automations = cls.list_automations(project_id)
+        kept = [item for item in automations if item.get("id") != automation_id]
+        if len(kept) == len(automations):
+            return False
+        cls.replace_automations(project_id, kept)
+        return True
 
 
 def get_storage() -> type[FileStorage]:

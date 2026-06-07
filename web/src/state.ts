@@ -18,6 +18,7 @@ export interface AppState {
   pendingMessages: Record<string, string>;
   pendingSessionImages: Record<string, Array<{ dataUrl: string; name: string }>>;
   compactingSessions: Record<string, boolean>;
+  questionPending: boolean;
   config: {
     model: string;
     models: string[];
@@ -25,6 +26,7 @@ export interface AppState {
     approval: string;
     workspace: string;
     tools: string[];
+    contextWindow: number;
   };
   connected: boolean;
   tokenUsage: { input: number; output: number } | null;

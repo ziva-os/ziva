@@ -1,7 +1,7 @@
 id: tool.edit_file
 type: tool
 version: 0.1.0
-entry: impl.py:ApplyPatchTool
+entry: impl.py:EditFileTool
 permissions:
   fs: [read, write]
 enabled_by_default: true
