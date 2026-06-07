@@ -4,6 +4,10 @@ export interface Session {
   turnCount?: number;
   status?: "idle" | "running" | "done" | "failed";
   time?: { created: number; updated: number };
+  // Absolute path of the workspace (project) this session belongs to.
+  // Sessions are still per-workspace on disk, but the sidebar groups them
+  // by workspace so a single list view can show every project at once.
+  workspace?: string;
 }
 
 export interface AppState {

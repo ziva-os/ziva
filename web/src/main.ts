@@ -842,12 +842,17 @@ async function refreshSessions() {
   const raw = await api.listSessions();
   const currentSessions = store.get().sessions;
   const existingMap = new Map(currentSessions.map(s => [s.id, s]));
+  const activeWs = store.get().config.workspace || "";
 
   const sessions = raw.map(s => {
     const existing = existingMap.get(s.id);
+    // Prefer the user-renamed `name` from disk, then the in-memory
+    // preview, then a stub. Cross-project sessions without a name show
+    // up as a short id stub until the user opens the project.
+    const preview = existing?.preview || (s as any).name || s.id.slice(0, 8) + "...";
     return {
       ...s,
-      preview: existing?.preview || s.id.slice(0, 8) + "...",
+      preview,
       turnCount: existing?.turnCount || 0,
       status: (existing?.status as api.Session["status"]) || "idle",
       time: s.time || undefined,
@@ -859,7 +864,13 @@ async function refreshSessions() {
 
   store.set({ sessions });
   renderSessions();
-  const toEnrich = sessions.slice(0, 10);
+  // Enrichment (preview / turnCount / status) requires hitting endpoints
+  // that are scoped to the active runtime project. Cross-project sessions
+  // keep their disk-side name (or id stub) until the user switches to
+  // that project.
+  const toEnrich = sessions
+    .filter(s => (s.workspace || activeWs) === activeWs)
+    .slice(0, 10);
   for (const s of toEnrich) {
     try {
       const msgData = await api.getMessages(s.id);
@@ -886,16 +897,27 @@ async function refreshSessions() {
 // for any non-active session whose title is still the id-shaped stub.
 const ID_STUB_RE = /^[0-9a-f]{8}\.\.\.$/;
 setInterval(async () => {
-  const { sessions, activeSid } = store.get();
+  const { sessions, activeSid, config } = store.get();
+  const activeWs = config.workspace || "";
+  // /sessions/{sid}/messages is scoped to the active project, so skip
+  // cross-project sessions here — they only get a meaningful preview
+  // after the user switches to that project.
   const needTitle = sessions.filter(s =>
-    s.id !== activeSid && (!s.preview || ID_STUB_RE.test(s.preview))
+    s.id !== activeSid &&
+    (s.workspace || activeWs) === activeWs &&
+    (!s.preview || ID_STUB_RE.test(s.preview))
   );
   for (const s of needTitle) {
     await refreshSessionPreview(s.id);
   }
 }, 5000);
 
-interface SessionGroup { label: string; sessions: api.Session[] }
+interface SessionGroup { label: string; workspace: string; sessions: api.Session[]; totalCount: number; trimmed: boolean }
+
+function projectDisplayName(workspace: string): string {
+  if (!workspace) return "Project";
+  return workspace.split("/").filter(Boolean).pop() || workspace;
+}
 
 function renderSessions() {
   const list = $("sessionList");
@@ -918,94 +940,159 @@ function renderSessions() {
     ? sessions.filter(s => (s.preview || s.id).toLowerCase().includes(filter))
     : sessions;
 
+  // Group sessions by workspace so the sidebar can show every project at
+  // once. Sessions missing a `workspace` field are bucketed under the
+  // active workspace to preserve the old behavior.
+  const activeWs = config.workspace || "";
+  const groupMap = new Map<string, api.Session[]>();
+  for (const s of filtered) {
+    const ws = s.workspace || activeWs || "unknown";
+    if (!groupMap.has(ws)) groupMap.set(ws, []);
+    groupMap.get(ws)!.push(s);
+  }
+  // Stable display order: active workspace first, then the rest sorted by
+  // most-recently-updated session in each group.
+  const groups: SessionGroup[] = Array.from(groupMap.entries()).map(([ws, list_]) => ({
+    workspace: ws,
+    label: projectDisplayName(ws),
+    sessions: list_,
+    totalCount: list_.length,
+    trimmed: false,
+  }));
+  groups.sort((a, b) => {
+    if (a.workspace === activeWs) return -1;
+    if (b.workspace === activeWs) return 1;
+    const aMax = a.sessions.reduce((m, s) => Math.max(m, s.time?.updated || s.time?.created || 0), 0);
+    const bMax = b.sessions.reduce((m, s) => Math.max(m, s.time?.updated || s.time?.created || 0), 0);
+    return bMax - aMax;
+  });
+
   const MAX_COLLAPSED = 15;
-  const toShow = (!showAll && !filter) ? filtered.slice(0, MAX_COLLAPSED) : filtered;
+  // The "Show all" toggle only applies to the active project — non-active
+  // projects are rendered in full (they're usually small).
+  const activeGroup = groups.find(g => g.workspace === activeWs);
+  if (activeGroup && !showAll && !filter && activeGroup.sessions.length > MAX_COLLAPSED) {
+    activeGroup.sessions = activeGroup.sessions.slice(0, MAX_COLLAPSED);
+    activeGroup.trimmed = true;
+  }
 
-  // Project folder (single workspace)
-  const workspaceName = (config.workspace || "ziva").split("/").pop() || "Project";
-  const projectDiv = document.createElement("div");
-  projectDiv.className = "session-project-group";
-  projectDiv.innerHTML = `
-    <details open>
-      <summary class="project-summary">
-        <span class="project-chevron">▸</span>
-        <span class="project-name">${esc(workspaceName)}</span>
-        <span class="project-count">${filtered.length}</span>
-      </summary>
-      <div class="project-sessions"></div>
-    </details>`;
+  if (groups.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "sessions-empty";
+    empty.textContent = "No conversations yet";
+    list.appendChild(empty);
+    return;
+  }
 
-  const sessionsContainer = projectDiv.querySelector(".project-sessions")!;
+  for (const group of groups) {
+    const isActive = group.workspace === activeWs;
+    const projectDiv = document.createElement("div");
+    projectDiv.className = "session-project-group" + (isActive ? " active-project" : "");
+    const trimmedBadge = group.trimmed
+      ? `<span class="project-trimmed">showing ${group.sessions.length} of ${group.totalCount}</span>`
+      : "";
+    projectDiv.innerHTML = `
+      <details ${isActive ? "open" : ""}>
+        <summary class="project-summary" title="${esc(group.workspace)}">
+          <span class="project-chevron">▸</span>
+          <span class="project-name">${esc(group.label)}</span>
+          ${isActive ? '<span class="project-active-dot" title="Current project"></span>' : ""}
+          <span class="project-count">${group.totalCount}</span>
+          ${trimmedBadge}
+        </summary>
+        <div class="project-sessions"></div>
+      </details>`;
 
-  for (const s of toShow) {
-    const div = document.createElement("div");
-    div.className = "session-item" + (s.id === activeSid ? " active" : "");
-    const timeStr = formatRelativeTime(s.time?.updated || s.time?.created);
-    div.innerHTML = `
-      ${selectMode ? `<input type="checkbox" class="session-checkbox" data-sid="${s.id}" />` : ""}
-      <span class="session-chevron">›</span>
-      <span class="session-name">${esc(s.preview || s.id)}</span>
-      <span class="session-time">${timeStr}</span>
-      ${!selectMode ? `<span class="del-btn" data-sid="${s.id}">&times;</span>` : ""}`;
-    div.onclick = (e) => {
-      if ((e.target as HTMLElement).classList.contains("del-btn")) return;
-      if ((e.target as HTMLElement).classList.contains("session-checkbox")) return;
-      switchSession(s.id);
-    };
-    const nameEl = div.querySelector(".session-name") as HTMLElement;
-    nameEl.addEventListener("dblclick", (e) => {
-      e.stopPropagation();
-      nameEl.contentEditable = "true";
-      nameEl.focus();
-      const range = document.createRange();
-      range.selectNodeContents(nameEl);
-      const sel = window.getSelection();
-      sel?.removeAllRanges();
-      sel?.addRange(range);
-    });
-    nameEl.addEventListener("blur", async () => {
-      nameEl.contentEditable = "false";
-      const newName = nameEl.textContent?.trim();
-      if (newName && newName !== s.preview) {
-        try { await api.updateSession(s.id, { name: newName }); } catch { /* ignore */ }
-        s.preview = newName;
+    const sessionsContainer = projectDiv.querySelector(".project-sessions")!;
+
+    if (group.sessions.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "project-sessions-empty";
+      empty.textContent = isActive ? "No conversations in this project" : "No conversations";
+      sessionsContainer.appendChild(empty);
+    } else {
+      for (const s of group.sessions) {
+        const div = document.createElement("div");
+        div.className = "session-item" + (s.id === activeSid ? " active" : "");
+        const timeStr = formatRelativeTime(s.time?.updated || s.time?.created);
+        div.innerHTML = `
+          ${selectMode ? `<input type="checkbox" class="session-checkbox" data-sid="${s.id}" />` : ""}
+          <span class="session-chevron">›</span>
+          <span class="session-name">${esc(s.preview || s.id)}</span>
+          <span class="session-time">${timeStr}</span>
+          ${!selectMode ? `<span class="del-btn" data-sid="${s.id}">&times;</span>` : ""}`;
+        div.onclick = (e) => {
+          if ((e.target as HTMLElement).classList.contains("del-btn")) return;
+          if ((e.target as HTMLElement).classList.contains("session-checkbox")) return;
+          // Cross-project click: switch the active workspace first so
+          // subsequent /sessions/{sid}/... calls hit the right project.
+          if (s.workspace && s.workspace !== activeWs) {
+            openProjectInSidebar(s.workspace, { thenSwitchTo: s.id });
+          } else {
+            switchSession(s.id);
+          }
+        };
+        const nameEl = div.querySelector(".session-name") as HTMLElement;
+        nameEl.addEventListener("dblclick", (e) => {
+          e.stopPropagation();
+          nameEl.contentEditable = "true";
+          nameEl.focus();
+          const range = document.createRange();
+          range.selectNodeContents(nameEl);
+          const sel = window.getSelection();
+          sel?.removeAllRanges();
+          sel?.addRange(range);
+        });
+        nameEl.addEventListener("blur", async () => {
+          nameEl.contentEditable = "false";
+          const newName = nameEl.textContent?.trim();
+          if (newName && newName !== s.preview) {
+            try {
+              await api.updateSession(s.id, { name: newName, workspace: s.workspace });
+            } catch { /* ignore */ }
+            s.preview = newName;
+          }
+        });
+        nameEl.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") { e.preventDefault(); nameEl.blur(); }
+          if (e.key === "Escape") { nameEl.textContent = s.preview || s.id; nameEl.blur(); }
+        });
+        const delBtn = div.querySelector(".del-btn");
+        if (delBtn) {
+          (delBtn as HTMLElement).onclick = (e) => {
+            e.stopPropagation();
+            if (confirm("Delete this session?")) deleteSession(s.id, s.workspace);
+          };
+        }
+        sessionsContainer.appendChild(div);
       }
-    });
-    nameEl.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); nameEl.blur(); }
-      if (e.key === "Escape") { nameEl.textContent = s.preview || s.id; nameEl.blur(); }
-    });
-    const delBtn = div.querySelector(".del-btn");
-    if (delBtn) {
-      (delBtn as HTMLElement).onclick = (e) => {
-        e.stopPropagation();
-        if (confirm("Delete this session?")) deleteSession(s.id);
-      };
     }
-    sessionsContainer.appendChild(div);
+
+    // Restore checked states after rebuild
+    if (selectMode && checkedSids.size > 0) {
+      sessionsContainer.querySelectorAll<HTMLInputElement>(".session-checkbox").forEach(cb => {
+        if (checkedSids.has(cb.dataset.sid!)) cb.checked = true;
+      });
+    }
+
+    list.appendChild(projectDiv);
   }
 
-  // Restore checked states after rebuild
-  if (selectMode && checkedSids.size > 0) {
-    sessionsContainer.querySelectorAll<HTMLInputElement>(".session-checkbox").forEach(cb => {
-      if (checkedSids.has(cb.dataset.sid!)) cb.checked = true;
-    });
-  }
-
-  list.appendChild(projectDiv);
-
-  if (!showAll && !filter && filtered.length > MAX_COLLAPSED) {
-    const btn = document.createElement("button");
-    btn.className = "show-all-btn";
-    btn.textContent = `Show all ${filtered.length} conversations`;
-    btn.onclick = () => { list.dataset.showAll = "true"; renderSessions(); };
-    list.appendChild(btn);
-  } else if (showAll && !filter) {
-    const btn = document.createElement("button");
-    btn.className = "show-all-btn";
-    btn.textContent = "Show recent only";
-    btn.onclick = () => { list.dataset.showAll = "false"; renderSessions(); };
-    list.appendChild(btn);
+  // "Show all" toggle — only meaningful for the active project.
+  if (activeGroup) {
+    if (activeGroup.trimmed) {
+      const btn = document.createElement("button");
+      btn.className = "show-all-btn";
+      btn.textContent = `Show all ${activeGroup.totalCount} conversations in ${activeGroup.label}`;
+      btn.onclick = () => { list.dataset.showAll = "true"; renderSessions(); };
+      list.appendChild(btn);
+    } else if (showAll && !filter) {
+      const btn = document.createElement("button");
+      btn.className = "show-all-btn";
+      btn.textContent = "Show recent only";
+      btn.onclick = () => { list.dataset.showAll = "false"; renderSessions(); };
+      list.appendChild(btn);
+    }
   }
 }
 
@@ -1015,14 +1102,18 @@ async function createSession() {
   if (currentModel) {
     try { await api.updateSession(id, { model_name: currentModel }); } catch { /* ignore */ }
   }
+  // New sessions always belong to the active workspace, so tag them here
+  // so they show up in the right project group without waiting for the
+  // next /sessions refresh.
+  const activeWs = store.get().config.workspace || "";
   const sessions = [...store.get().sessions];
-  sessions.unshift({ id, turnCount: 0, status: "idle", preview: "Empty session" });
+  sessions.unshift({ id, turnCount: 0, status: "idle", preview: "Empty session", workspace: activeWs });
   store.set({ sessions });
   renderSessions();
   await switchSession(id);
 }
 
-async function switchSession(sid: string) {
+async function switchSession(sid: string, opts: { skipGitRefresh?: boolean } = {}) {
   closeAllFullpageOverlays();
   // Per-session state (running / pending) lives in maps keyed by
   // sid, so switching sessions doesn't lose background work and
@@ -1045,7 +1136,12 @@ async function switchSession(sid: string) {
   pendingTools.clear();
   renderPendingBar();
   await loadHistory(sid);
-  await refreshGitBranch();
+  // Skip when the caller already refreshed the branch for the new
+  // workspace (e.g. openProjectInSidebar switching both workspace
+  // and session in one go).
+  if (!opts.skipGitRefresh) {
+    await refreshGitBranch();
+  }
   try {
     const turns = await api.getTurns(sid);
     const activeTurn = turns.find(t => t.status === "running");
@@ -1111,8 +1207,13 @@ async function switchSession(sid: string) {
   }
 }
 
-async function deleteSession(sid: string) {
-  await api.deleteSession(sid);
+async function deleteSession(sid: string, workspace?: string) {
+  try {
+    await api.deleteSession(sid, workspace ? { workspace } : undefined);
+  } catch (e: any) {
+    alert("Failed to delete session: " + (e?.message || "unknown"));
+    return;
+  }
   const sessions = store.get().sessions.filter(s => s.id !== sid);
   store.set({ sessions });
   if (store.get().activeSid === sid) {
@@ -2070,6 +2171,13 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
       }
       appendToolCard(ev.tool as string, (ev.arguments || {}) as Record<string, unknown>, status, output, subagentTools);
     }
+    // If this tool may have modified workspace files, refresh the diff
+    // panel in the background so the user sees changes live. Only when
+    // the event belongs to the active session — other sessions' diffs
+    // are refreshed when the user switches to them.
+    if (sid === activeSid && FILE_MUTATING_TOOLS.has(ev.tool as string)) {
+      scheduleDiffRefresh();
+    }
     if (updateScroll) scrollBottom();
   } else if (t === "permission_request" || t === "approval_request") {
     removeTyping();
@@ -2443,11 +2551,17 @@ async function refreshPlan() {
 }
 
 // ---- Project Picker ----
-async function refreshGitBranch() {
-  const { activeSid } = store.get();
-  if (!activeSid) return;
+async function refreshGitBranch(sid?: string) {
+  // When called without args, prefer the active session (per-session call)
+  // so the response reflects the session-scoped git state. When there's no
+  // active session (e.g. immediately after switching workspace), fall back
+  // to the workspace-level endpoint so the status-bar branch indicator
+  // can be refreshed for the new workspace right away.
+  const targetSid = sid || store.get().activeSid;
   try {
-    const res = await api.getGitBranches(activeSid);
+    const res = targetSid
+      ? await api.getGitBranches(targetSid)
+      : await api.getWorkspaceGitBranches();
     const gitBranchNameEl = $("gitBranchName") as HTMLElement;
     if (gitBranchNameEl) {
       gitBranchNameEl.textContent = res.current;
@@ -2459,14 +2573,16 @@ async function refreshGitBranch() {
 
 async function openGitBranchPicker(e: MouseEvent) {
   const target = e.currentTarget as HTMLElement;
+  // When a session is active, the per-session endpoint gives the same
+  // result anyway (both read from runtime.workspace_root on the backend).
+  // Falling back to the workspace-level endpoint keeps the picker
+  // working right after switching workspace, when activeSid is null.
   const { activeSid } = store.get();
-  if (!activeSid) {
-    console.warn("openGitBranchPicker: no active session");
-    return;
-  }
   let res: { current: string; branches: string[] };
   try {
-    res = await api.getGitBranches(activeSid);
+    res = activeSid
+      ? await api.getGitBranches(activeSid)
+      : await api.getWorkspaceGitBranches();
   } catch (err: any) {
     console.error("Failed to load git branches:", err);
     alert("Failed to load git branches: " + (err.message || "unknown error"));
@@ -2503,7 +2619,11 @@ async function openGitBranchPicker(e: MouseEvent) {
         popup.remove();
         if (b !== current) {
           try {
-            await api.gitCheckout(activeSid, b, false);
+            if (activeSid) {
+              await api.gitCheckout(activeSid, b, false);
+            } else {
+              await api.gitCheckoutWorkspace(b, false);
+            }
             await refreshGitBranch();
           } catch (err: any) {
             alert("Failed to checkout branch: " + err.message);
@@ -2514,14 +2634,20 @@ async function openGitBranchPicker(e: MouseEvent) {
     });
 
     if (filter && !branches.includes(filter)) {
-      listDiv.innerHTML += `<div class="popup-divider"></div>`;
+      const divider = document.createElement("div");
+      divider.className = "popup-divider";
+      listDiv.appendChild(divider);
       const createEl = document.createElement("div");
       createEl.className = "popup-item";
       createEl.innerHTML = `<span class="popup-icon"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg></span><span class="popup-text">Create & checkout: <b>${esc(filter)}</b></span>`;
       createEl.onclick = async () => {
         popup.remove();
         try {
-          await api.gitCheckout(activeSid, filter, true);
+          if (activeSid) {
+            await api.gitCheckout(activeSid, filter, true);
+          } else {
+            await api.gitCheckoutWorkspace(filter, true);
+          }
           await refreshGitBranch();
         } catch (err: any) {
           alert("Failed to create branch: " + err.message);
@@ -2576,7 +2702,7 @@ async function openProjectPicker(e: MouseEvent) {
   listDiv.className = "popup-list";
 
   const currentName = current.split("/").pop() || "Project";
-  listDiv.innerHTML += `<div class="popup-item" style="opacity:0.6; pointer-events:none;"><span class="popup-icon"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span><span class="popup-text" title="${esc(current)}">${esc(currentName)}</span></div>`;
+  listDiv.innerHTML = `<div class="popup-item" style="opacity:0.6; pointer-events:none;"><span class="popup-icon"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span><span class="popup-text" title="${esc(current)}">${esc(currentName)}</span></div>`;
 
   recent.filter((r) => r !== current).forEach((r) => {
     const el = document.createElement("div");
@@ -2585,18 +2711,15 @@ async function openProjectPicker(e: MouseEvent) {
     el.innerHTML = `<span class="popup-icon"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-1.22-1.8A2 2 0 0 0 7.53 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg></span><span class="popup-text" title="${esc(r)}">${esc(name)}</span>`;
     el.onclick = async () => {
       popup.remove();
-      try {
-        await api.switchWorkspace(r);
-        window.location.reload();
-      } catch (err: any) {
-        alert("Failed to switch workspace: " + err.message);
-      }
+      await openProjectInSidebar(r);
     };
     listDiv.appendChild(el);
   });
 
   if (recent.length > 0) {
-    listDiv.innerHTML += `<div class="popup-divider"></div>`;
+    const divider = document.createElement("div");
+    divider.className = "popup-divider";
+    listDiv.appendChild(divider);
   }
 
   const addBtn = document.createElement("div");
@@ -2606,12 +2729,7 @@ async function openProjectPicker(e: MouseEvent) {
     popup.remove();
     const res = await api.chooseSystemFolder();
     if (res.path) {
-      try {
-        await api.switchWorkspace(res.path);
-        window.location.reload();
-      } catch (err: any) {
-        alert("Failed to switch workspace: " + err.message);
-      }
+      await openProjectInSidebar(res.path);
     } else if (res.error && res.error !== "No folder selected") {
       alert("Failed to choose folder: " + res.error);
     }
@@ -2630,6 +2748,58 @@ async function openProjectPicker(e: MouseEvent) {
     };
     document.addEventListener("click", closer);
   }, 0);
+}
+
+/**
+ * Switch the active project in the sidebar without reloading the page.
+ * The server-side `Runtime.workspace_root` is updated in place so
+ * subsequent /sessions/{sid}/... calls target the new project, and the
+ * sidebar re-renders to move the active group to the top.
+ */
+async function openProjectInSidebar(
+  workspace: string,
+  opts: { thenSwitchTo?: string } = {},
+): Promise<void> {
+  const { config } = store.get();
+  const current = config.workspace || "";
+  if (workspace === current) {
+    if (opts.thenSwitchTo) {
+      await switchSession(opts.thenSwitchTo);
+    }
+    return;
+  }
+  try {
+    await api.switchWorkspace(workspace);
+  } catch (err: any) {
+    alert("Failed to switch workspace: " + (err?.message || "unknown"));
+    return;
+  }
+  // Update local config and the status-bar label immediately so the user
+  // sees the change even before /sessions returns.
+  const wn = workspace.split("/").filter(Boolean).pop() || workspace;
+  store.set({ config: { ...config, workspace } });
+  const workspaceNameEl = $("workspaceName");
+  if (workspaceNameEl) workspaceNameEl.textContent = wn;
+  const contextWorkspaceEl = $("contextWorkspace");
+  if (contextWorkspaceEl) contextWorkspaceEl.title = workspace;
+
+  // Reset the "show all" toggle since it's per-project.
+  const list = $("sessionList");
+  if (list) list.dataset.showAll = "false";
+
+  // Reset the active session — the old activeSid belongs to the previous
+  // project, and re-rendering with a stale active highlight would be wrong.
+  store.set({ activeSid: null });
+  $("messages").innerHTML = "";
+  showEmptyState(true);
+
+  await refreshSessions();
+  // Refresh the git branch indicator so the status bar shows the new
+  // workspace's current branch even before a session is selected.
+  await refreshGitBranch();
+  if (opts.thenSwitchTo) {
+    await switchSession(opts.thenSwitchTo, { skipGitRefresh: true });
+  }
 }
 
 // ---- Automations ----
@@ -2807,6 +2977,29 @@ function formatInterval(seconds: number): string {
 }
 
 // ---- Diff ----
+
+// Tools that may mutate workspace files. When one of these finishes
+// while the diff panel is open, we kick a debounced refresh so the
+// user sees file changes live instead of waiting for turn_end.
+const FILE_MUTATING_TOOLS = new Set<string>([
+  "write_file",
+  "edit_file",
+  "shell",        // can mutate via redirection, rm, mv, sed, etc.
+  "spawn_agent",  // sub-agents may also mutate files
+]);
+
+let _diffRefreshTimer: number | null = null;
+function scheduleDiffRefresh() {
+  // Opening the panel later will fetch once via toggleDiff(), so
+  // there's no need to refresh in the background when it's closed.
+  if (!$("rightPanel").classList.contains("show")) return;
+  if (_diffRefreshTimer !== null) clearTimeout(_diffRefreshTimer);
+  _diffRefreshTimer = window.setTimeout(() => {
+    _diffRefreshTimer = null;
+    void refreshDiff();
+  }, 250);
+}
+
 function toggleDiff() {
   const panel = $("rightPanel");
   panel.classList.toggle("show");

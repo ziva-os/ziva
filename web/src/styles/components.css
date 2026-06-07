@@ -268,19 +268,43 @@
 }
 
 /* Project group */
-.session-project-group { padding: 0; }
+.session-project-group { padding: 0; margin-top: 2px; }
 .session-project-group details {  }
 .session-project-group summary.project-summary {
   display: flex; align-items: center; gap: 6px;
   padding: 6px 10px; cursor: pointer; font-size: 13px;
   font-weight: 500; color: var(--ink);
   list-style: none; user-select: none;
+  border-radius: 6px;
 }
+.session-project-group summary.project-summary:hover { background: var(--surface-hover); }
 .session-project-group summary.project-summary::-webkit-details-marker { display: none; }
-.project-chevron { font-size: 10px; transition: transform 0.15s; color: var(--muted); }
+.project-chevron { font-size: 10px; transition: transform 0.15s; color: var(--muted); flex-shrink: 0; }
 .session-project-group details[open] .project-chevron { transform: rotate(90deg); }
-.project-count { font-size: 11px; color: var(--muted); margin-left: 4px; }
-.project-sessions { padding: 0; }
+.project-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-active-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+  box-shadow: 0 0 0 2px var(--accent-light);
+}
+.project-count {
+  font-size: 11px; color: var(--muted);
+  background: var(--surface-alt);
+  padding: 1px 6px; border-radius: 10px;
+  flex-shrink: 0;
+}
+.project-trimmed {
+  font-size: 10px; color: var(--muted);
+  font-style: italic; flex-shrink: 0;
+}
+.project-sessions { padding: 0 0 4px 0; }
+.session-project-group.active-project summary.project-summary { color: var(--accent); }
+.session-project-group:not(.active-project) summary.project-summary { color: var(--muted); }
+.session-project-group:not(.active-project) summary.project-summary .project-name { font-weight: 400; }
+.sessions-empty, .project-sessions-empty {
+  padding: 12px 16px; font-size: 12px; color: var(--muted); font-style: italic;
+}
 
 /* Sidebar search */
 .sidebar-search { padding: 4px 12px 6px; flex-shrink: 0; }

@@ -4,6 +4,7 @@ export interface Session {
   turnCount?: number;
   status?: "idle" | "running" | "done" | "failed";
   time?: { created: number; updated: number };
+  workspace?: string;
 }
 
 export interface Turn {
@@ -61,7 +62,7 @@ export async function api<T = unknown>(method: string, path: string, body?: unkn
 }
 
 export async function listSessions(): Promise<Session[]> {
-  const data = await api<{ sessions: { id: string }[] }>("GET", "/sessions");
+  const data = await api<{ sessions: { id: string; workspace?: string; name?: string; time?: any }[] }>("GET", "/sessions");
   return data.sessions || [];
 }
 
@@ -70,8 +71,18 @@ export async function createSession(): Promise<string> {
   return data.id;
 }
 
-export async function deleteSession(sid: string): Promise<void> {
-  await api("DELETE", `/sessions/${sid}`);
+export async function deleteSession(sid: string, opts?: { workspace?: string }): Promise<void> {
+  await fetch(`/sessions/${sid}`, {
+    method: "DELETE",
+    headers: JSON_HEADERS,
+    body: JSON.stringify(opts?.workspace ? { workspace: opts.workspace } : {}),
+  }).then(async (r) => {
+    if (!r.ok) throw new Error(await r.text());
+  });
+}
+
+export async function updateSession(sid: string, updates: { name?: string; model_name?: string; workspace?: string }): Promise<void> {
+  await api("PATCH", `/sessions/${sid}`, updates);
 }
 
 export async function getMessages(sid: string, opts?: { includeDropped?: boolean }): Promise<{ messages: Record<string, any>[]; last_usage?: { prompt_tokens?: number; completion_tokens?: number }; model_name?: string }> {
@@ -149,10 +160,6 @@ export async function saveConfigJson(config: Record<string, any>): Promise<void>
   await api("PUT", "/config/json", config);
 }
 
-export async function updateSession(sid: string, updates: { name?: string; model_name?: string }): Promise<void> {
-  await api("PATCH", `/sessions/${sid}`, updates);
-}
-
 export interface MCPServerStatus {
   name: string;
   status: string;
@@ -225,8 +232,16 @@ export async function getGitBranches(sid: string): Promise<{ current: string; br
   return api("GET", `/sessions/${sid}/git-branches`);
 }
 
+export async function getWorkspaceGitBranches(): Promise<{ current: string; branches: string[] }> {
+  return api("GET", `/api/workspace/git-branches`);
+}
+
 export async function gitCheckout(sid: string, branch: string, create: boolean = false): Promise<{ success: boolean }> {
   return api("POST", `/sessions/${sid}/git-checkout`, { branch, create });
+}
+
+export async function gitCheckoutWorkspace(branch: string, create: boolean = false): Promise<{ success: boolean }> {
+  return api("POST", `/api/workspace/git-checkout`, { branch, create });
 }
 
 export async function chooseSystemFolder(): Promise<{ path?: string; error?: string }> {

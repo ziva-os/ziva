@@ -138,7 +138,9 @@ class DesktopAPIServer:
         self.app.router.add_get("/sessions/{sid}/plan", self.get_plan)
         self.app.router.add_get("/sessions/{sid}/diff", self.get_diff)
         self.app.router.add_get("/sessions/{sid}/git-branches", self.get_git_branches)
+        self.app.router.add_get("/api/workspace/git-branches", self.get_workspace_git_branches)
         self.app.router.add_post("/sessions/{sid}/git-checkout", self.git_checkout)
+        self.app.router.add_post("/api/workspace/git-checkout", self.workspace_git_checkout)
         self.app.router.add_post("/sessions/{sid}/revert", self.revert_files)
         self.app.router.add_patch("/sessions/{sid}", self.update_session)
         self.app.router.add_post("/automations", self.create_automation)
@@ -296,13 +298,55 @@ class DesktopAPIServer:
         sid = self.store.create()
         return web.json_response({"id": sid})
 
+    @staticmethod
+    def _read_recent_workspaces() -> List[str]:
+        """Read the persisted recent-workspace list from disk."""
+        recent_path = Path.home() / ".ziva" / "recent_workspaces.json"
+        try:
+            if recent_path.exists():
+                data = json.loads(recent_path.read_text())
+                if isinstance(data, list):
+                    return [str(p) for p in data]
+        except Exception:
+            pass
+        return []
+
     async def list_sessions(self, request: web.Request) -> web.Response:
-        sessions = self.store.list_all()
-        items = [
-            {"id": s["id"], "time": s.get("time")}
-            for s in sessions if "id" in s
-        ]
-        return web.json_response({"sessions": items})
+        """List sessions across all known recent workspaces (and the active one).
+
+        The active workspace is always included even if it isn't in the recent
+        list yet. Each session is tagged with its ``workspace`` so the sidebar
+        can group sessions per project. ``preview`` and ``name`` are surfaced
+        when present on disk so the sidebar can show a meaningful title
+        without an extra round trip per session.
+        """
+        current_ws = str(self.runtime.workspace_root)
+        workspaces: List[str] = []
+        seen: set = set()
+        for ws in [current_ws, *self._read_recent_workspaces()]:
+            if ws and ws not in seen:
+                seen.add(ws)
+                workspaces.append(ws)
+
+        items: List[Dict[str, Any]] = []
+        for ws in workspaces:
+            try:
+                pid = _project_hash(Path(ws))
+                for s in FileStorage.list_sessions(pid):
+                    if "id" not in s:
+                        continue
+                    items.append({
+                        "id": s["id"],
+                        "time": s.get("time"),
+                        "workspace": ws,
+                        "name": s.get("name"),
+                    })
+            except Exception:
+                # Skip workspaces that are unreadable / missing storage
+                continue
+
+        items.sort(key=lambda x: (x.get("time") or {}).get("updated", 0), reverse=True)
+        return web.json_response({"sessions": items, "workspaces": workspaces})
 
     async def get_messages(self, request: web.Request) -> web.Response:
         sid = request.match_info["sid"]
@@ -677,11 +721,10 @@ class DesktopAPIServer:
             diff_content = ""
         return web.json_response({"diff": diff_content})
 
-    async def get_git_branches(self, request: web.Request) -> web.Response:
-        sid = request.match_info["sid"]
-        if not self.store.exists(sid):
-            return web.json_response({"error": "session_not_found"}, status=404)
-
+    async def _read_git_branches(self) -> dict:
+        """Read the current branch and the full branch list from the active
+        workspace. Returns a safe default when the workspace isn't a git
+        repo or git isn't available."""
         workspace = self.runtime.workspace_root
         try:
             # get current branch
@@ -697,18 +740,26 @@ class DesktopAPIServer:
             )
             stdout, _ = await proc.communicate()
             branches = [b.strip() for b in stdout.decode("utf-8").splitlines() if b.strip()]
-            return web.json_response({"current": current, "branches": branches})
+            return {"current": current, "branches": branches}
         except Exception:
-            return web.json_response({"current": "main", "branches": ["main"]})
+            return {"current": "main", "branches": ["main"]}
 
-    async def git_checkout(self, request: web.Request) -> web.Response:
+    async def get_git_branches(self, request: web.Request) -> web.Response:
         sid = request.match_info["sid"]
         if not self.store.exists(sid):
             return web.json_response({"error": "session_not_found"}, status=404)
-        payload = await request.json()
-        branch = payload.get("branch")
-        create = payload.get("create", False)
-        
+        return web.json_response(await self._read_git_branches())
+
+    async def get_workspace_git_branches(self, request: web.Request) -> web.Response:
+        """Workspace-level git branch lookup. Used by the frontend right
+        after switching workspace, so the status-bar branch indicator
+        updates immediately even before the user picks a session."""
+        return web.json_response(await self._read_git_branches())
+
+    async def _do_git_checkout(self, branch: str, create: bool) -> web.Response:
+        """Shared git-checkout implementation. Operates on the active
+        workspace, so it's reusable for both session-scoped and
+        workspace-scoped endpoints."""
         workspace = self.runtime.workspace_root
         cmd = f"git checkout -b {shlex.quote(branch)}" if create else f"git checkout {shlex.quote(branch)}"
         try:
@@ -721,6 +772,24 @@ class DesktopAPIServer:
             return web.json_response({"success": True})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
+
+    async def git_checkout(self, request: web.Request) -> web.Response:
+        sid = request.match_info["sid"]
+        if not self.store.exists(sid):
+            return web.json_response({"error": "session_not_found"}, status=404)
+        payload = await request.json()
+        branch = payload.get("branch")
+        create = payload.get("create", False)
+        return await self._do_git_checkout(branch, create)
+
+    async def workspace_git_checkout(self, request: web.Request) -> web.Response:
+        """Workspace-level git checkout. Used when the user wants to
+        switch branches from the status-bar picker even though no
+        session is active yet (e.g. right after switching workspace)."""
+        payload = await request.json()
+        branch = payload.get("branch")
+        create = payload.get("create", False)
+        return await self._do_git_checkout(branch, create)
 
     async def create_automation(self, request: web.Request) -> web.Response:
         self._load_persisted_automations()
@@ -858,8 +927,22 @@ class DesktopAPIServer:
 
     async def delete_session(self, request: web.Request) -> web.Response:
         sid = request.match_info["sid"]
-        FileStorage.delete_session(self.runtime.project_id, sid)
-        if sid in self.store._loaded_sessions:
+        # The sidebar lets the user delete sessions from any project, so
+        # honor an explicit `workspace` in the request body. Without it
+        # we fall back to the active runtime project.
+        target_pid = self.runtime.project_id
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        ws = (payload or {}).get("workspace")
+        if isinstance(ws, str) and ws:
+            try:
+                target_pid = _project_hash(Path(ws))
+            except Exception:
+                pass
+        FileStorage.delete_session(target_pid, sid)
+        if sid in self.store._loaded_sessions and target_pid == self.runtime.project_id:
             del self.store._loaded_sessions[sid]
         # Pop session state — cancels turn, cleans up MCP client, etc.
         session = self.runtime._sessions.pop(sid, None)
@@ -896,16 +979,27 @@ class DesktopAPIServer:
 
     async def update_session(self, request: web.Request) -> web.Response:
         sid = request.match_info["sid"]
-        if not self.store.exists(sid):
-            return web.json_response({"error": "session_not_found"}, status=404)
         payload = await request.json()
         updates = {}
         if "name" in payload:
             updates["name"] = payload["name"]
         if "model_name" in payload:
             updates["model_name"] = payload["model_name"]
+        # Allow the sidebar to rename sessions in any project.
+        target_pid = self.runtime.project_id
+        ws = payload.get("workspace")
+        if isinstance(ws, str) and ws:
+            try:
+                target_pid = _project_hash(Path(ws))
+            except Exception:
+                pass
+        # For the active project we still validate via the in-memory store
+        # so a stale UI cannot rename a session that no longer exists; for
+        # other projects we trust the file storage directly.
+        if target_pid == self.runtime.project_id and not self.store.exists(sid):
+            return web.json_response({"error": "session_not_found"}, status=404)
         if updates:
-            FileStorage.update_session(self.runtime.project_id, sid, updates)
+            FileStorage.update_session(target_pid, sid, updates)
         return web.json_response({"ok": True})
 
     async def revert_files(self, request: web.Request) -> web.Response:

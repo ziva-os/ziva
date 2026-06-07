@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import shlex
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
@@ -356,6 +357,9 @@ def _mcp_server_from_mapping(name: str, srv: Dict[str, Any]) -> MCPServerConfig 
     cmd = srv.get("command")
     if isinstance(cmd, list):
         cmd, args = (cmd[0] if cmd else None), [str(a) for a in cmd[1:]]
+    elif isinstance(cmd, str) and cmd:
+        parts = shlex.split(cmd)
+        cmd, args = (parts[0] if parts else None), [str(a) for a in parts[1:]]
     else:
         args = [str(a) for a in srv.get("args", []) or []]
     url = srv.get("url") or srv.get("server_url")
