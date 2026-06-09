@@ -1375,14 +1375,27 @@ function renderMessages(target: HTMLElement, msgs: any[]): void {
       }
 
       // ask_user is rendered as an answered question card, not a tool card.
-      // The tool result content is like {"status":"answered","answer":"..."}.
-      // We pull question/options/multiSelect from the matching tool_call args.
+      // The tool result content is currently persisted as the human-readable
+      // text "User answered: <answer>" (see plugins/tools/ask_user/impl.py),
+      // so `m.content` won't be parseable JSON on disk. We try the JSON
+      // path first (in case future tool versions persist structured data),
+      // then fall back to extracting the answer from the prefixed text.
       if (toolName === "ask_user") {
         let answer = "";
         if (typeof output === "object" && output !== null) {
           answer = String((output as any).answer || "");
-        } else if (typeof m.content === "string") {
-          try { answer = JSON.parse(m.content).answer || ""; } catch {}
+        }
+        if (!answer && typeof m.content === "string") {
+          try {
+            const parsed = JSON.parse(m.content);
+            if (parsed && typeof parsed === "object") {
+              answer = String((parsed as any).answer || "");
+            }
+          } catch {
+            // not JSON — fall through to text-prefix extraction
+            const match = m.content.match(/^User answered:\s*(.*)$/s);
+            if (match) answer = match[1] ?? "";
+          }
         }
         const q = String(args.question || "");
         const opts = (args.options as unknown[]) || [];
@@ -1678,17 +1691,68 @@ function appendApprovalCard(requestId: string, toolName: string, args: Record<st
   currentAssistantEl = null;
 }
 
-function appendQuestionCard(question: string, rawOptions: unknown[], multiSelect: boolean = false, callId?: string) {
-  const options = rawOptions.map((o): string => {
-    if (typeof o === "string") return o;
-    if (typeof o === "object" && o !== null) {
-      const obj = o as Record<string, unknown>;
-      const label = obj.label ?? obj.description ?? obj.value;
-      if (typeof label === "string" && label) return label;
-      return JSON.stringify(o);
+interface OptionDisplay {
+  // Pre-escaped HTML for the button / label inner content. For dict
+  // options with both label and description, this is a two-line layout:
+  // the label as the primary line and the description as a smaller
+  // muted subtitle below. String options render as a single line.
+  display: string;
+  // The value sent back to the model when the user picks this option.
+  // For dict options this is the option's `label`; for string options
+  // it's the string itself. Matches the convention used by Claude
+  // Code's AskUserQuestion and Codex's request_user_input.
+  submitValue: string;
+}
+
+function normalizeOption(o: unknown): OptionDisplay {
+  if (typeof o === "string") {
+    // Legacy fallback: the old schema declared options as strings, and
+    // some models may still pass strings. Render as a single line and
+    // submit the string itself.
+    return { display: esc(o), submitValue: o };
+  }
+  if (o && typeof o === "object" && !Array.isArray(o)) {
+    const obj = o as Record<string, unknown>;
+    const trimStr = (v: unknown): string =>
+      typeof v === "string" && v.trim() ? v.trim() : "";
+    const label = trimStr(obj.label);
+    const description = trimStr(obj.description);
+
+    // Build display: label as primary, description as muted subtitle.
+    // If description is missing or duplicates label, just show the label.
+    let display: string;
+    if (label) {
+      display = esc(label);
+      if (description && description !== label) {
+        display += `<br><span class="opt-description">${esc(description)}</span>`;
+      }
+    } else if (description) {
+      // Malformed: only description, no label — treat description as the
+      // label so the user still sees something meaningful.
+      display = esc(description);
+    } else {
+      // Garbage dict (no label / description). Surface the JSON so the
+      // user can see what was sent instead of silently dropping it.
+      display = esc(JSON.stringify(o));
     }
-    return String(o);
-  });
+
+    // Submit value: label is the canonical "what the model gets back".
+    // Falls back to description if label is missing, then to the JSON
+    // dump as last resort.
+    const submitValue = label || description || JSON.stringify(o);
+
+    return { display, submitValue };
+  }
+  if (Array.isArray(o)) {
+    const text = o.map(String).filter(Boolean).join(", ") || "(empty list)";
+    return { display: esc(text), submitValue: text };
+  }
+  const s = o == null ? "" : String(o);
+  return { display: esc(s), submitValue: s };
+}
+
+function appendQuestionCard(question: string, rawOptions: unknown[], multiSelect: boolean = false, callId?: string) {
+  const options = rawOptions.map(normalizeOption);
   showEmptyState(false);
   const card = document.createElement("div");
   card.className = "question-card";
@@ -1696,7 +1760,7 @@ function appendQuestionCard(question: string, rawOptions: unknown[], multiSelect
   if (options.length > 0) {
     if (multiSelect) {
       html += `<div class="question-options">${options.map((o, i) =>
-        `<label class="question-checkbox-label"><input type="checkbox" class="question-checkbox" data-opt="${i}" value="${esc(o)}" /><span>${esc(o)}</span></label>`
+        `<label class="question-checkbox-label"><input type="checkbox" class="question-checkbox" data-opt="${i}" value="${esc(o.submitValue)}" /><span>${o.display}</span></label>`
       ).join("")}</div>`;
       html += `<div class="question-input-row question-other-row">
         <input type="text" class="question-input" placeholder="Or type your own answer..." />
@@ -1704,7 +1768,7 @@ function appendQuestionCard(question: string, rawOptions: unknown[], multiSelect
       </div>`;
     } else {
       html += `<div class="question-options">${options.map((o, i) =>
-        `<button class="question-option-btn" data-opt="${i}">${esc(o)}</button>`
+        `<button class="question-option-btn" data-opt="${i}" data-submit="${esc(o.submitValue)}">${o.display}</button>`
       ).join("")}</div>`;
       html += `<div class="question-input-row question-other-row">
         <input type="text" class="question-input" placeholder="Or type your own answer..." />
@@ -1775,7 +1839,7 @@ function appendQuestionCard(question: string, rawOptions: unknown[], multiSelect
     input?.addEventListener("keydown", (e) => { if (e.key === "Enter") doSubmit(); });
   } else if (options.length > 0) {
     card.querySelectorAll<HTMLElement>(".question-option-btn").forEach((btn) => {
-      btn.addEventListener("click", () => submit(btn.textContent || ""));
+      btn.onclick = () => submit(btn.dataset.submit ?? btn.textContent ?? "");
     });
   }
   if (!(multiSelect && options.length > 0)) {
@@ -2196,7 +2260,7 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     // "flash" of the full conversation. We only refresh lightweight
     // sidebar / context surfaces that don't drive the chat display.
     const { activeSid, sessions, runningSessions, pendingSessionImages } = store.get();
-    
+
     if (sid) {
       const active = sessions.find(s => s.id === sid);
       if (active) active.status = "done";

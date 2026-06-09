@@ -1105,6 +1105,13 @@
   font-family: inherit;
   transition: border-color 0.12s, background 0.12s, transform 0.05s;
 }
+.opt-description {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 3px;
+  line-height: 1.45;
+}
 .question-option-btn:hover {
   border-color: var(--accent);
   background: var(--surface-alt);

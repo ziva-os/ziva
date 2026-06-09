@@ -544,8 +544,16 @@ class DesktopAPIServer:
             [msg1, msg2, ..., summary1, msg3, msg4, ..., summary2, ...]
         Each summary's folded range is the messages between it and the
         previous summary (or start of list).  The LLM only sees the
-        latest summary + any messages after it — equivalent to a fresh
-        session.  Returns `noop=true` if there's nothing to compress.
+        latest summary + any messages after it. Returns `noop=true` if
+        there's nothing to compress.
+
+        This endpoint is the backend path for the manual `/compact` slash
+        command. The runtime's start-of-round auto-compact hook (inside
+        `_run_model_tool_loop`) runs the same `compact_messages` function
+        but emits its own `status: compact` / `context_compacted` events
+        for the UI toast — see runtime.py. This endpoint does not emit
+        those events; the manual /compact flow's loading/success toast is
+        managed entirely client-side (see main.ts: `handleSlashCommand`).
         """
         sid = request.match_info["sid"]
         if not self.store.exists(sid):
@@ -556,19 +564,26 @@ class DesktopAPIServer:
         model_name = model_cfg.get("name", "")
         context_window = int(self.runtime.config.get("memory", {}).get("context_window_tokens", 200000) or 200000)
 
-        from ziva_runtime.session.compaction import _llm_context
+        from ziva_runtime.session.compaction import (
+            _llm_context, compact_messages, compose_post_compact_on_disk,
+            find_last_summary_idx, find_cutoff_in_llm_visible,
+        )
         llm_visible = _llm_context(messages)
 
+        # Match the runtime hook's K=5 asst-turns setting.
+        from ziva_runtime.runtime import AUTO_COMPACT_KEEP_LAST_ASSISTANT_TURNS
+        keep_last = AUTO_COMPACT_KEEP_LAST_ASSISTANT_TURNS
+
         try:
-            from ziva_runtime.session.compaction import compact_messages
             summary_list = await compact_messages(
-                llm_visible, context_window, model_name, self.runtime.model_adapter
+                llm_visible, context_window, model_name, self.runtime.model_adapter,
+                keep_last_assistant_turns=keep_last,
             )
         except Exception as exc:
             return web.json_response({"error": "compact_failed", "message": str(exc)}, status=500)
 
-        summary_msg = summary_list[0] if summary_list else None
-        if summary_msg is None:
+        # No-op detection: empty result, or the same list reference (= unable to split).
+        if not summary_list or summary_list is llm_visible:
             from ziva_runtime.session.compaction import estimate_tokens
             current_tokens = estimate_tokens(messages)
             return web.json_response({
@@ -583,12 +598,17 @@ class DesktopAPIServer:
                 },
             })
 
-        # Append summary at the end — chronological order
-        on_disk = list(messages) + [summary_msg]
+        # Compose on-disk: preserved_old + [new_summary, ...to_keep]
+        # `messages` and `summary_list` are both ChatMessage lists.
+        last_summary_idx = find_last_summary_idx(messages)
+        cutoff = find_cutoff_in_llm_visible(llm_visible, keep_last)
+        on_disk = compose_post_compact_on_disk(
+            messages, last_summary_idx, cutoff, summary_list
+        )
         new_usage = self._apply_post_compact(sid, on_disk)
         return web.json_response({
             "success": True,
-            "message_count": 1,
+            "message_count": len(summary_list),
             "original_count": len(llm_visible),
             "last_usage": new_usage,
         })

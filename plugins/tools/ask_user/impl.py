@@ -25,8 +25,35 @@ class AskUserTool:
                     },
                     "options": {
                         "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Optional predefined options for the user to choose from",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "label": {
+                                    "type": "string",
+                                    "description": (
+                                        "The display text for this option that the user will "
+                                        "see and select. Concise (1-5 words) and clearly "
+                                        "describes the choice. This is also the value sent "
+                                        "back to the model when picked."
+                                    ),
+                                },
+                                "description": {
+                                    "type": "string",
+                                    "description": (
+                                        "Explanation of what this option means or what will "
+                                        "happen if chosen. Useful for providing context "
+                                        "about trade-offs or implications. Optional."
+                                    ),
+                                },
+                            },
+                            "required": ["label"],
+                        },
+                        "description": (
+                            "Optional predefined options for the user to choose from. "
+                            "Each option has a `label` (the choice the user picks and the "
+                            "model receives) and an optional `description` (extra context "
+                            "shown to the user under the label)."
+                        ),
                     },
                     "multi_select": {
                         "type": "boolean",

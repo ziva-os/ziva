@@ -24,7 +24,14 @@ from ziva_runtime.permissions import (
     RejectedError,
 )
 from ziva_runtime.plugins.loader import load_plugins
-from ziva_runtime.session.compaction import compact_messages, is_overflow, _llm_context
+from ziva_runtime.session.compaction import (
+    compact_messages,
+    _llm_context,
+    compose_post_compact_on_disk,
+    estimate_tokens,
+    find_last_summary_idx,
+    find_cutoff_in_llm_visible,
+)
 from ziva_runtime.shared_types import ApprovalRequest, ApprovalPolicy, CancellationToken, ChatMessage, ChatResult, RuntimeContext, SessionState, ToolCall, ToolCallItem, ToolResult
 from ziva_runtime.storage.file_storage import FileStorage, _project_hash
 
@@ -126,6 +133,20 @@ def _categorize_skill(name: str, description: str) -> str:
     return "其他"
 
 
+# Auto-compact hook configuration. These are the only knobs the start-of-round
+# hook has; they apply to both the in-turn rounds (triggered by API prompt_tokens)
+# and the implicit "next turn" case (a stale 100% session, see below).
+AUTO_COMPACT_THRESHOLD = 0.9
+# Keep the last K model-call cycles verbatim. A "cycle" = one assistant
+# message (possibly with tool_calls) + the tool_results that follow. We
+# count by asst turns (not user messages) because one user message can
+# produce many model calls when the agent loops with tools — K=5 asst
+# turns gives the model a decent recent context (typically 10–15
+# messages including tool_results) without bloating on tool-heavy
+# turns.
+AUTO_COMPACT_KEEP_LAST_ASSISTANT_TURNS = 5
+
+
 @dataclass
 class Runtime:
     config: Dict[str, Any]
@@ -155,6 +176,83 @@ class Runtime:
         if session_id not in self._sessions:
             self._sessions[session_id] = SessionState()
         return self._sessions[session_id]
+
+    def _read_last_usage(self, session_id: str) -> Dict[str, int] | None:
+        """Read the most recent API-reported prompt_tokens from session metadata on disk.
+
+        This is the authoritative overflow signal — it reflects what the model
+        provider actually billed for the previous round, not a local heuristic
+        estimate. Returned by `update_session_usage` after every `round_complete`.
+        """
+        try:
+            meta = FileStorage.get_session(self.project_id, session_id) or {}
+            return meta.get("last_usage")
+        except Exception:
+            return None
+
+    def _chatmessage_to_record(self, m: ChatMessage) -> Dict[str, Any]:
+        """Serialize a ChatMessage to the dict format FileStorage uses."""
+        record: Dict[str, Any] = {
+            "role": m.role,
+            "content": m.content,
+            "tool_call_id": m.tool_call_id,
+            "name": m.name,
+            "tool_calls": [
+                {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                for tc in m.tool_calls
+            ],
+        }
+        if getattr(m, "_compaction_summary", False):
+            record["_compaction_summary"] = True
+        return record
+
+    def _apply_compact_to_disk(
+        self,
+        session_id: str,
+        working_before: List[ChatMessage],
+        new_working: List[ChatMessage],
+        keep_last_assistant_turns: int,
+    ) -> None:
+        """Persist a compact result to disk and refresh in-memory runtime state.
+
+        On-disk layout after this call:  [preserved_old, new_summary, ...to_keep]
+        where preserved_old is the portion of the current on-disk that came
+        before the new to_keep. The LLM-visible view (used by SessionState.history
+        for the next turn) is just `new_working`.
+
+        This is the runtime-side equivalent of the server's `_apply_post_compact`
+        used by the manual `/compact` endpoint — same on-disk shape, same
+        last_usage refresh, just no server-side session-store update.
+        """
+        # Read current on-disk as dicts (FileStorage format) and serialize the
+        # new tail to dicts so the result is a uniform list of records.
+        current_on_disk = list(FileStorage.get_messages(self.project_id, session_id) or [])
+        new_working_dicts = [self._chatmessage_to_record(m) for m in new_working]
+
+        last_summary_idx = find_last_summary_idx(current_on_disk)
+        cutoff = find_cutoff_in_llm_visible(working_before, keep_last_assistant_turns)
+        new_on_disk = compose_post_compact_on_disk(
+            current_on_disk, last_summary_idx, cutoff, new_working_dicts
+        )
+        FileStorage.replace_messages(self.project_id, session_id, new_on_disk)
+
+        # Update SessionState.history to the LLM-visible view (= new_working).
+        # The next turn loads from this when SessionState.history is empty, so
+        # we need it to reflect the compact result, not the bloated pre-compact
+        # state.
+        session = self._get_session(session_id)
+        session.history = list(new_working)
+
+        # Refresh last_usage from the post-compact LLM-visible view. This
+        # resets the overflow threshold so the next round's start-of-round
+        # hook doesn't immediately re-fire.
+        new_prompt_tokens = estimate_tokens(new_working)
+        new_usage = {
+            "prompt_tokens": new_prompt_tokens,
+            "completion_tokens": 0,
+            "total_tokens": new_prompt_tokens,
+        }
+        self.update_session_usage(session_id, new_usage)
 
     @classmethod
     def create(
@@ -419,16 +517,43 @@ class Runtime:
                 await self._emit(session_id, event)
                 return
 
-            if is_overflow(working, context_window):
-                yield _flag({"type": "status", "content": "compact", "round": round_idx})
-                await self._emit(session_id, {"type": "status", "content": "compact", "round": round_idx})
-                summary_list = await compact_messages(
-                    working, context_window, model_cfg["name"], self.model_adapter
-                )
-                working = summary_list or working
-                event = {"type": "context_compacted", "round": round_idx}
-                yield _flag(event)
-                await self._emit(session_id, event)
+            # ---- Start-of-round auto-compact hook ----
+            # Trigger on the API's real prompt_tokens (read from disk after every
+            # previous round_complete), not on the local estimate_tokens heuristic.
+            # The 0.9 threshold matches the legacy 200k-20k OVERFLOW_BUFFER.
+            last_usage = self._read_last_usage(session_id)
+            if last_usage and last_usage.get("prompt_tokens", 0) / context_window >= AUTO_COMPACT_THRESHOLD:
+                # Decide whether compact is even *possible* before emitting any
+                # events. compact_messages needs ≥ keep_last_assistant_turns
+                # asst messages in `working` to do a meaningful split; with
+                # fewer, the whole conversation is one "tail" and there's
+                # nothing to summarize. Skip silently — wait for more rounds
+                # to accumulate. No prune fallback either: prune lives on a
+                # separate code path (manual `/prune`), keeping this hook's
+                # behavior fully predictable.
+                asst_indices = [i for i, m in enumerate(working) if m.role == "assistant"]
+                if len(asst_indices) >= AUTO_COMPACT_KEEP_LAST_ASSISTANT_TURNS:
+                    yield _flag({"type": "status", "content": "compact", "round": round_idx})
+                    await self._emit(session_id, {"type": "status", "content": "compact", "round": round_idx})
+
+                    working_before = working   # captured for on-disk composition
+                    summary_list = await compact_messages(
+                        working, context_window, model_cfg["name"], self.model_adapter,
+                        keep_last_assistant_turns=AUTO_COMPACT_KEEP_LAST_ASSISTANT_TURNS,
+                    )
+
+                    if summary_list and summary_list is not working:
+                        working = summary_list
+                        self._apply_compact_to_disk(
+                            session_id, working_before, working,
+                            keep_last_assistant_turns=AUTO_COMPACT_KEEP_LAST_ASSISTANT_TURNS,
+                        )
+                        # Only emit context_compacted when we actually
+                        # compacted — otherwise the UI would show a
+                        # misleading "Context compacted" toast.
+                        event = {"type": "context_compacted", "round": round_idx}
+                        yield _flag(event)
+                        await self._emit(session_id, event)
 
             round_start = time.perf_counter()
             base_prompt = self.config.get("prompt", {}).get("system_prompt") or ""

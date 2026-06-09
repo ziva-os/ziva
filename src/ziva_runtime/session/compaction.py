@@ -14,8 +14,6 @@ from typing import Any, List
 
 from ziva_runtime.shared_types import ChatMessage
 
-OVERFLOW_BUFFER = 20_000
-
 # Tools whose outputs should never be pruned (e.g. skill reads are expensive to re-fetch)
 PRUNE_PROTECTED_TOOLS: List[str] = ["skill"]
 
@@ -97,17 +95,20 @@ def estimate_tokens(messages: List[ChatMessage]) -> int:
     return total
 
 
-def is_overflow(messages: List[ChatMessage], context_window: int) -> bool:
-    """Check if message history exceeds context window minus buffer."""
-    return estimate_tokens(messages) > context_window - OVERFLOW_BUFFER
-
-
 def prune(messages: List[ChatMessage], keep_last: int = 2) -> List[ChatMessage]:
     """Prune older tool results to reclaim tokens, keeping the last N turns.
 
-    A "turn" boundary is a user message. We keep the last `keep_last` user
-    messages and everything after them. For earlier turns, we keep user
-    and assistant messages but strip tool role messages to save space.
+    A "turn" = user msg → (asst or asst-with-tool_call) → tool_result. The
+    turn boundary is the next `role == "user"` message. We keep the last
+    `keep_last` user messages and everything after them (which includes the
+    associated tool results and assistant responses). For earlier turns, we
+    keep user and assistant messages but strip tool role messages to save
+    space.
+
+    INVARIANT: the turn boundary detection relies on the internal
+    `role="tool"` distinction. If a future change serializes tool results
+    as `role="user"` (to match the Anthropic API), the boundary logic will
+    split one turn in half. Keep this comment in sync with the API adapter.
 
     Public alias: `prune_messages`. Cheap operation, no model call.
     """
@@ -148,8 +149,14 @@ def _pruned_tool_message(m: Any) -> Any:
     can still render "tool was called" rows in order. The content is replaced
     with a fixed short string so the LLM doesn't see the full payload on the
     next turn but does know something was returned for that tool call id.
+
+    The placeholder includes the tool name so the model can still reason
+    about what kind of output was there (e.g. "this was a grep result"
+    vs "this was a file read") without the model having to re-call the
+    tool. Format: "[old tool result pruned — tool: <name>]"
     """
-    placeholder = "[pruned]"
+    tool_name = getattr(m, "name", None) or "unknown"
+    placeholder = f"[old tool result pruned — tool: {tool_name}]"
     # Prefer dataclasses.replace so we get back the same type with a fresh
     # __dict__. Fall back to a shallow copy, then to a fresh ChatMessage
     # carrying just the identifying fields, then to a dict last resort.
@@ -230,39 +237,80 @@ async def compact_messages(
     context_window: int,
     model_name: str,
     model_adapter: Any,
+    keep_last_assistant_turns: int = 5,
 ) -> List[ChatMessage]:
-    """Compact message history into a summary.
+    """Compact message history into a summary, keeping the last K model-call
+    cycles verbatim.
 
-    The server appends the summary to the on-disk message list in
-    chronological order.  The UI shows collapse bars for folded messages,
-    and the LLM only sees the last summary + messages after it.
+    The unit of K is **assistant turns** (= one model call, optionally
+    followed by 0+ tool_result messages). Counting by assistant turns (not
+    user messages) matters because a single user message can produce many
+    model calls when the agent loops with tools — K=5 user messages might
+    preserve 50+ messages, K=5 assistant turns preserves a much tighter
+    window of recent context.
+
+    Splits `messages` at the K-th-from-last assistant message. Everything
+    before the split point gets summarized into a single summary message;
+    everything from the split onward is preserved verbatim. Returns:
+
+        [new_summary, ...to_keep]    if a split was possible
+        messages                     if there are <= K asst turns (no-op)
+
+    The no-op return value is intentionally the same list reference so the
+    caller can detect "nothing happened" via `result is messages`.
+
+    The on-disk layout becomes:  [preserved_old, new_summary, ...to_keep]
+    where `preserved_old` is whatever the caller had on disk before the new
+    summary. The LLM sees only `[new_summary, ...to_keep]` (via `_llm_context`).
+
+    INVARIANT: assistant-turn counting works because the internal
+    `role="assistant"` messages correspond 1:1 to model calls. If a future
+    change ever rolls multiple asst messages into one, this logic will
+    under-count. Also note: the preceding user message is naturally included
+    in `to_keep` only if it was sent *during* the last K asst turns — older
+    user messages end up in the summary.
     """
-    if not messages:
-        return []
+    if not messages or len(messages) < 3:
+        return messages
 
-    if len(messages) < 3:
-        return []
+    # Count assistant messages (= model-call cycles in our internal model).
+    # Each cycle is `asst_msg [+ tool_result...]` and counts as 1.
+    asst_indices = [i for i, m in enumerate(messages) if m.role == "assistant"]
+    if len(asst_indices) <= keep_last_assistant_turns:
+        return messages
+
+    cutoff = asst_indices[-keep_last_assistant_turns]
+    to_summarize = messages[:cutoff]
+    to_keep = messages[cutoff:]
+
+    if not to_summarize:
+        return messages
 
     try:
         agent = CompactAgent()
-        summary = await agent.run(messages, model_name, model_adapter)
+        summary = await agent.run(to_summarize, model_name, model_adapter)
     except Exception:
-        return _simple_compact(messages)
+        return _simple_compact_split(to_summarize, to_keep)
 
     if not summary.strip():
-        return _simple_compact(messages)
+        return _simple_compact_split(to_summarize, to_keep)
 
-    return [ChatMessage(
+    summary_msg = ChatMessage(
         role="assistant",
         content=summary,
         _compaction_summary=True,
-    )]
+    )
+    return [summary_msg] + to_keep
 
 
-def _simple_compact(messages: List[ChatMessage]) -> List[ChatMessage]:
-    """Fallback compaction: truncate each message to 200 chars into one summary."""
+def _simple_compact_split(
+    to_summarize: List[ChatMessage],
+    to_keep: List[ChatMessage],
+) -> List[ChatMessage]:
+    """Fallback for compact_messages: truncate each pre-cutoff message to 200 chars,
+    preserve the post-cutoff tail verbatim."""
     summary_parts = []
-    for m in messages:
+    for m in to_summarize:
         text = _text_of(m.content)
         if m.role == "user":
             summary_parts.append(f"User: {text[:200]}")
@@ -276,4 +324,86 @@ def _simple_compact(messages: List[ChatMessage]) -> List[ChatMessage]:
         role="assistant",
         content=summary,
         _compaction_summary=True,
-    )]
+    )] + to_keep
+
+
+def compose_post_compact_on_disk(
+    current_on_disk: List[Any],
+    last_summary_idx: int,
+    cutoff_in_llm_visible: int,
+    new_working: List[Any],
+) -> List[Any]:
+    """Compose the new on-disk list after a successful compact.
+
+    The on-disk layout is:  [preserved_old, new_summary, ...to_keep]
+    where:
+      - `preserved_old`  = records in `current_on_disk` that come *before* the
+                            first message of `to_keep` (i.e. everything that was
+                            already on disk and is not part of the new tail).
+                            This naturally accumulates across multiple compacts
+                            so the user can still scroll back to ancient history.
+      - `new_summary`    = `new_working[0]` (the freshly produced summary).
+      - `to_keep`        = `new_working[1:]` (the last K asst-turn cycles verbatim).
+
+    The caller is responsible for ensuring `new_working` is in the same form
+    as `current_on_disk` (both dicts, or both ChatMessage) — the helper just
+    concatenates.
+
+    `last_summary_idx` is the position of the last summary in
+    `current_on_disk`, or -1 if none. `cutoff_in_llm_visible` is the
+    K-th-from-last user message position in the LLM-visible view (= position
+    in the on-disk array where `to_keep` starts, relative to the start of the
+    LLM-visible portion).
+
+    On the very first compact, `last_summary_idx == -1` and `to_keep` starts
+    at `cutoff_in_llm_visible` in the on-disk array (= same position, since
+    the LLM-visible view starts at the beginning when no summary exists).
+    """
+    if cutoff_in_llm_visible < 0:
+        return list(current_on_disk) + list(new_working)
+    to_keep_start = (last_summary_idx + cutoff_in_llm_visible) if last_summary_idx >= 0 else cutoff_in_llm_visible
+    preserved_old = list(current_on_disk[:to_keep_start])
+    return preserved_old + list(new_working)
+
+
+def find_last_summary_idx(records: List[Any]) -> int:
+    """Return the position of the last summary in `records`, or -1 if none.
+
+    Accepts both dicts (FileStorage format) and ChatMessage instances.
+    """
+    for i in range(len(records) - 1, -1, -1):
+        r = records[i]
+        if isinstance(r, dict):
+            if r.get("_compaction_summary"):
+                return i
+        else:
+            if getattr(r, "_compaction_summary", False):
+                return i
+    return -1
+
+
+def find_cutoff_in_llm_visible(working: List[ChatMessage], keep_last_assistant_turns: int) -> int:
+    """Return the cutoff position in `working` that keeps the last K asst
+    turns verbatim.
+
+    "Assistant turn" = one model call (one asst message + 0+ tool_results).
+    Counting by assistant turns (not user messages) is important because one
+    user message can expand to many model calls when the agent loops with
+    tools — K=3 asst turns stays a tight window regardless of how many
+    tool calls happened in the most recent user turn.
+
+    The cutoff is the K-th-from-last asst message position. We do NOT walk
+    back to include the user prompt of the first kept asst: the prompt is
+    in the summary, and walking back would bloat the kept window with
+    earlier cycles from the same user turn (which defeats the purpose of
+    the tighter asst-turn unit). The first kept asst will look "orphan" in
+    the simple alternating case (user / asst / user / asst / ...), but
+    it's a self-contained model response and the summary anchors the user
+    intent.
+
+    Returns -1 if there are not enough assistant turns to split (no-op case).
+    """
+    asst_indices = [i for i, m in enumerate(working) if m.role == "assistant"]
+    if len(asst_indices) <= keep_last_assistant_turns:
+        return -1
+    return asst_indices[-keep_last_assistant_turns]
