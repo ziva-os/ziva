@@ -24,17 +24,29 @@ export class SSEPool {
   private controller: AbortController | null = null;
   private retryCount = 0;
   private connected = false;
+  private permanentlyDisconnected = false;
   private readonly BASE_DELAY = 1000;
   private readonly MAX_DELAY = 10000;
+  private readonly MAX_RETRIES = 50;
   private reconnectCallbacks: Set<() => void> = new Set();
+  private disconnectCallbacks: Set<() => void> = new Set();
 
   isConnected(): boolean {
     return this.connected;
   }
 
+  isPermanentlyDisconnected(): boolean {
+    return this.permanentlyDisconnected;
+  }
+
   onReconnect(cb: () => void): () => void {
     this.reconnectCallbacks.add(cb);
     return () => this.reconnectCallbacks.delete(cb);
+  }
+
+  onPermanentDisconnect(cb: () => void): () => void {
+    this.disconnectCallbacks.add(cb);
+    return () => this.disconnectCallbacks.delete(cb);
   }
 
   subscribe(handler: EventHandler): () => void {
@@ -53,6 +65,7 @@ export class SSEPool {
   disconnect(): void {
     this.retryCount = 0;
     this.connected = false;
+    this.permanentlyDisconnected = false;
     if (this.controller) {
       this.controller.abort();
       this.controller = null;
@@ -62,6 +75,7 @@ export class SSEPool {
   private ensureConnected(): void {
     if (this.controller) return;
     this.retryCount = 0;
+    this.permanentlyDisconnected = false;
     this._doConnect();
   }
 
@@ -120,6 +134,16 @@ export class SSEPool {
 
       const retries = this.retryCount + 1;
       this.retryCount = retries;
+
+      if (retries > this.MAX_RETRIES) {
+        this.permanentlyDisconnected = true;
+        console.error(`SSE: max retry count (${this.MAX_RETRIES}) exceeded — giving up`);
+        for (const cb of this.disconnectCallbacks) {
+          try { cb(); } catch { /* ignore */ }
+        }
+        return;
+      }
+
       const delay = Math.min(this.BASE_DELAY * Math.pow(2, retries - 1), this.MAX_DELAY);
       setTimeout(() => {
         if (this.handlers.size > 0) this._doConnect();

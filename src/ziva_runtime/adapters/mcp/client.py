@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import shlex
@@ -54,8 +55,10 @@ class MCPToolWrapper:
         if not server:
             return ToolResult(text=f"Error: mcp_server_not_found\nMCP server '{self._server_name}' not found", error=True)
         try:
-            result = await server.call_tool(self._name, input_data)
+            result = await asyncio.wait_for(server.call_tool(self._name, input_data), timeout=120)
             return mcp_call_result_to_tool_result(result)
+        except asyncio.TimeoutError:
+            return ToolResult(text="Error: mcp_timeout\nMCP tool call timed out after 120s", error=True)
         except Exception as e:
             msg = str(e)
             if "cancel scope" in msg:

@@ -8,7 +8,7 @@ from ziva_runtime.shared_types import ChatMessage, ChatResult, StreamDelta, Tool
 
 
 def _build_anthropic_messages(
-    messages: Iterable[ChatMessage], system_prompt: str | None = None
+    messages: Iterable[ChatMessage], system_prompt: str | None = None, *, thinking_enabled: bool = False
 ) -> tuple[str | None, list[dict]]:
     """Convert ziva messages to Anthropic API format.
 
@@ -59,9 +59,11 @@ def _build_anthropic_messages(
                 if main_text:
                     parts.append({"type": "text", "text": main_text})
             else:
-                # If no thinking found, but we MUST provide a thinking block for tool calls when thinking is enabled
-                # Let's add an empty thinking block just to satisfy strict APIs if tool_calls are present
-                if m.tool_calls:
+                # Only inject a synthetic thinking block when extended thinking
+                # is actually enabled for this request. Without it, the API
+                # rejects the message for having a thinking block without
+                # thinking.type="enabled" in the parameters.
+                if thinking_enabled and m.tool_calls:
                     parts.append({
                         "type": "thinking",
                         "thinking": " ",
@@ -150,8 +152,10 @@ class AnthropicChatAdapter:
     """Adapter using anthropic SDK with native tool calling."""
 
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
+        from anthropic import AsyncAnthropic
         self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         self._base_url = base_url
+        self._client = AsyncAnthropic(api_key=self._api_key, base_url=self._base_url)
 
     async def chat(
         self,
@@ -161,10 +165,7 @@ class AnthropicChatAdapter:
         tools: list[dict] | None = None,
         thinking_config: dict[str, Any] | None = None,
     ) -> ChatResult:
-        from anthropic import AsyncAnthropic
-
-        client = AsyncAnthropic(api_key=self._api_key, base_url=self._base_url)
-        system, api_messages = _build_anthropic_messages(messages, system_prompt)
+        system, api_messages = _build_anthropic_messages(messages, system_prompt, thinking_enabled=bool(thinking_config))
         anthropic_tools = _convert_tools_to_anthropic(tools)
 
         kwargs: dict[str, Any] = {"model": model, "messages": api_messages, "max_tokens": 16384}
@@ -175,7 +176,7 @@ class AnthropicChatAdapter:
         if thinking_config:
             kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_config.get("budget_tokens", 4000)}
 
-        resp = await client.messages.create(**kwargs)
+        resp = await self._client.messages.create(**kwargs)
 
         content = ""
         for b in resp.content:
@@ -217,10 +218,7 @@ class AnthropicChatAdapter:
         tools: list[dict] | None = None,
         thinking_config: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamDelta]:
-        from anthropic import AsyncAnthropic
-
-        client = AsyncAnthropic(api_key=self._api_key, base_url=self._base_url)
-        system, api_messages = _build_anthropic_messages(messages, system_prompt)
+        system, api_messages = _build_anthropic_messages(messages, system_prompt, thinking_enabled=bool(thinking_config))
         anthropic_tools = _convert_tools_to_anthropic(tools)
 
         kwargs: dict[str, Any] = {"model": model, "messages": api_messages, "max_tokens": 16384}
@@ -231,7 +229,7 @@ class AnthropicChatAdapter:
         if thinking_config:
             kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_config.get("budget_tokens", 4000)}
 
-        async with client.messages.stream(**kwargs) as stream:
+        async with self._client.messages.stream(**kwargs) as stream:
             tool_calls_acc: dict[int, dict] = {}
             thinking_blocks = set()
 

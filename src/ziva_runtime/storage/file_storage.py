@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import fcntl
+import uuid
 from pathlib import Path
 from typing import Any, Optional, List, Generator
 from contextlib import contextmanager
@@ -76,9 +77,9 @@ class FileStorage:
 
     @classmethod
     def write_json(cls, path: Path, data: Any) -> None:
-        """Write JSON file atomically."""
+        """Write JSON file atomically with unique temp file."""
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
+        tmp = path.with_suffix(f".{uuid.uuid4().hex[:8]}.tmp")
         with open(tmp, "w") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         tmp.rename(path)
@@ -131,13 +132,20 @@ class FileStorage:
     @classmethod
     def delete_session(cls, project_id: str, session_id: str) -> None:
         """Delete a session and its messages."""
+        import shutil
         session_path = cls._session_file(project_id, session_id)
         messages_path = cls._messages_file(project_id, session_id)
+        attachments_dir = cls._project_dir(project_id) / "attachments" / session_id
         with cls._lock(session_path):
             if session_path.exists():
                 session_path.unlink()
             if messages_path.exists():
                 messages_path.unlink()
+            # Drop any image attachments the user dropped into this
+            # session. Pairs with /sessions/{sid}/attachments upload
+            # path; without this the disk would grow forever.
+            if attachments_dir.exists():
+                shutil.rmtree(attachments_dir, ignore_errors=True)
 
     # ============= Message Operations (JSONL) =============
 
@@ -155,6 +163,9 @@ class FileStorage:
     def get_messages(cls, project_id: str, session_id: str, locked: bool = False) -> Generator[dict, None, None]:
         """Read all messages from JSONL file.
 
+        Materializes all messages before yielding so the file lock is
+        released promptly and not held across generator suspension points.
+
         Args:
             project_id: Project ID
             session_id: Session ID
@@ -165,17 +176,12 @@ class FileStorage:
             return
         if locked:
             with open(path, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        yield json.loads(line)
+                messages = [json.loads(line) for line in f if line.strip()]
         else:
             with cls._lock(path, exclusive=False):
                 with open(path, "r") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line:
-                            yield json.loads(line)
+                    messages = [json.loads(line) for line in f if line.strip()]
+        yield from messages
 
     @classmethod
     def update_message(cls, project_id: str, session_id: str, message_id: str, message_data: dict) -> None:

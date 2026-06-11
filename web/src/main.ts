@@ -6,13 +6,25 @@ import * as api from "./api";
 import { SSEPool } from "./sse";
 import { renderMarkdown, addCopyButtons, highlightCode, extractThinking } from "./markdown";
 import { Store } from "./state";
-import type { AppState } from "./state";
+import type { AppState, PendingAttachment } from "./state";
 
 // ---- Helpers ----
 function esc(s: string): string {
   const d = document.createElement("span");
   d.textContent = s;
   return d.innerHTML;
+}
+
+// Strip <think>...</think> blocks (and any unclosed <think>…EOF) from
+// automation outputs. The model's chain-of-thought is internal noise;
+// the UI only shows the user-facing part. Runs before line-clamp
+// previews so the visible lines are the real content.
+function stripThinking(text: string): string {
+  if (!text) return text;
+  return text
+    .replace(/<think>[\s\S]*?<\/think>/g, "")
+    .replace(/<think>[\s\S]*$/g, "")
+    .trim();
 }
 
 // Lightbox for clicking on images to zoom
@@ -26,7 +38,7 @@ function initLightbox() {
 
   document.addEventListener("click", (e) => {
     const target = e.target as HTMLElement;
-    if (target.tagName === "IMG" && target.closest(".msg-inner, .tool-output-image, .compact-dropped")) {
+    if (target.tagName === "IMG" && target.closest(".msg-inner, .tool-output-image, .compact-dropped, .image-preview-item")) {
       const img = overlay.querySelector("img") as HTMLImageElement;
       img.src = (target as HTMLImageElement).src;
       overlay.style.display = "flex";
@@ -61,6 +73,7 @@ const store = new Store<AppState>({
   runningSessions: {},
   pendingMessages: {},
   pendingSessionImages: {},
+  promptDrafts: {},
   compactingSessions: {},
   questionPending: false,
   config: { model: "unknown", models: [], modelDetails: [], approval: "suggest", workspace: "", tools: [], contextWindow: 200000 },
@@ -86,15 +99,16 @@ function isActiveRunning(): boolean {
 function getActivePending(): string | null {
   const { activeSid, pendingMessages } = store.get();
   if (!activeSid) return null;
-  return pendingMessages[activeSid] ?? null;
+  const entry = pendingMessages[activeSid];
+  return entry ? entry.text : null;
 }
 
-function setActivePending(text: string | null) {
+function setActivePending(text: string | null, retries: number = 0) {
   const { activeSid, pendingMessages } = store.get();
   if (!activeSid) return;
   const next = { ...pendingMessages };
   if (text == null) delete next[activeSid];
-  else next[activeSid] = text;
+  else next[activeSid] = { text, retries };
   store.set({ pendingMessages: next });
 }
 
@@ -354,9 +368,6 @@ function bindEvents() {
     $("btnSelectMode").textContent = on ? "☑" : "☐";
     ($("batchDeleteBtn") as HTMLElement).style.display = on ? "flex" : "none";
     renderSessions();
-    if (on) {
-      list.querySelectorAll<HTMLInputElement>(".session-checkbox").forEach(cb => cb.checked = true);
-    }
   };
 
   $("batchDeleteBtn").onclick = async () => {
@@ -463,14 +474,22 @@ function bindEvents() {
     (e.target as HTMLInputElement).value = "";
   };
   promptEl.addEventListener("paste", (e) => {
-    const items = e.clipboardData?.items;
-    if (!items) return;
-    for (const item of items) {
-      if (item.type.startsWith("image/")) {
-        e.preventDefault();
-        addImageFile(item.getAsFile()!);
-      }
+    // `e.clipboardData.files` is more reliable than `items` + `getAsFile()`:
+    // - Mac screenshots sometimes expose the image as a File but not as an
+    //   `image/*` DataTransferItem (the type may be `public.png` / `dyn.ah62d4...`)
+    // - `item.getAsFile()` can return null even when an item is present
+    // Using `files` covers both the "explicit File" path and the "decoded
+    // image" path uniformly. We still check f.type because files can also
+    // contain plain text rendered as a file on some Linux distros.
+    const files = e.clipboardData?.files;
+    if (!files || files.length === 0) return;
+    const imgs: File[] = [];
+    for (const f of Array.from(files)) {
+      if (f.type.startsWith("image/")) imgs.push(f);
     }
+    if (imgs.length === 0) return;
+    e.preventDefault();
+    for (const f of imgs) addImageFile(f);
   });
   promptEl.addEventListener("dragover", (e) => { e.preventDefault(); });
   promptEl.addEventListener("drop", (e) => {
@@ -487,16 +506,157 @@ function bindEvents() {
 }
 
 // ---- Image Attachments ----
-let pendingImages: Array<{ dataUrl: string; name: string }> = [];
+//
+// We don't push base64 around the wire anymore. The user pastes or
+// drops a file → we POST it to /sessions/{sid}/attachments → the
+// server drops the bytes under
+// ``~/.ziva/sessions/<pid>/attachments/<sid>/`` and hands back the
+// absolute path. We keep that path; the next /turns request embeds
+// it in an `image_url.url` block. The runtime then expands the
+// path to a base64 data URL *only* in the per-turn copy sent to
+// the provider — the persisted history keeps the path so reloads
+// don't have to re-read multi-MB blobs from disk.
+//
+// The local `thumbUrl` is a blob URL just for the in-input preview;
+// it's never sent to the server.
+let pendingImages: Array<{
+  path: string;
+  mime: string;
+  size: number;
+  name: string;
+  thumbUrl: string;
+}> = [];
+
+// Track in-flight image uploads so they can be cancelled when the user
+// switches sessions. Each entry ties a fetch to the session it was
+// initiated for.
+const inFlightUploads: Array<{
+  sid: string;
+  controller: AbortController;
+  thumbUrl: string;
+}> = [];
+
+// Release blob: URLs that the UI no longer needs. Each paste gives
+// us a fresh `URL.createObjectURL(file)` whose underlying bytes the
+// browser keeps around until either revokeObjectURL or the document
+// goes away. We only revoke when *no* live reference remains — a
+// per-session stash in `store.pendingSessionImages` is a legitimate
+// holder (the user might switch back and expect to see previews).
+function disposePendingImageThumbs(arr: Array<{ thumbUrl?: string }>) {
+  if (!arr || arr.length === 0) return;
+  const { pendingSessionImages, promptDrafts } = store.get();
+  const live = new Set<string>();
+  for (const sid in pendingSessionImages) {
+    for (const a of pendingSessionImages[sid] || []) {
+      if (a?.thumbUrl) live.add(a.thumbUrl);
+    }
+  }
+  for (const sid in promptDrafts) {
+    for (const a of promptDrafts[sid]?.images || []) {
+      if (a?.thumbUrl) live.add(a.thumbUrl);
+    }
+  }
+  for (const a of arr) {
+    if (a?.thumbUrl && !live.has(a.thumbUrl)) {
+      URL.revokeObjectURL(a.thumbUrl);
+    }
+  }
+}
 
 function addImageFile(file: File) {
-  const reader = new FileReader();
-  reader.onload = () => {
-    const dataUrl = reader.result as string;
-    pendingImages.push({ dataUrl, name: file.name });
-    renderImagePreviews();
+  // Generate a local blob URL for the in-input preview *first*
+  // (synchronous, can't fail), then kick off the upload so the user
+  // sees the thumbnail immediately even on slow links.
+  const thumbUrl = URL.createObjectURL(file);
+
+  // Capture the session id *before* the async fetch so we can detect if
+  // the user switches sessions while the upload is in flight.
+  const uploadSid = store.get().activeSid;
+  if (!uploadSid) {
+    URL.revokeObjectURL(thumbUrl);
+    appendError("Cannot attach image: no active session");
+    return;
+  }
+
+  const controller = new AbortController();
+  const uploadEntry = { sid: uploadSid, controller, thumbUrl };
+  inFlightUploads.push(uploadEntry);
+
+  const finish = (result: { path: string; mime: string; size: number } | null, err?: string) => {
+    // Remove from in-flight tracker regardless of outcome.
+    const idx = inFlightUploads.indexOf(uploadEntry);
+    if (idx !== -1) inFlightUploads.splice(idx, 1);
+
+    if (!result) {
+      URL.revokeObjectURL(thumbUrl);
+      console.error("image upload failed", err);
+      appendError(`Failed to attach ${file.name}: ${err || "upload failed"}`);
+      return;
+    }
+
+    const image = { ...result, name: file.name, thumbUrl };
+    const currentSid = store.get().activeSid;
+
+    if (currentSid === uploadSid) {
+      // Still on the same session — push to the live pendingImages array.
+      pendingImages.push(image);
+      renderImagePreviews();
+    } else {
+      // Session switched while the upload was in flight. Route the
+      // result to the originating session's pendingSessionImages in
+      // the store so the image is available when the user switches back.
+      const { pendingSessionImages } = store.get();
+      const existing = pendingSessionImages[uploadSid] || [];
+      store.set({
+        pendingSessionImages: {
+          ...pendingSessionImages,
+          [uploadSid]: [...existing, image],
+        },
+      });
+      // The thumbUrl is now owned by the store; don't revoke it here.
+    }
   };
-  reader.readAsDataURL(file);
+
+  const fd = new FormData();
+  fd.append("file", file, file.name);
+  fetch(`/sessions/${uploadSid}/attachments`, {
+    method: "POST",
+    body: fd,
+    signal: controller.signal,
+  })
+    .then(async (r) => {
+      if (!r.ok) {
+        const detail = await r.text().catch(() => r.statusText);
+        finish(null, detail || `HTTP ${r.status}`);
+        return;
+      }
+      const j = await r.json();
+      finish({ path: j.path, mime: j.mime, size: j.size });
+    })
+    .catch((e) => {
+      if ((e as DOMException).name === "AbortError") {
+        // Upload was cancelled by a session switch. Silently discard;
+        // the thumbUrl is revoked in cancelInFlightUploads.
+        const idx = inFlightUploads.indexOf(uploadEntry);
+        if (idx !== -1) inFlightUploads.splice(idx, 1);
+        return;
+      }
+      finish(null, String(e));
+    });
+}
+
+// Cancel all in-flight image uploads for sessions other than the newly
+// active one. Called from switchSession to prevent stale uploads from
+// completing and pushing results into the wrong session's pendingImages.
+function cancelInFlightUploads(keepSid: string) {
+  for (let i = inFlightUploads.length - 1; i >= 0; i--) {
+    const entry = inFlightUploads[i];
+    if (entry.sid !== keepSid) {
+      entry.controller.abort();
+      URL.revokeObjectURL(entry.thumbUrl);
+      inFlightUploads.splice(i, 1);
+    }
+  }
 }
 
 function renderImagePreviews() {
@@ -509,14 +669,15 @@ function renderImagePreviews() {
   container.style.display = "flex";
   container.innerHTML = pendingImages.map((img, i) =>
     `<div class="image-preview-item">
-      <img src="${img.dataUrl}" alt="${esc(img.name)}" />
+      <img src="${img.thumbUrl}" alt="${esc(img.name)}" />
       <button class="image-preview-remove" data-idx="${i}" title="Remove">×</button>
     </div>`
   ).join("");
   container.querySelectorAll(".image-preview-remove").forEach(btn => {
     (btn as HTMLElement).onclick = () => {
       const idx = parseInt((btn as HTMLElement).dataset.idx || "0");
-      pendingImages.splice(idx, 1);
+      const removed = pendingImages.splice(idx, 1)[0];
+      if (removed?.thumbUrl) URL.revokeObjectURL(removed.thumbUrl);
       renderImagePreviews();
     };
   });
@@ -726,6 +887,7 @@ function closeSkillViewer() {
 function closeAllFullpageOverlays() {
   closeSkillViewer();
   closeAutomationsModal();
+  closeAutomationDetail();
   closeSettingsModal();
 }
 
@@ -822,7 +984,7 @@ function stripFrontmatter(content: string): string {
 async function refreshConfig() {
   try {
     const cfg = await api.getConfig();
-    const modelDetails = (cfg.model as any).models || (cfg.model.available || []).map((m: string) => ({ name: m, supports_image: false }));
+    const modelDetails = (cfg.model as any).models || (cfg.model.available || []).map((m: string) => ({ name: m, supports_image: true }));
     store.set({ config: { ...store.get().config, model: cfg.model.current, models: cfg.model.available, modelDetails, approval: cfg.approval.current } });
     const sel = $("modelSelect") as HTMLSelectElement;
     sel.innerHTML = cfg.model.available.map((m: string) => `<option value="${esc(m)}" ${m === cfg.model.current ? "selected" : ""}>${esc(m)}</option>`).join("");
@@ -919,7 +1081,15 @@ function projectDisplayName(workspace: string): string {
   return workspace.split("/").filter(Boolean).pop() || workspace;
 }
 
+let _renderSessionsTimer: ReturnType<typeof setTimeout> | null = null;
 function renderSessions() {
+  if (_renderSessionsTimer) clearTimeout(_renderSessionsTimer);
+  _renderSessionsTimer = setTimeout(() => {
+    _renderSessionsTimer = null;
+    _doRenderSessions();
+  }, 30);
+}
+function _doRenderSessions() {
   const list = $("sessionList");
   const selectMode = list.dataset.selectMode === "true";
   // Preserve checked states before rebuild
@@ -1016,7 +1186,7 @@ function renderSessions() {
         div.className = "session-item" + (s.id === activeSid ? " active" : "");
         const timeStr = formatRelativeTime(s.time?.updated || s.time?.created);
         div.innerHTML = `
-          ${selectMode ? `<input type="checkbox" class="session-checkbox" data-sid="${s.id}" />` : ""}
+          ${selectMode ? `<input type="checkbox" class="session-checkbox" data-sid="${s.id}" checked />` : ""}
           <span class="session-chevron">›</span>
           <span class="session-name">${esc(s.preview || s.id)}</span>
           <span class="session-time">${timeStr}</span>
@@ -1097,11 +1267,7 @@ function renderSessions() {
 }
 
 async function createSession() {
-  const id = await api.createSession();
-  const currentModel = store.get().config.model;
-  if (currentModel) {
-    try { await api.updateSession(id, { model_name: currentModel }); } catch { /* ignore */ }
-  }
+  const id = crypto.randomUUID();
   // New sessions always belong to the active workspace, so tag them here
   // so they show up in the right project group without waiting for the
   // next /sessions refresh.
@@ -1111,6 +1277,57 @@ async function createSession() {
   store.set({ sessions });
   renderSessions();
   await switchSession(id);
+}
+
+// ---- Per-session prompt draft ----
+// The textarea + attached images are bound to the active session so
+// typing in A and switching to B doesn't leak A's text into B. We
+// stash the current prompt into promptDrafts[oldSid] on switch and
+// hydrate from promptDrafts[newSid] when the new session takes over.
+// Background sessions don't get a textarea, so this only matters for
+// the active sid; for any other sid the draft is just dormant state
+// that gets re-saved verbatim the next time the user visits it.
+function savePromptDraft(sid: string | null) {
+  if (!sid) return;
+  const promptEl = $("prompt") as HTMLTextAreaElement;
+  const draft = {
+    text: promptEl.value,
+    images: [...pendingImages],
+  };
+  // Skip the write if the draft is empty AND we don't already have a
+  // stored entry — keeps the map from filling up with {} for every
+  // session the user clicks once and types nothing in.
+  if (!draft.text && draft.images.length === 0 && !store.get().promptDrafts[sid]) {
+    return;
+  }
+  store.set({
+    promptDrafts: { ...store.get().promptDrafts, [sid]: draft },
+  });
+}
+
+function loadPromptDraft(sid: string | null) {
+  const promptEl = $("prompt") as HTMLTextAreaElement;
+  const draft = sid ? store.get().promptDrafts[sid] : null;
+  promptEl.value = draft?.text || "";
+  // The drafts[*].images array keeps references to the *new* session's
+  // thumbs (when restoring), so they stay live automatically. Any
+  // thumbs currently in `pendingImages` that are *not* in any draft
+  // stash are now orphans and can be released.
+  disposePendingImageThumbs(pendingImages);
+  pendingImages = draft ? [...draft.images] : [];
+  renderImagePreviews();
+  // Mirror the side effects that the input handler normally drives:
+  // char count, autosize, slash menu. Doing them here so a freshly
+  // restored draft looks identical to one the user just typed.
+  const chars = promptEl.value.length;
+  $("charCount").textContent = chars > 0 ? `${chars}` : "";
+  promptEl.style.height = "auto";
+  promptEl.style.height = Math.min(promptEl.scrollHeight, 160) + "px";
+  if (promptEl.value.startsWith("/")) {
+    showSlashMenu(promptEl.value);
+  } else {
+    hideSlashMenu();
+  }
 }
 
 async function switchSession(sid: string, opts: { skipGitRefresh?: boolean } = {}) {
@@ -1126,14 +1343,18 @@ async function switchSession(sid: string, opts: { skipGitRefresh?: boolean } = {
     if (sel && sel.value) {
       try { await api.updateSession(oldSid, { model_name: sel.value }); } catch { /* ignore */ }
     }
+    // Stash the current prompt (text + attached images) under the
+    // session we're leaving so switching back restores it verbatim.
+    savePromptDraft(oldSid);
   }
   store.set({ activeSid: sid, questionPending: false });
+  // Cancel any in-flight image uploads that belong to the old session
+  // so they don't complete after activeSid has already changed and push
+  // their results into the wrong session's pendingImages.
+  cancelInFlightUploads(sid);
   renderSessions();
   $("messages").innerHTML = "";
-  currentAssistantEl = null;
-  currentTextParts = { thinking: "", main: "" };
-  pendingTools.forEach(c => c.remove());
-  pendingTools.clear();
+  resetStreamingState();
   renderPendingBar();
   await loadHistory(sid);
   // Skip when the caller already refreshed the branch for the new
@@ -1194,6 +1415,11 @@ async function switchSession(sid: string, opts: { skipGitRefresh?: boolean } = {
     console.error("Failed to fetch running turn events:", e);
   }
 
+  // Hydrate the prompt textarea + attached images for the session
+  // we're switching TO. Done last so all render/turn-detection above
+  // has already settled, and the input bar reflects the new sid
+  // when the user starts typing.
+  loadPromptDraft(sid);
   updateSendStopButton();
   refreshPlan();
   if ($("rightPanel").classList.contains("show")) refreshDiff();
@@ -1201,7 +1427,7 @@ async function switchSession(sid: string, opts: { skipGitRefresh?: boolean } = {
   // Show/hide compact toast based on session state
   const { compactingSessions } = store.get();
   if (compactingSessions[sid]) {
-    setCompactToastState("loading", "Compacting...");
+    setCompactToastState("loading", "Compacting context...", sid);
   } else {
     hideCompactToast();
   }
@@ -1221,6 +1447,14 @@ async function deleteSession(sid: string, workspace?: string) {
     $("messages").innerHTML = "";
     showEmptyState(true);
   }
+  // Drop the deleted session's draft + queued images so we don't keep
+  // dead keys around. Other sessions' drafts are untouched.
+  const { promptDrafts, pendingSessionImages } = store.get();
+  const nextDrafts = { ...promptDrafts };
+  delete nextDrafts[sid];
+  const nextImages = { ...pendingSessionImages };
+  delete nextImages[sid];
+  store.set({ promptDrafts: nextDrafts, pendingSessionImages: nextImages });
   renderSessions();
 }
 
@@ -1229,10 +1463,21 @@ async function loadHistory(sid: string) {
   // can count how many pre-compact messages were dropped. The filtered view
   // (post-/compact) returns only the summary message, which is what we want
   // to render at the top of the chat.
-  const [filteredData, fullData] = await Promise.all([
-    api.getMessages(sid),
-    api.getMessages(sid, { includeDropped: true }),
-  ]);
+  let filteredData: any, fullData: any;
+  try {
+    [filteredData, fullData] = await Promise.all([
+      api.getMessages(sid),
+      api.getMessages(sid, { includeDropped: true }),
+    ]);
+  } catch {
+    // Session not yet persisted (lazy creation) — treat as empty.
+    showEmptyState(true);
+    $("messages").innerHTML = "";
+    currentAssistantEl = null;
+    currentTextParts = { thinking: "", main: "" };
+    updateContextProgress(0, 0);
+    return;
+  }
   const msgs = filteredData.messages || [];
   const fullMsgs = fullData.messages || [];
   const hasContent = msgs.length > 0;
@@ -1455,12 +1700,32 @@ function appendCompactBoundary(
   $("messages").appendChild(wrapper);
 }
 
+// Turn an `image_url.url` value into something the browser can load.
+//
+// We store attachment paths in the persisted message history (cheaper
+// than base64), but the browser can't directly render an absolute
+// filesystem path — so when the chat renderer encounters one, it
+// proxies it through the server's /attachments endpoint. Optimistic
+// renders use blob: URLs (live File objects in the renderer process),
+// data: URLs come back from providers / older history entries, and
+// http(s) URLs pass through unchanged.
+function attachmentUrl(url: string): string {
+  if (!url) return url;
+  if (url.startsWith("data:") || url.startsWith("blob:") || url.startsWith("http://") || url.startsWith("https://") || url.startsWith("/attachments")) {
+    return url;
+  }
+  if (url.startsWith("/")) {
+    return `/attachments?path=${encodeURIComponent(url)}`;
+  }
+  return url;
+}
+
 // ---- Chat Rendering ----
 // `target` defaults to `#messages` for the live streaming path. The
 // compact-history expand affordance passes a different container so the
 // folded messages reuse the same DOM (and styling) as the live chat,
 // just visually scaled down via a wrapper class.
-function appendUserMsg(text: string | unknown[], target: HTMLElement = $("messages")) {
+function appendUserMsg(text: string | unknown[], target: HTMLElement = $("messages")): HTMLElement {
   showEmptyState(false);
   const div = document.createElement("div");
   div.className = "msg user";
@@ -1471,7 +1736,8 @@ function appendUserMsg(text: string | unknown[], target: HTMLElement = $("messag
         const p = part as Record<string, any>;
         if (p.type === "text" && p.text) body += renderMarkdown(p.text);
         else if (p.type === "image_url" && p.image_url?.url) {
-          body += `<div class="user-image"><img src="${esc(p.image_url.url)}" alt="attached image" loading="lazy" /></div>`;
+          const src = attachmentUrl(p.image_url.url);
+          body += `<div class="user-image"><img src="${esc(src)}" alt="attached image" loading="lazy" /></div>`;
         }
       }
     }
@@ -1482,6 +1748,12 @@ function appendUserMsg(text: string | unknown[], target: HTMLElement = $("messag
   target.appendChild(div);
   currentAssistantEl = null;
   highlightCode(div);
+  // Return the element so the caller can remove it on failure
+  // (the optimistic render is reverted when the server rejects the
+  // create_turn — the queue bar is then the single source of truth
+  // for "still pending", instead of chat+queue showing the same
+  // message in two places).
+  return div;
 }
 
 function appendAssistantMsg(text: string, target: HTMLElement = $("messages")) {
@@ -1498,6 +1770,27 @@ function appendAssistantMsg(text: string, target: HTMLElement = $("messages")) {
   addCopyButtons(div);
   highlightCode(div);
   currentAssistantEl = null;
+}
+
+/**
+ * Wipe everything that's mid-flight for the *current* turn: the
+ * streaming assistant block (its _main buffer + DOM), any in-flight
+ * tool cards, and the typing indicator. Used when the user switches
+ * sessions (abandon current turn) and when the server emits
+ * `stream_reset` before a same-input retry (server-side failure that
+ * never reached `model_response`, so disk / history have no record
+ * of it — we just need the UI to forget the partial text the deltas
+ * already painted).
+ */
+function resetStreamingState() {
+  if (currentAssistantEl) {
+    currentAssistantEl.remove();
+  }
+  currentAssistantEl = null;
+  currentTextParts = { thinking: "", main: "" };
+  pendingTools.forEach(c => c.remove());
+  pendingTools.clear();
+  removeTyping();
 }
 
 function getOrCreateAssistantEl(): HTMLElement {
@@ -1996,7 +2289,7 @@ function routeSSEEvent(ev: api.Event) {
 
 function syncBackgroundSession(sid: string, ev: api.Event) {
   const t = ev.type as string;
-  const { sessions, runningSessions } = store.get();
+  const { sessions, runningSessions, compactingSessions } = store.get();
   const s = sessions.find(x => x.id === sid);
   if (!s) return;
 
@@ -2011,23 +2304,26 @@ function syncBackgroundSession(sid: string, ev: api.Event) {
     // the preview so the sidebar shows the actual question, not the
     // session id stub.
     refreshSessionPreview(sid);
+  } else if (t === "status" && (ev as any).content === "compact") {
+    // Background session's runtime hook entered auto-compact. Keep
+    // compactingSessions in sync so when the user switches to this
+    // session later, loadHistory shows the right toast (and not a
+    // stale one from a prior compact that's already finished).
+    store.set({ compactingSessions: { ...compactingSessions, [sid]: true } });
+  } else if (t === "context_compacted") {
+    // Background session's auto-compact finished. Clear the flag so
+    // re-opening the session after the compact completes doesn't show
+    // a ghost "Compacting context..." toast.
+    if (compactingSessions[sid]) {
+      const next = { ...compactingSessions };
+      delete next[sid];
+      store.set({ compactingSessions: next });
+    }
   } else if (t === "turn_end" || t === "turn_cancelled" || t === "turn_failed") {
     s.status = t === "turn_failed" ? "failed" : (t === "turn_cancelled" ? "idle" : "done");
     const next = { ...runningSessions };
     delete next[sid];
-    // If the user queued a message in this background session, the
-    // active-session turn_end flush path can't reach it (we're not on
-    // its sid). Drop the queue chip here so the user doesn't see
-    // "排队中" persisting forever on a session they may have switched
-    // away from. The text is gone — they can re-type if they still
-    // need it after switching back.
-    const { pendingMessages } = store.get();
-    let nextPending = pendingMessages;
-    if (pendingMessages[sid] != null) {
-      nextPending = { ...pendingMessages };
-      delete nextPending[sid];
-    }
-    store.set({ sessions: [...sessions], runningSessions: next, pendingMessages: nextPending });
+    store.set({ sessions: [...sessions], runningSessions: next });
     renderSessions();
   }
 }
@@ -2144,27 +2440,44 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
       const pct = Math.min(usage.prompt_tokens / contextWindow, 1);
       updateContextProgress(pct, usage.prompt_tokens);
     }
+  } else if (t === "stream_reset") {
+    // Server: provider returned a retryable error (e.g. 1027 output
+    // sensitive) mid-stream. The next attempt will replay the same
+    // input from scratch. Wipe the partial text the deltas already
+    // painted so the new attempt's deltas land in a fresh block.
+    // Disk / history are untouched on the server side, so a page
+    // refresh mid-retry would still show the right state.
+    resetStreamingState();
   } else if (t === "delta") {
     removeTyping();
     showEmptyState(false);
     const el = getOrCreateAssistantEl();
     const content = (ev.content as string) || "";
     (el as any)._main += content;
-    const { thinking, main } = extractThinking((el as any)._main);
-    let html = "";
-    if (thinking) {
-      html += `<details class="thinking-card"><summary>Thinking</summary><div class="thinking-card-content">${esc(thinking)}</div></details>`;
+    // Throttle expensive DOM operations during streaming
+    if (!(el as any)._renderTimer) {
+      (el as any)._renderTimer = setTimeout(() => {
+        (el as any)._renderTimer = null;
+        const { thinking, main } = extractThinking((el as any)._main);
+        let html = "";
+        if (thinking) {
+          html += `<details class="thinking-card"><summary>Thinking</summary><div class="thinking-card-content">${esc(thinking)}</div></details>`;
+        }
+        html += renderMarkdown(main);
+        el.innerHTML = html;
+        if (updateScroll) scrollBottom();
+      }, 80);
     }
-    html += renderMarkdown(main);
-    el.innerHTML = html;
-    addCopyButtons(el.parentElement!);
-    highlightCode(el.parentElement!);
-    if (updateScroll) scrollBottom();
   } else if (t === "model_response") {
     // Final full response; ensure _main matches exactly to avoid drift from deltas
     removeTyping();
     showEmptyState(false);
     const el = getOrCreateAssistantEl();
+    // Cancel any pending throttle timer so it doesn't overwrite the final render
+    if ((el as any)._renderTimer) {
+      clearTimeout((el as any)._renderTimer);
+      (el as any)._renderTimer = null;
+    }
     const content = (ev.content as string) || "";
     (el as any)._main = content;
     const { thinking, main } = extractThinking((el as any)._main);
@@ -2290,27 +2603,38 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
       // turn has closed. Look up by the active sid (the SSE stream is
       // per-session, so we never flush another session's queue here).
       const pending = getActivePending();
+      const { pendingMessages } = store.get();
+      const pendingRetries = activeSid ? (pendingMessages[activeSid]?.retries ?? 0) : 0;
       const queuedImages = activeSid ? (pendingSessionImages[activeSid] || []) : [];
       if (pending != null || queuedImages.length > 0) {
-        const promptEl = $("prompt") as HTMLTextAreaElement;
-        promptEl.value = pending || "";
-        promptEl.style.height = "auto";
-        promptEl.style.height = Math.min(promptEl.scrollHeight, 160) + "px";
-        $("charCount").textContent = String(promptEl.value.length);
-        // Restore queued images into the input
-        if (queuedImages.length > 0) {
-          pendingImages = [...queuedImages];
-          renderImagePreviews();
-        }
-        // Clear session-level queue
-        setActivePending(null);
-        if (activeSid && pendingSessionImages[activeSid]) {
-          const next = { ...pendingSessionImages };
-          delete next[activeSid];
-          store.set({ pendingSessionImages: next });
-        }
-        renderPendingBar();
-        setTimeout(() => { sendMessage(); }, 30);
+        // Defer the actual send + queue clear by 30ms so the user has
+        // a moment to see the queue bar disappear. We can't just
+        // synchronously flip the queue empty and call sendMessage —
+        // the catch block in sendMessage restores `text` into the
+        // prompt textarea on any createTurn failure, which would
+        // duplicate the optimistic appendUserMsg and leave the
+        // queued text in the input box. sendFromQueue takes the
+        // content as parameters (no prompt mutation) and re-queues
+        // on failure instead of restoring to the prompt.
+        //
+        // Race: if the user switches sessions inside the 30ms
+        // window, we leave the queue intact so they can come back
+        // and retry. Otherwise sendFromQueue would deliver the
+        // content to whatever session is activeSid by then.
+        const flushSid = activeSid!;
+        const flushRetries = pendingRetries;
+        setTimeout(() => {
+          if (store.get().activeSid !== flushSid) return;
+          setActivePending(null);
+          if (queuedImages.length > 0) {
+            const { pendingSessionImages: psi } = store.get();
+            const next = { ...psi };
+            delete next[flushSid];
+            store.set({ pendingSessionImages: next });
+          }
+          renderPendingBar();
+          sendFromQueue(pending || "", queuedImages, flushRetries);
+        }, 30);
       }
     }
   } else if (t === "round_complete") {
@@ -2323,7 +2647,7 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     }
   } else if (t === "status" && (ev as any).content === "compact") {
     const activeSid = store.get().activeSid;
-    if (activeSid) setCompactToastState("loading", "Auto compacting...", activeSid);
+    if (activeSid) setCompactToastState("loading", "Compacting context...", activeSid);
   } else if (t === "context_compacted") {
     const activeSid = store.get().activeSid;
     if (activeSid) {
@@ -2349,6 +2673,42 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
       setActiveRunning(false);
       updateSendStopButton();
       appendError(ev.error as string || "Unknown error");
+    }
+  } else if (t === "turn_cancelled" || t === "turn_failed") {
+    // The syncBackgroundSession handler (line ~2092) already updates
+    // the sidebar status. For the active session we ALSO need to
+    // clear the "Thinking..." chip + reset running state, otherwise
+    // a cancelled turn leaves the UI stuck on the running state
+    // (no further events will ever come for it).
+    //
+    // Race watch: when the user clicks stop and the queue is
+    // non-empty, cancelTurn fires a fire-and-forget sendFromQueue
+    // that creates a NEW turn. The OLD turn's `turn_cancelled` and
+    // the NEW turn's `turn_start` race on the SSE stream. If
+    // `turn_cancelled` arrives AFTER `turn_start`, runningSessions
+    // is already true for the new turn — we must NOT clobber it.
+    // Use a monotonic counter: a turn_start bumps it, this event
+    // only acts if the current counter still matches the turn we
+    // think is being cancelled.
+    const { activeSid, runningSessions } = store.get();
+    const wasRunning = sid ? !!runningSessions[sid] : false;
+    if (sid) {
+      const next = { ...runningSessions };
+      delete next[sid];
+      store.set({ runningSessions: next });
+    }
+    if (!sid || sid === activeSid) {
+      if (wasRunning) {
+        removeTyping();
+        setActiveRunning(false);
+        updateSendStopButton();
+        if (t === "turn_failed") {
+          appendError("Turn failed");
+        }
+      }
+      // else: the user already replaced this turn via cancel→
+      // sendFromQueue. A fresh turn_start has bumped runningSessions
+      // back to true; don't tear that down.
     }
   }
 
@@ -2397,7 +2757,7 @@ function queuePromptMessage() {
   const text = promptEl.value;
   const trimmed = text.trim();
   if (!trimmed && pendingImages.length === 0) return;
-  setActivePending(text || "");
+  setActivePending(text || "", 0);
   // Stash images per-session so they survive session switches
   const { activeSid, pendingSessionImages } = store.get();
   if (activeSid && pendingImages.length > 0) {
@@ -2416,6 +2776,11 @@ function clearPendingMessage() {
   // Clear queued images too
   const { activeSid, pendingSessionImages } = store.get();
   if (activeSid && pendingSessionImages[activeSid]) {
+    // The stash we're about to drop may be the *only* live holder
+    // of these thumb URLs (loadPromptDraft restores by reference
+    // only for the same session, and other sessions don't share
+    // thumbs), so it's safe to release them now.
+    disposePendingImageThumbs(pendingSessionImages[activeSid]);
     const next = { ...pendingSessionImages };
     delete next[activeSid];
     store.set({ pendingSessionImages: next });
@@ -2469,7 +2834,7 @@ function renderPendingBar() {
       bar.insertBefore(thumbContainer, text);
     }
     thumbContainer.innerHTML = images.map(img =>
-      `<img src="${esc(img.dataUrl)}" alt="${esc(img.name)}" class="pending-bar-thumb" />`
+      `<img src="${esc(img.thumbUrl)}" alt="${esc(img.name)}" class="pending-bar-thumb" />`
     ).join("");
   } else if (thumbContainer) {
     thumbContainer.remove();
@@ -2490,11 +2855,53 @@ async function cancelTurn() {
     card.classList.add("question-card-cancelled");
   });
   store.set({ questionPending: false });
-  if (getActivePending() != null) clearPendingMessage();
+  // Don't drop the queued message here — the `turn_cancelled` event
+  // (or the manual flush below if the event is missed) will pull the
+  // queue back into the prompt and re-send it. Cancelling should
+  // advance the queue, not erase it.
   try { await api.cancelTurn(activeSid); } catch { /* ignore */ }
   setActiveRunning(false);
   removeTyping();
   updateSendStopButton();
+  // Fire-and-forget queue flush. We don't wait for `turn_cancelled`
+  // because if the SSE event is missed (network blip, page refresh
+  // mid-cancel), the queue would otherwise sit forever. Mirrors the
+  // auto-flush logic in the `turn_end` handler — same refactor: pass
+  // content to sendFromQueue (no prompt mutation, re-queue on
+  // failure) instead of writing into promptEl.value and then reading
+  // it back inside sendMessage. That used to leave the queued text
+  // stuck in the textarea on any createTurn failure.
+  //
+  // The 200ms delay is longer than turn_end's 30ms because cancel
+  // leaves the server mid-cleanup (the OLD runner is still in its
+  // `except asyncio.CancelledError` block awaiting `_emit` before
+  // its finally clears session state). If we send createTurn before
+  // the OLD runner's finally runs, the new task can race with the
+  // old finally's `s.turn_task = None` and the new turn ends up
+  // untracked — next cancel becomes a no-op. 200ms is a pragmatic
+  // middle ground; the user already sees "send" button immediately,
+  // the queue is just a chip they aren't actively interacting with.
+  const { pendingMessages, pendingSessionImages } = store.get();
+  const pendingEntry = pendingMessages[activeSid];
+  const pendingText = pendingEntry?.text;
+  const pendingRetries = pendingEntry?.retries ?? 0;
+  const queuedImages = pendingSessionImages[activeSid] || [];
+  if (pendingText != null || queuedImages.length > 0) {
+    const flushSid = activeSid;
+    const flushRetries = pendingRetries;
+    setTimeout(() => {
+      if (store.get().activeSid !== flushSid) return;
+      setActivePending(null);
+      if (queuedImages.length > 0) {
+        const { pendingSessionImages: psi } = store.get();
+        const nextImages = { ...psi };
+        delete nextImages[flushSid];
+        store.set({ pendingSessionImages: nextImages });
+      }
+      renderPendingBar();
+      sendFromQueue(pendingText || "", queuedImages, flushRetries);
+    }, 200);
+  }
 }
 
 // ---- Send ----
@@ -2510,6 +2917,13 @@ async function sendMessage() {
   promptEl.value = "";
   promptEl.style.height = "auto";
   $("charCount").textContent = "";
+
+  // Hold a reference to the optimistic user message so we can remove
+  // it on failure. Same pattern as sendFromQueue: a failed send
+  // shouldn't leave the message in chat AND in the input box — the
+  // chat copy is reverted and only the input-box copy (which the
+  // user can edit and resend) remains.
+  let optimisticEl: HTMLElement | null = null;
 
   try {
     if (!store.get().activeSid) await createSession();
@@ -2569,39 +2983,158 @@ async function sendMessage() {
       return;
     }
 
-    const { config } = store.get();
-    const details = config.modelDetails || [];
-    const currentModel = details.find((m: any) => m.name === config.model);
-    const supportsImage = currentModel?.supports_image ?? false;
-
-    if (pendingImages.length > 0 && supportsImage) {
-      const parts: unknown[] = [];
-      if (text) parts.push({ type: "text", text });
-      for (const img of pendingImages) {
-        parts.push({ type: "image_url", image_url: { url: img.dataUrl } });
-      }
-      appendUserMsg(parts);
-      pendingImages = [];
-      renderImagePreviews();
-      appendTyping();
-      scrollBottom();
-      await api.createTurn(sid, parts);
-    } else {
-      appendUserMsg(text);
-      pendingImages = [];
-      renderImagePreviews();
-      appendTyping();
-      scrollBottom();
-      await api.createTurn(sid, text);
+    const parts: unknown[] = [];
+    if (text) parts.push({ type: "text", text });
+    // Embed attachment *paths* (not base64) — the runtime expands
+    // them to data URLs only in the per-turn copy sent to the
+    // provider, so the persisted history stays cheap. No more
+    // client-side canvas compression, no more silent-drop for
+    // non-vision models (the model can decide whether to call
+    // read_file on the path; if it can't, it just tells the user).
+    for (const img of pendingImages) {
+      parts.push({ type: "image_url", image_url: { url: img.path } });
     }
+    optimisticEl = appendUserMsg(parts);
+    disposePendingImageThumbs(pendingImages);
+    pendingImages = [];
+    renderImagePreviews();
+    appendTyping();
+    scrollBottom();
+    await api.createTurn(sid, parts);
   } catch (e: any) {
     if (!isCommand) {
       setActiveRunning(false);
       updateSendStopButton();
+      // Revert the optimistic chat message so the user doesn't see
+      // the same content in chat + input (which they would interpret
+      // as "did it go out or not?"). After removal the input box
+      // copy is the only visible version — they can edit and resend.
+      if (optimisticEl && optimisticEl.parentNode) {
+        optimisticEl.remove();
+        optimisticEl = null;
+      }
       // Restore the text so the user doesn't lose their prompt if network fails
       if (!promptEl.value) promptEl.value = text;
     }
     console.error("Failed to process message:", e);
+  }
+}
+
+// Send a payload that came from the queue bar (turn_end / cancel
+// flush), bypassing the prompt textarea entirely. The previous
+// implementation wrote `pending` into promptEl.value and then
+// called sendMessage, but sendMessage's catch block restores the
+// captured `text` to the prompt on any createTurn failure — and
+// appendUserMsg had ALREADY optimistically rendered the user
+// message in chat before the await, so the failure path produced
+// "message in chat + text in input" duplicates.
+//
+// sendFromQueue takes the content as parameters and re-queues it
+// (not the prompt) on failure, so the next turn_end retries the
+// same payload. The user's typed draft in promptEl.value is
+// untouched throughout — queued messages and live typing don't
+// fight for the same textarea slot.
+const MAX_QUEUE_RETRIES = 3;
+
+async function sendFromQueue(
+  text: string,
+  images: PendingAttachment[],
+  initialRetries: number = 0,
+) {
+  if (!text && images.length === 0) return;
+  const { activeSid } = store.get();
+  if (!activeSid) return;
+  const sid = activeSid;
+
+  setActiveRunning(true);
+  updateSendStopButton();
+
+  // Hold a reference to the optimistic user message so we can
+  // remove it on failure. The queue bar is then the *single*
+  // source of truth for "this message hasn't gone out yet" —
+  // showing the same content in chat + queue is the kind of
+  // duplication that makes users wonder whether the send
+  // actually succeeded.
+  let optimisticEl: HTMLElement | null = null;
+
+  try {
+    // Embed attachment *paths* — same wire format as the live
+    // send path. The runtime expands them to data URLs only in the
+    // per-turn copy sent to the provider.
+    const parts: unknown[] = [];
+    if (text) parts.push({ type: "text", text });
+    for (const img of images) {
+      parts.push({ type: "image_url", image_url: { url: img.path } });
+    }
+    optimisticEl = appendUserMsg(parts);
+    appendTyping();
+    scrollBottom();
+    await api.createTurn(sid, parts);
+    // The queue's images have been embedded in the request — release
+    // their preview blobs. (The queue bar also re-pushes the images
+    // back into store.pendingSessionImages via the catch path; on
+    // success we don't, so the thumb URLs would otherwise stay live
+    // until the page reloads.)
+    disposePendingImageThumbs(images);
+  } catch (e: any) {
+    setActiveRunning(false);
+    updateSendStopButton();
+    // CRITICAL: clear the typing indicator that appendTyping() added
+    // before the await. Without this the "Thinking..." chip stays
+    // forever after a failed createTurn, making the UI look like
+    // the model is hanging even though no turn is actually running.
+    removeTyping();
+    // Revert the optimistic chat message. The queue bar (re-added
+    // below) is the user-visible "still pending" indicator, so we
+    // don't need the chat copy anymore.
+    if (optimisticEl && optimisticEl.parentNode) {
+      optimisticEl.remove();
+      optimisticEl = null;
+    }
+
+    // Count how many times this queued message has failed.
+    // Use the retry count passed in from the flush path (if this is
+    // a re-send triggered by turn_end) or the stored count.
+    const { pendingMessages } = store.get();
+    const currentRetries = Math.max(initialRetries, pendingMessages[sid]?.retries ?? 0);
+    const newRetries = currentRetries + 1;
+
+    if (newRetries >= MAX_QUEUE_RETRIES) {
+      // Permanently give up on this message. Show a final error and
+      // clear the queue so the user can start fresh.
+      setActivePending(null);
+      if (images.length > 0) {
+        const { pendingSessionImages } = store.get();
+        const nextImages = { ...pendingSessionImages };
+        delete nextImages[sid];
+        store.set({ pendingSessionImages: nextImages });
+      }
+      disposePendingImageThumbs(images);
+      renderPendingBar();
+      appendError(
+        `Queued message permanently failed after ${MAX_QUEUE_RETRIES} attempts: ${e?.message || e}. ` +
+        `Please re-type and send again.`
+      );
+      console.error(`Queued message exceeded max retries (${MAX_QUEUE_RETRIES}):`, e);
+      return;
+    }
+
+    // Re-queue so the next turn_end (or manual retry) picks it up
+    // again with the incremented retry counter. We deliberately do
+    // NOT touch promptEl.value here — that was the bug.
+    setActivePending(text, newRetries);
+    if (images.length > 0) {
+      const { pendingSessionImages } = store.get();
+      store.set({
+        pendingSessionImages: { ...pendingSessionImages, [sid]: [...images] },
+      });
+    }
+    renderPendingBar();
+    // Surface the failure inline so the user knows the message
+    // didn't go out (queue bar reappearing is too subtle — they
+    // might miss it if the chat has scrolled).
+    appendError(`Queued message failed to send (attempt ${newRetries}/${MAX_QUEUE_RETRIES}): ${e?.message || e}`);
+    console.error("Failed to send queued message:", e);
   }
 }
 
@@ -2896,8 +3429,153 @@ function closeAutomationsModal() {
   document.getElementById("automationsModalBackdrop")?.remove();
 }
 
+function closeAutomationDetail() {
+  document.getElementById("automationDetailBackdrop")?.remove();
+}
+
 function closeSettingsModal() {
   document.getElementById("settingsModalBackdrop")?.remove();
+}
+
+// ---- Automation detail (fullpage) ----
+// The automations modal shows a one-line prompt preview + a few lines
+// of last-result preview per card. Clicking a card opens this fullpage
+// view with the full prompt, the full last output, schedule / run
+// metadata, and actions (run now, pause/resume, delete). It refetches
+// the automation on open and after each action so the displayed data
+// stays in sync with the server.
+async function openAutomationDetail(a: api.Automation) {
+  closeAutomationDetail();
+  const backdrop = document.createElement("div");
+  backdrop.className = "fullpage-overlay";
+  backdrop.id = "automationDetailBackdrop";
+  backdrop.innerHTML = `
+    <div class="fullpage-shell">
+      <div class="fullpage-topbar">
+        <button class="fullpage-back-btn" id="automationDetailBackBtn" title="Back">← Back</button>
+        <div class="fullpage-title" id="automationDetailTitle">${esc(a.name)}</div>
+        <div class="fullpage-topbar-spacer"></div>
+      </div>
+      <div class="fullpage-body" id="automationDetailBody">
+        ${renderAutomationDetailBody(a)}
+      </div>
+    </div>`;
+  document.body.appendChild(backdrop);
+  wireAutomationDetailActions(a);
+}
+
+function renderAutomationDetailBody(a: api.Automation): string {
+  const intervalLabel = formatInterval(a.interval_seconds);
+  const scheduleLabel = a.schedule_time ? ` at ${esc(a.schedule_time)}` : "";
+  const lastRunLabel = a.last_run ? formatRelativeTime(Math.floor(a.last_run)) || "just now" : "never";
+  const promptText = a.prompt || "(no prompt)";
+  const cleanedResult = stripThinking(a.last_result || "");
+  const errorText = a.last_error || "";
+  const createdLabel = a.created_at ? new Date(a.created_at * 1000).toLocaleString() : "";
+  const updatedLabel = a.updated_at ? new Date(a.updated_at * 1000).toLocaleString() : "";
+  return `
+    <div class="automation-detail">
+      <div class="automation-detail-header">
+        <div class="automation-detail-status ${a.enabled ? "on" : "off"}">${a.enabled ? "● running" : "○ stopped"}</div>
+        <div class="automation-detail-actions">
+          <button class="automation-detail-btn" id="automationRunNowBtn">▶ Run now</button>
+          <button class="automation-detail-btn" id="automationToggleBtn">${a.enabled ? "⏸ Pause" : "▶ Resume"}</button>
+          <button class="automation-detail-btn danger" id="automationDeleteBtn">🗑 Delete</button>
+        </div>
+      </div>
+      <div class="automation-detail-meta">
+        <div class="automation-detail-meta-item"><span class="automation-detail-meta-label">Interval</span><span class="automation-detail-meta-value">⏰ ${esc(intervalLabel)}${scheduleLabel}</span></div>
+        <div class="automation-detail-meta-item"><span class="automation-detail-meta-label">Last run</span><span class="automation-detail-meta-value">${esc(lastRunLabel)}</span></div>
+        <div class="automation-detail-meta-item"><span class="automation-detail-meta-label">Run count</span><span class="automation-detail-meta-value">${a.run_count ?? 0}</span></div>
+        ${createdLabel ? `<div class="automation-detail-meta-item"><span class="automation-detail-meta-label">Created</span><span class="automation-detail-meta-value">${esc(createdLabel)}</span></div>` : ""}
+        ${updatedLabel ? `<div class="automation-detail-meta-item"><span class="automation-detail-meta-label">Updated</span><span class="automation-detail-meta-value">${esc(updatedLabel)}</span></div>` : ""}
+      </div>
+      <div class="automation-detail-section">
+        <div class="automation-detail-section-header">📝 Prompt</div>
+        <pre class="automation-detail-block">${esc(promptText)}</pre>
+      </div>
+      <div class="automation-detail-section">
+        <div class="automation-detail-section-header">📤 Last output</div>
+        ${cleanedResult
+          ? `<pre class="automation-detail-block">${esc(cleanedResult)}</pre>`
+          : `<div class="automation-detail-block muted">No runs yet</div>`}
+      </div>
+      ${errorText ? `
+      <div class="automation-detail-section">
+        <div class="automation-detail-section-header">⚠️ Last error</div>
+        <pre class="automation-detail-block error">${esc(errorText)}</pre>
+      </div>` : ""}
+    </div>`;
+}
+
+function wireAutomationDetailActions(initial: api.Automation) {
+  let current: api.Automation = initial;
+
+  const rerender = () => {
+    const body = document.getElementById("automationDetailBody");
+    if (body) body.innerHTML = renderAutomationDetailBody(current);
+    wire(); // re-wire buttons against the new DOM
+  };
+
+  const refetch = async (): Promise<api.Automation | null> => {
+    try {
+      const list = await api.listAutomations();
+      const fresh = list.find((x) => x.id === current.id) || null;
+      if (fresh) current = fresh;
+      return fresh;
+    } catch { return null; }
+  };
+
+  const wire = () => {
+    const back = document.getElementById("automationDetailBackBtn") as HTMLElement | null;
+    if (back) back.onclick = () => {
+      closeAutomationDetail();
+      // Refresh the list behind us so any state change shows up.
+      void loadAutomationsIntoModal();
+    };
+    const run = document.getElementById("automationRunNowBtn") as HTMLButtonElement | null;
+    if (run) run.onclick = async (e) => {
+      const btn = e.currentTarget as HTMLButtonElement;
+      btn.disabled = true;
+      btn.textContent = "▶ Running…";
+      try {
+        await api.runAutomationNow(current.id);
+        await refetch();
+        rerender();
+      } catch (err) {
+        alert(`Run failed: ${(err as Error).message}`);
+        btn.disabled = false;
+        btn.textContent = "▶ Run now";
+      }
+    };
+    const toggle = document.getElementById("automationToggleBtn") as HTMLButtonElement | null;
+    if (toggle) toggle.onclick = async (e) => {
+      const btn = e.currentTarget as HTMLButtonElement;
+      btn.disabled = true;
+      try {
+        const nextEnabled = !current.enabled;
+        await api.updateAutomation(current.id, { enabled: nextEnabled });
+        await refetch();
+        rerender();
+      } catch (err) {
+        alert(`Toggle failed: ${(err as Error).message}`);
+        btn.disabled = false;
+      }
+    };
+    const del = document.getElementById("automationDeleteBtn") as HTMLButtonElement | null;
+    if (del) del.onclick = async () => {
+      if (!confirm(`Delete "${current.name}"?`)) return;
+      try {
+        await api.deleteAutomation(current.id);
+        closeAutomationDetail();
+        void loadAutomationsIntoModal();
+      } catch (err) {
+        alert(`Delete failed: ${(err as Error).message}`);
+      }
+    };
+  };
+
+  wire();
 }
 
 async function loadAutomationsIntoModal() {
@@ -2949,7 +3627,8 @@ async function loadAutomationsIntoModal() {
 
   // Wire row-level delete buttons
   body.querySelectorAll<HTMLElement>(".automation-row-delete").forEach((btn) => {
-    btn.onclick = async () => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
       const aid = btn.dataset.aid!;
       const name = btn.dataset.name || aid;
       if (!confirm(`Delete "${name}"?`)) return;
@@ -2958,6 +3637,24 @@ async function loadAutomationsIntoModal() {
         await loadAutomationsIntoModal();
       } catch (e) {
         alert(`Delete failed: ${(e as Error).message}`);
+      }
+    };
+  });
+
+  // Wire row click to open the detail page (the delete button stops
+  // propagation above so it doesn't trigger navigation).
+  const cardToAutomation = new Map<string, api.Automation>();
+  automations.forEach((a) => cardToAutomation.set(a.id, a));
+  body.querySelectorAll<HTMLElement>(".automation-row").forEach((row) => {
+    const aid = row.dataset.aid!;
+    const a = cardToAutomation.get(aid);
+    if (!a) return;
+    const open = () => void openAutomationDetail(a);
+    row.onclick = open;
+    row.onkeydown = (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        open();
       }
     };
   });
@@ -3015,11 +3712,12 @@ function renderAutomationRow(a: api.Automation): string {
   const intervalLabel = formatInterval(a.interval_seconds);
   const scheduleLabel = a.schedule_time ? ` at ${esc(a.schedule_time)}` : "";
   const lastRunLabel = a.last_run ? formatRelativeTime(Math.floor(a.last_run)) || "just now" : "never";
-  const lastResult = a.last_result
-    ? `<div class="automation-row-result" title="${esc(a.last_result)}">${esc(a.last_result.slice(0, 140))}${a.last_result.length > 140 ? "…" : ""}</div>`
-    : '<div class="automation-row-result muted">No runs yet</div>';
+  const promptText = (a.prompt || "").trim() || "(no prompt)";
+  const cleanedResult = stripThinking(a.last_result || "");
+  const resultText = cleanedResult || "No runs yet";
+  const hasResult = !!cleanedResult;
   return `
-    <div class="automation-row">
+    <div class="automation-row" data-aid="${esc(a.id)}" tabindex="0" role="button" aria-label="Open automation details">
       <div class="automation-row-main">
         <div class="automation-row-name">${esc(a.name)}</div>
         <div class="automation-row-meta">
@@ -3027,7 +3725,12 @@ function renderAutomationRow(a: api.Automation): string {
           <span class="automation-row-lastrun">Last run: ${esc(lastRunLabel)}</span>
           <span class="automation-row-status ${a.enabled ? "on" : "off"}">${a.enabled ? "● running" : "○ stopped"}</span>
         </div>
-        ${lastResult}
+        <div class="automation-row-preview automation-row-preview-prompt" title="${esc(promptText)}">
+          <span class="automation-row-preview-icon">📝</span><span class="automation-row-preview-text">${esc(promptText)}</span>
+        </div>
+        <div class="automation-row-preview automation-row-preview-result${hasResult ? "" : " muted"}" title="${esc(resultText)}">
+          <span class="automation-row-preview-icon">📤</span><span class="automation-row-preview-text">${esc(resultText)}</span>
+        </div>
       </div>
       <button class="automation-row-delete" data-aid="${esc(a.id)}" data-name="${esc(a.name)}" title="Delete">🗑</button>
     </div>`;
@@ -3362,17 +4065,18 @@ async function openSettingsModal() {
       api_type: p.api_type || "openai_compatible",
       api_key: p.api_key || "",
       base_url: p.base_url || "",
-      models: (p.models || []).map((m2: any) => ({ name: m2.name || "", supports_image: !!m2.supports_image })),
+      models: (p.models || []).map((m2: any) => ({ name: m2.name || "", supports_image: m2.supports_image ?? true })),
     }));
     for (let pi = 0; pi < normProviders.length; pi++) {
       const p = normProviders[pi];
       const isOpenAI = p.api_type !== "anthropic";
       let modelRows = "";
       for (const model of p.models) {
+        const supportsImage = model.supports_image ?? true;  // default True = vision-capable
         modelRows += `
           <div class="settings-model-row">
             <input class="settings-input s-model-name" value="${esc(model.name)}" placeholder="Model name" style="flex:1" />
-            <label class="settings-model-check" title="Supports image input"><input type="checkbox" class="s-model-image" ${model.supports_image ? "checked" : ""} /> Image</label>
+            <label class="settings-model-check" title="Can consume image_url blocks. Uncheck for text-only models — the runtime will then surface attachments as path text instead of base64."><input type="checkbox" class="s-model-image" ${supportsImage ? "checked" : ""} /> Vision</label>
             <label class="settings-model-check" title="Set as default model"><input type="radio" name="modelDefault" class="s-model-default" ${model.name === defaultModelName ? "checked" : ""} /> Default</label>
             <button class="settings-hook-remove s-model-remove" title="Remove">×</button>
           </div>`;
@@ -3693,7 +4397,7 @@ async function openSettingsModal() {
           card.querySelectorAll(".settings-model-row").forEach(row => {
             const name = (row.querySelector(".s-model-name") as HTMLInputElement)?.value.trim() || "";
             if (!name) return;
-            const supports_image = (row.querySelector(".s-model-image") as HTMLInputElement)?.checked ?? false;
+            const supports_image = (row.querySelector(".s-model-image") as HTMLInputElement)?.checked ?? true;
             models.push({ name, supports_image });
             if ((row.querySelector(".s-model-default") as HTMLInputElement)?.checked) defaultName = name;
           });

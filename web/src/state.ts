@@ -10,6 +10,16 @@ export interface Session {
   workspace?: string;
 }
 
+export interface PendingAttachment {
+  path: string;
+  mime: string;
+  size: number;
+  name: string;
+  // Local blob URL for the in-input preview thumbnail. Never sent
+  // to the server; the wire payload embeds `path` instead.
+  thumbUrl: string;
+}
+
 export interface AppState {
   sessions: Session[];
   activeSid: string | null;
@@ -19,14 +29,18 @@ export interface AppState {
   // its "is running" or queued-input state into the newly active
   // session. The render / input layer consults these by activeSid.
   runningSessions: Record<string, boolean>;
-  pendingMessages: Record<string, string>;
-  pendingSessionImages: Record<string, Array<{ dataUrl: string; name: string }>>;
+  pendingMessages: Record<string, { text: string; retries: number }>;
+  pendingSessionImages: Record<string, PendingAttachment[]>;
+  // Per-session in-progress prompt content (textarea text + attached
+  // images). Stashed on switchSession and restored when the user
+  // comes back, so each session keeps its own draft.
+  promptDrafts: Record<string, { text: string; images: PendingAttachment[] }>;
   compactingSessions: Record<string, boolean>;
   questionPending: boolean;
   config: {
     model: string;
     models: string[];
-    modelDetails: Array<{ name: string; supports_image: boolean }>;
+    modelDetails: Array<{ name: string; supports_image?: boolean }>;
     approval: string;
     workspace: string;
     tools: string[];

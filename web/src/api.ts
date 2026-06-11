@@ -23,11 +23,16 @@ export interface Event {
 export interface Automation {
   id: string;
   name: string;
+  prompt: string;
   interval_seconds: number;
   enabled: boolean;
   last_run?: number;
   last_result?: string;
+  last_error?: string;
   schedule_time?: string;
+  run_count?: number;
+  created_at?: number;
+  updated_at?: number;
 }
 
 export interface Status {
@@ -45,10 +50,24 @@ export interface Config {
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
+const API_TIMEOUT_MS = 30_000;
+
 export async function api<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
-  const opts: RequestInit = { method, headers: JSON_HEADERS };
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  const opts: RequestInit = { method, headers: JSON_HEADERS, signal: controller.signal };
   if (body !== undefined) opts.body = JSON.stringify(body);
-  const r = await fetch(path, opts);
+  let r: Response;
+  try {
+    r = await fetch(path, opts);
+  } catch (e: any) {
+    if (e.name === "AbortError") {
+      throw new Error(`Request to ${path} timed out after ${API_TIMEOUT_MS / 1000}s`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timeoutId);
+  }
   const data = (await r.json().catch(() => ({}))) as Record<string, unknown> | null;
   if (!r.ok) {
     const errCode = typeof data?.error === "string" ? data.error : `http_${r.status}`;
@@ -222,6 +241,15 @@ export async function createAutomation(name: string, prompt: string, intervalSec
   const payload: Record<string, unknown> = { name, prompt, interval_seconds: intervalSeconds };
   if (scheduleTime) payload.schedule_time = scheduleTime;
   return api("POST", "/automations", payload);
+}
+
+export async function updateAutomation(aid: string, patch: { name?: string; prompt?: string; interval_seconds?: number; schedule_time?: string | null; enabled?: boolean }): Promise<Automation> {
+  const data = await api<{ automation: Automation }>("PATCH", `/automations/${aid}`, patch);
+  return data.automation;
+}
+
+export async function runAutomationNow(aid: string): Promise<{ ok: boolean; result?: { role: string; content: string; finish_reason?: string }; automation: Automation }> {
+  return api("POST", `/automations/${aid}/run`, {});
 }
 
 export async function deleteAutomation(aid: string): Promise<void> {

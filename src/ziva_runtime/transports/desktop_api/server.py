@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import mimetypes
 import shlex
 import time
 import uuid
@@ -62,6 +63,13 @@ class SessionStore:
     runtime: Runtime
     _loaded_sessions: Dict[str, Dict] = field(default_factory=dict)
 
+    def _pid(self, sid: str) -> str:
+        """Resolve project_id from session context, falling back to active workspace."""
+        session = self.runtime._sessions.get(sid)
+        if session and session.project_id:
+            return session.project_id
+        return self.runtime.project_id
+
     def create(self) -> str:
         sid = str(uuid.uuid4())
         self._loaded_sessions[sid] = {"id": sid, "messages": [], "turns": []}
@@ -76,10 +84,10 @@ class SessionStore:
         """Ensure session is loaded from storage."""
         if sid not in self._loaded_sessions:
             # Load from file storage
-            session = FileStorage.get_session(self.runtime.project_id, sid)
+            session = FileStorage.get_session(self._pid(sid), sid)
             if session:
                 messages = []
-                for msg_data in FileStorage.get_messages(self.runtime.project_id, sid):
+                for msg_data in FileStorage.get_messages(self._pid(sid), sid):
                     messages.append(msg_data)
                 self._loaded_sessions[sid] = {
                     "id": sid,
@@ -103,7 +111,7 @@ class SessionStore:
         session = self._ensure_loaded(sid)
         session["messages"].append({"role": role, "content": content})
         # Persist to file storage
-        FileStorage.append_message(self.runtime.project_id, sid, {"role": role, "content": content})
+        FileStorage.append_message(self._pid(sid), sid, {"role": role, "content": content})
 
     def list_all(self) -> list[Dict]:
         """List all sessions from file storage."""
@@ -111,7 +119,7 @@ class SessionStore:
 
     def exists(self, sid: str) -> bool:
         """Check if session exists."""
-        return FileStorage.get_session(self.runtime.project_id, sid) is not None
+        return FileStorage.get_session(self._pid(sid), sid) is not None
 
 
 class DesktopAPIServer:
@@ -122,7 +130,22 @@ class DesktopAPIServer:
         self.automations: Dict[str, Automation] = {}
         self._automation_tasks: Dict[str, asyncio.Task] = {}
         self._runner: web.AppRunner | None = None
-        self.app = web.Application()
+        self._setup_app()
+
+    def _pid_for(self, sid: str) -> str:
+        """Resolve project_id from session context, falling back to active workspace."""
+        session = self.runtime._sessions.get(sid)
+        if session and session.project_id:
+            return session.project_id
+        return self.runtime.project_id
+
+    # Bump the per-request body limit well above aiohttp's 1 MB
+    # default so the attachment-upload endpoint can receive raw
+    # image files (screenshots, photos). The /turns endpoint body
+    # is KB-class because it only carries file paths now, so this
+    # 25 MB ceiling is essentially only used by /attachments.
+    def _setup_app(self) -> None:
+        self.app = web.Application(client_max_size=25 * 1024 * 1024)
         self.app.router.add_get("/", self.index)
         self.app.router.add_get("/sessions", self.list_sessions)
         self.app.router.add_post("/sessions", self.create_session)
@@ -131,6 +154,8 @@ class DesktopAPIServer:
         self.app.router.add_post("/sessions/{sid}/turns", self.create_turn)
         self.app.router.add_post("/sessions/{sid}/compact", self.compact_session)
         self.app.router.add_post("/sessions/{sid}/prune", self.prune_session)
+        self.app.router.add_post("/sessions/{sid}/attachments", self.upload_attachment)
+        self.app.router.add_get("/attachments", self.serve_attachment)
         self.app.router.add_post("/sessions/{sid}/cancel", self.cancel_turn)
         self.app.router.add_get("/events", self.events_global)
         self.app.router.add_get("/sessions/{sid}/events", self.events)
@@ -246,14 +271,14 @@ class DesktopAPIServer:
     async def _run_automation_once(self, automation: Automation, *, scheduled: bool) -> ChatResult | None:
         try:
             if not self.store.exists(automation.session_id):
-                FileStorage.create_session(self.runtime.project_id, {
+                FileStorage.create_session(self._pid_for(automation.session_id), {
                     "id": automation.session_id,
                     "time": {"created": int(time.time() * 1000), "updated": int(time.time() * 1000)},
                 })
             messages = [ChatMessage(role="user", content=automation.prompt)]
             result = await self.runtime.chat(messages, session_id=automation.session_id)
             automation.last_run = time.time()
-            automation.last_result = result.content[:500]
+            automation.last_result = result.content
             automation.last_error = None
             automation.run_count += 1
             automation.next_run = self._next_run_timestamp(automation.schedule_time, automation.interval_seconds) if automation.enabled else None
@@ -356,8 +381,8 @@ class DesktopAPIServer:
         # runtime during a running turn (tool results, assistant text, etc.).
         # The in-memory _loaded_sessions cache may be stale if the runtime
         # has persisted new messages since the session was first loaded.
-        meta = FileStorage.get_session(self.runtime.project_id, sid) or {}
-        all_msgs = list(FileStorage.get_messages(self.runtime.project_id, sid))
+        meta = FileStorage.get_session(self._pid_for(sid), sid) or {}
+        all_msgs = list(FileStorage.get_messages(self._pid_for(sid), sid))
         # By default, return the LLM-visible view (last summary + messages
         # after it). With ?include_dropped=true, return the full chronological
         # history so the UI's collapse bars can render folded messages.
@@ -391,7 +416,19 @@ class DesktopAPIServer:
     async def create_turn(self, request: web.Request) -> web.Response:
         sid = request.match_info["sid"]
         if not self.store.exists(sid):
-            return web.json_response({"error": "session_not_found"}, status=404)
+            # Auto-create session on first message (lazy creation).
+            # Frontend generates UUID locally; session is only persisted
+            # when the user actually sends the first message.
+            FileStorage.create_session(self.runtime.project_id, {
+                "id": sid,
+                "time": {"created": int(time.time() * 1000), "updated": int(time.time() * 1000)},
+            })
+
+        # Reject if a turn is already in-flight for this session.
+        rt_session = self.runtime._sessions.get(sid)
+        if rt_session and rt_session.turn_task is not None and not rt_session.turn_task.done():
+            return web.json_response({"error": "turn_already_running"}, status=429)
+
         payload = await request.json()
         messages = payload.get("messages") or []
         chat_messages = [ChatMessage(role=str(m.get("role", "user")), content=m.get("content", "")) for m in messages]
@@ -399,7 +436,7 @@ class DesktopAPIServer:
         turn = {"id": turn_id, "status": "running", "events": [], "result": None}
         session = self.store._ensure_loaded(sid)
         session["turns"].append(turn)
-        
+
         if "messages" not in session:
             session["messages"] = []
         for m in chat_messages:
@@ -417,7 +454,7 @@ class DesktopAPIServer:
                 _, result, events = await self.runtime.chat_with_events(chat_messages, session_id=sid)
                 # Reload messages from disk since runtime.chat() persisted them via FileStorage
                 fresh_messages = []
-                for msg_data in FileStorage.get_messages(self.runtime.project_id, sid):
+                for msg_data in FileStorage.get_messages(self._pid_for(sid), sid):
                     fresh_messages.append(msg_data)
                 self.store._loaded_sessions[sid]["messages"] = fresh_messages
                 turn["events"] = events
@@ -433,10 +470,20 @@ class DesktopAPIServer:
                 # Emit turn_error so frontend exits "running" state instead of hanging
                 await self.runtime._emit(sid, {"type": "turn_error", "error": str(exc), "class": exc.__class__.__name__})
             finally:
+                # Compare-and-clear: only zero out the session's cancel_token /
+                # turn_task if they still point at *this* runner's. Without the
+                # identity check, a NEW create_turn that landed between
+                # `task.cancel()` and this finally block would have its token
+                # and task reference wiped — the new turn would still run
+                # (asyncio keeps the task alive) but cancel_turn would no
+                # longer find it on the session, and the next stop button
+                # press would silently fail to cancel.
                 s = self.runtime._sessions.get(sid)
                 if s:
-                    s.cancel_token = None
-                    s.turn_task = None
+                    if s.cancel_token is token:
+                        s.cancel_token = None
+                    if s.turn_task is task:
+                        s.turn_task = None
 
         task = asyncio.create_task(runner())
         session.turn_task = task
@@ -461,7 +508,7 @@ class DesktopAPIServer:
             if m._compaction_summary:
                 record["_compaction_summary"] = True
             records.append(record)
-        FileStorage.replace_messages(self.runtime.project_id, sid, records)
+        FileStorage.replace_messages(self._pid_for(sid), sid, records)
 
         session = self.store._ensure_loaded(sid)
         session["messages"] = list(records)
@@ -473,9 +520,7 @@ class DesktopAPIServer:
         llm_visible = _llm_context(working_set)
         new_prompt_tokens = estimate_tokens(llm_visible)
         new_usage = {"prompt_tokens": new_prompt_tokens, "completion_tokens": 0, "total_tokens": new_prompt_tokens}
-        FileStorage.update_session(self.runtime.project_id, sid, {
-            "id": sid,
-            "time": {"updated": int(time.time() * 1000)},
+        FileStorage.update_session(self._pid_for(sid), sid, {
             "last_usage": new_usage,
         })
         return new_usage
@@ -483,7 +528,7 @@ class DesktopAPIServer:
     def _load_session_messages(self, sid: str) -> List[ChatMessage]:
         """Read messages from disk as ChatMessage objects."""
         messages: List[ChatMessage] = []
-        for msg_data in FileStorage.get_messages(self.runtime.project_id, sid):
+        for msg_data in FileStorage.get_messages(self._pid_for(sid), sid):
             messages.append(ChatMessage(
                 role=msg_data.get("role", "user"),
                 content=msg_data.get("content", ""),
@@ -513,7 +558,7 @@ class DesktopAPIServer:
             "tool_calls": [{"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in summary.tool_calls],
             "_compaction_summary": True,
         }
-        FileStorage.append_message(self.runtime.project_id, sid, record)
+        FileStorage.append_message(self._pid_for(sid), sid, record)
 
     async def prune_session(self, request: web.Request) -> web.Response:
         """POST /sessions/{sid}/prune — strip old tool outputs, no model call.
@@ -568,15 +613,20 @@ class DesktopAPIServer:
             _llm_context, compact_messages, compose_post_compact_on_disk,
             find_last_summary_idx, find_cutoff_in_llm_visible,
         )
+        from ziva_runtime.runtime import _create_adapter
         llm_visible = _llm_context(messages)
 
         # Match the runtime hook's K=5 asst-turns setting.
         from ziva_runtime.runtime import AUTO_COMPACT_KEEP_LAST_ASSISTANT_TURNS
         keep_last = AUTO_COMPACT_KEEP_LAST_ASSISTANT_TURNS
 
+        # Create an adapter that matches the current model_cfg so the provider
+        # and model name stay in sync (avoids sending a new model name to an
+        # old provider's adapter).
+        model_adapter = _create_adapter({"model": model_cfg, "providers": self.runtime.config.get("providers", [])})
         try:
             summary_list = await compact_messages(
-                llm_visible, context_window, model_name, self.runtime.model_adapter,
+                llm_visible, context_window, model_name, model_adapter,
                 keep_last_assistant_turns=keep_last,
             )
         except Exception as exc:
@@ -945,6 +995,105 @@ class DesktopAPIServer:
             return web.json_response({"error": "no_pending_question"}, status=404)
         return web.json_response({"ok": True})
 
+    async def upload_attachment(self, request: web.Request) -> web.Response:
+        """Persist a user-attached image to disk and return its path.
+
+        The frontend (Electron / browser) cannot write directly to the
+        runtime's filesystem, so the actual bytes come over the wire
+        here as a multipart `file` field. We drop them under
+        ``~/.ziva/sessions/<pid>/attachments/<sid>/`` — a sibling of
+        the messages JSONL — and hand back the absolute path. The
+        subsequent ``/turns`` request embeds that path in an
+        ``image_url.url`` block, and the runtime expands it to a
+        base64 data URL *only* in the per-turn copy sent to the
+        provider. The persisted history keeps the path so reloads
+        don't re-read multi-MB blobs from disk.
+
+        Returns ``{path, mime, size}`` on success.
+        """
+        from ziva_runtime.storage.file_storage import FileStorage
+        sid = request.match_info["sid"]
+        pid = self.runtime.project_id
+        if not FileStorage.get_session(pid, sid) and sid not in self.store._loaded_sessions:
+            return web.json_response({"error": "session_not_found"}, status=404)
+
+        try:
+            reader = await request.multipart()
+        except Exception as exc:
+            return web.json_response({"error": "invalid_multipart", "detail": str(exc)}, status=400)
+
+        file_bytes: bytes | None = None
+        file_name = "clip"
+        mime = "application/octet-stream"
+        async for part in reader:
+            if part.name != "file":
+                # Drain any other fields we don't care about.
+                await part.read()
+                continue
+            file_name = part.filename or "clip"
+            mime = part.headers.get("Content-Type", mime)
+            file_bytes = await part.read(decode=False)
+            break  # only the first `file` field
+
+        if not file_bytes:
+            return web.json_response({"error": "no_file"}, status=400)
+
+        # Sanitize the file name to something we can put on disk
+        # safely (no path traversal via a user-supplied filename).
+        suffix = Path(file_name).suffix.lower()
+        if suffix not in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+            suffix = ".png"
+        # Filename is a timestamp + a small random suffix so concurrent
+        # pastes (or two pastes within the same millisecond) never
+        # collide on disk.
+        ts_ms = int(time.time() * 1000)
+        nonce = uuid.uuid4().hex[:6]
+        disk_name = f"clip-{ts_ms}-{nonce}{suffix}"
+
+        attachments_dir = FileStorage._project_dir(pid) / "attachments" / sid
+        attachments_dir.mkdir(parents=True, exist_ok=True)
+        disk_path = attachments_dir / disk_name
+        disk_path.write_bytes(file_bytes)
+
+        return web.json_response({
+            "path": str(disk_path),
+            "mime": mime,
+            "size": len(file_bytes),
+        })
+
+    async def serve_attachment(self, request: web.Request) -> web.Response:
+        """Stream an attachment file back to the browser for display.
+
+        The persisted message history embeds absolute paths in
+        ``image_url`` blocks. When the UI renders old chat messages,
+        those paths won't load directly from the browser (cross-origin,
+        no static handler), so we proxy the bytes through this
+        endpoint. The same path-validation rules as
+        ``upload_attachment`` apply — we only serve files under
+        ``~/.ziva/sessions/<pid>/attachments/`` to avoid an arbitrary
+        read primitive.
+        """
+        from ziva_runtime.storage.file_storage import FileStorage
+        pid = self.runtime.project_id
+        root = (FileStorage._project_dir(pid) / "attachments").resolve()
+
+        raw = request.query.get("path", "")
+        try:
+            candidate = Path(raw).resolve()
+        except (OSError, ValueError):
+            return web.json_response({"error": "invalid_path"}, status=400)
+        # Reject anything outside the attachments root (no path traversal).
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            return web.json_response({"error": "outside_attachments_dir"}, status=403)
+        if not candidate.is_file():
+            return web.json_response({"error": "not_found"}, status=404)
+
+        mime, _ = mimetypes.guess_type(candidate.name)
+        mime = mime or "application/octet-stream"
+        return web.Response(body=candidate.read_bytes(), content_type=mime)
+
     async def delete_session(self, request: web.Request) -> web.Response:
         sid = request.match_info["sid"]
         # The sidebar lets the user delete sessions from any project, so
@@ -1104,10 +1253,25 @@ class DesktopAPIServer:
             if "model" not in self.runtime.config:
                 self.runtime.config["model"] = {}
             self.runtime.config["model"].update(payload["model"])
+            # Invalidate all per-session model adapters so the next turn
+            # re-creates them from the updated config.  Without this,
+            # sessions created before the switch keep using the stale
+            # (provider, model) pair while model_cfg["name"] carries the
+            # new name — producing a "unknown model" error from the API.
+            for sess in self.runtime._sessions.values():
+                sess.model_adapter = None
         if "approval" in payload:
             if "approval" not in self.runtime.config:
                 self.runtime.config["approval"] = {}
             self.runtime.config["approval"].update(payload["approval"])
+        # Persist updated config to disk so changes survive restarts
+        import yaml
+        config_path = self.runtime.workspace_root / ".ziva" / "config.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            yaml.dump(self.runtime.config, default_flow_style=False, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
         return web.json_response({"ok": True})
 
     async def get_config_yaml(self, _request: web.Request) -> web.Response:
@@ -1178,14 +1342,24 @@ class DesktopAPIServer:
         new_path = payload.get("path")
         if not new_path:
             return web.json_response({"error": "Missing path"}, status=400)
-        
+
         target = Path(new_path).resolve()
         if not target.is_dir():
             return web.json_response({"error": "Not a valid directory"}, status=400)
 
-        # Update runtime workspace
+        # Only swap the active workspace identity.
+        # Background sessions from other workspaces keep running — their
+        # stored project_id routes FileStorage calls correctly.
         self.runtime.workspace_root = target
         self.runtime._project_id = _project_hash(target)
+
+        # Reload automations for the new workspace
+        self.automations.clear()
+        for task in list(self._automation_tasks.values()):
+            task.cancel()
+        self._automation_tasks.clear()
+        self._load_persisted_automations()
+        self._schedule_enabled_automations()
 
         # Save to recent workspaces
         recent_path = Path.home() / ".ziva" / "recent_workspaces.json"

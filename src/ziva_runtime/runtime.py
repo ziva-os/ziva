@@ -133,6 +133,184 @@ def _categorize_skill(name: str, description: str) -> str:
     return "其他"
 
 
+def _resolve_image_paths(
+    messages: List[ChatMessage],
+    *,
+    base_dir: Path | None = None,
+    model_supports_image: bool = True,
+) -> List[ChatMessage]:
+    """Expand local-path `image_url` blocks based on model capability.
+
+    The desktop UI drops user-pasted images and drag-and-dropped files
+    onto disk under ``~/.ziva/sessions/<pid>/attachments/<sid>/`` and
+    sends the absolute path as the ``url`` of an ``image_url`` content
+    block. How we expand that path depends on what the *current* model
+    can do:
+
+    * **Vision-capable model** (``model_supports_image=True``) — read
+      the file and convert to a base64 data URL. The provider sees an
+      image the user actually attached and can reason about it. Any
+      unresolvable path (missing file, unknown extension, relative
+      path with no anchor) is rewritten to a text reference so the
+      provider never sees a raw path-shaped URL.
+
+    * **Non-vision model** (``model_supports_image=False``) — there is
+      no point burning tokens on a base64 blob the model cannot read.
+      Convert every path-shaped ``image_url`` block to a text reference
+      naming the file. The model can still call ``read_file`` on the
+      path if it has tools that help (OCR, image analysis, etc.) or
+      it can tell the user "I see an attachment at X but I can't view
+      images — could you describe it?".
+
+    http(s) and data: URLs are passed through untouched regardless of
+    the model flag — those are provider-native and the user wrote them
+    deliberately.
+
+    The original message list is never mutated; we deep-copy any
+    message that needs editing so the persisted history keeps the
+    path form (cheap to reload, no multi-MB blobs in the JSONL).
+    """
+    import base64
+    import copy
+    from ziva_runtime.shared_types import ChatMessage as _CM  # local alias for type hints
+
+    resolved: List[_CM] = []
+    for msg in messages:
+        content = msg.content
+        if not isinstance(content, list):
+            resolved.append(msg)
+            continue
+        changed = False
+        new_blocks: list = []
+        for block in content:
+            if not isinstance(block, dict):
+                new_blocks.append(block)
+                continue
+            if block.get("type") != "image_url":
+                new_blocks.append(block)
+                continue
+            url_field = block.get("image_url")
+            if isinstance(url_field, dict):
+                url = url_field.get("url", "")
+            elif isinstance(url_field, str):
+                url = url_field
+            else:
+                url = ""
+            if not isinstance(url, str) or not url:
+                new_blocks.append({
+                    "type": "text",
+                    "text": "[attachment: empty url]",
+                })
+                changed = True
+                continue
+            stripped = url.strip()
+            # data: and http(s): are provider-native — pass through
+            # regardless of the model flag. The user wrote these
+            # deliberately and the provider knows what to do with
+            # them. A data: blob is what a vision model needs; an
+            # http(s) URL is what any model can be told to fetch
+            # (though non-vision models will just see it as a string).
+            if stripped.startswith(("data:", "http://", "https://")):
+                new_blocks.append(block)
+                continue
+            # file:// is a path with a scheme prefix — strip and treat
+            # as a path.
+            if stripped.startswith("file://"):
+                file_path_str = stripped[len("file://"):]
+            else:
+                file_path_str = stripped
+
+            # -------------------------------------------------------------
+            # Branch 1: current model is *not* vision-capable.
+            #
+            # Don't even try to read the file. Burning tokens on a
+            # base64 blob that the model cannot interpret is pure
+            # waste — and the provider will likely error or silently
+            # drop it anyway. Surface the attachment as a named text
+            # reference instead. The model can use read_file (if the
+            # file happens to be parseable as text) or specialized
+            # image tools to act on it, or just tell the user it
+            # can't view images.
+            # -------------------------------------------------------------
+            if not model_supports_image:
+                new_blocks.append({
+                    "type": "text",
+                    "text": f"[attachment: {file_path_str}]",
+                })
+                changed = True
+                continue
+
+            # -------------------------------------------------------------
+            # Branch 2: current model *is* vision-capable.
+            #
+            # Read the file, base64-encode, embed as a data URL so
+            # the provider sees the image directly. Any failure mode
+            # (file missing, unknown extension, read error) falls
+            # back to a text reference — never a leaked path, never
+            # a raw image_url with a non-data: URL.
+            # -------------------------------------------------------------
+            try:
+                path = Path(file_path_str)
+            except (OSError, ValueError):
+                new_blocks.append({
+                    "type": "text",
+                    "text": f"[attachment: invalid path `{file_path_str}`]",
+                })
+                changed = True
+                continue
+            if not path.is_absolute():
+                if base_dir is not None:
+                    path = base_dir / path
+                else:
+                    new_blocks.append({
+                        "type": "text",
+                        "text": f"[attachment: relative path `{file_path_str}` (no base directory)]",
+                    })
+                    changed = True
+                    continue
+            try:
+                data = path.read_bytes()
+            except OSError as exc:
+                new_blocks.append({
+                    "type": "text",
+                    "text": f"[attachment: {file_path_str} — {exc.__class__.__name__}]",
+                })
+                changed = True
+                continue
+            ext = path.suffix.lower().lstrip(".")
+            mime = {
+                "png": "image/png",
+                "jpg": "image/jpeg",
+                "jpeg": "image/jpeg",
+                "gif": "image/gif",
+                "webp": "image/webp",
+            }.get(ext)
+            if mime is None:
+                # File exists but isn't a recognized image extension.
+                # Don't leak a path-shaped URL to the provider; rewrite
+                # as a text block with the file metadata. The model
+                # can call read_file on the path if it actually wants
+                # the contents.
+                new_blocks.append({
+                    "type": "text",
+                    "text": f"[file: {file_path_str} ({len(data)} bytes, .{ext or '?'})]",
+                })
+                changed = True
+                continue
+            b64 = base64.b64encode(data).decode("ascii")
+            new_blocks.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{b64}"},
+            })
+            changed = True
+        if changed:
+            resolved.append(copy.copy(msg))
+            resolved[-1].content = new_blocks
+        else:
+            resolved.append(msg)
+    return resolved
+
+
 # Auto-compact hook configuration. These are the only knobs the start-of-round
 # hook has; they apply to both the in-turn rounds (triggered by API prompt_tokens)
 # and the implicit "next turn" case (a stale 100% session, see below).
@@ -174,8 +352,15 @@ class Runtime:
 
     def _get_session(self, session_id: str) -> SessionState:
         if session_id not in self._sessions:
-            self._sessions[session_id] = SessionState()
+            self._sessions[session_id] = SessionState(project_id=self._project_id)
         return self._sessions[session_id]
+
+    def _resolve_project_id(self, session_id: str) -> str:
+        """Resolve project_id from session context, falling back to global."""
+        session = self._sessions.get(session_id)
+        if session and session.project_id:
+            return session.project_id
+        return self.project_id
 
     def _read_last_usage(self, session_id: str) -> Dict[str, int] | None:
         """Read the most recent API-reported prompt_tokens from session metadata on disk.
@@ -185,7 +370,7 @@ class Runtime:
         estimate. Returned by `update_session_usage` after every `round_complete`.
         """
         try:
-            meta = FileStorage.get_session(self.project_id, session_id) or {}
+            meta = FileStorage.get_session(self._resolve_project_id(session_id), session_id) or {}
             return meta.get("last_usage")
         except Exception:
             return None
@@ -204,6 +389,8 @@ class Runtime:
         }
         if getattr(m, "_compaction_summary", False):
             record["_compaction_summary"] = True
+        if getattr(m, "_hidden", False):
+            record["_hidden"] = True
         return record
 
     def _apply_compact_to_disk(
@@ -226,7 +413,7 @@ class Runtime:
         """
         # Read current on-disk as dicts (FileStorage format) and serialize the
         # new tail to dicts so the result is a uniform list of records.
-        current_on_disk = list(FileStorage.get_messages(self.project_id, session_id) or [])
+        current_on_disk = list(FileStorage.get_messages(self._resolve_project_id(session_id), session_id) or [])
         new_working_dicts = [self._chatmessage_to_record(m) for m in new_working]
 
         last_summary_idx = find_last_summary_idx(current_on_disk)
@@ -234,7 +421,7 @@ class Runtime:
         new_on_disk = compose_post_compact_on_disk(
             current_on_disk, last_summary_idx, cutoff, new_working_dicts
         )
-        FileStorage.replace_messages(self.project_id, session_id, new_on_disk)
+        FileStorage.replace_messages(self._resolve_project_id(session_id), session_id, new_on_disk)
 
         # Update SessionState.history to the LLM-visible view (= new_working).
         # The next turn loads from this when SessionState.history is empty, so
@@ -335,18 +522,22 @@ class Runtime:
         ctx = RuntimeContext(session_id=sid, config=self.config)
         ctx.metadata["_runtime"] = self
 
-        # Load session history from disk if not already loaded
+        # Load session history from disk if not already loaded.
+        # Serialize the check+load+extend under a per-session lock so that
+        # two concurrent chat() calls for the same session cannot both see
+        # an empty history and duplicate the loaded messages.
         session = self._get_session(sid)
-        if not session.history:
-            loaded = self._load_session_from_disk(sid)
-            if loaded:
-                session.history.extend(loaded)
-            else:
-                # Create new session
-                FileStorage.create_session(self.project_id, {
-                    "id": sid,
-                    "time": {"created": int(time.time() * 1000), "updated": int(time.time() * 1000)},
-                })
+        async with session.load_lock:
+            if not session.history:
+                loaded = self._load_session_from_disk(sid)
+                if loaded:
+                    session.history.extend(loaded)
+                else:
+                    # Create new session
+                    FileStorage.create_session(self._resolve_project_id(sid), {
+                        "id": sid,
+                        "time": {"created": int(time.time() * 1000), "updated": int(time.time() * 1000)},
+                    })
 
         # Append new user messages to session history
         session.history.extend(new_messages)
@@ -364,12 +555,35 @@ class Runtime:
         if skill_output:
             rendered_messages.append(ChatMessage(role="system", content=f"Skill output: {skill_output}"))
 
+        # Resolve any `image_url` blocks whose url is a local file path
+        # (e.g. a user-attached screenshot dropped to ~/.ziva/.../clip-123.png).
+        # Vision-capable models get a base64 data URL; non-vision models
+        # get a plain text reference to the path (so we don't burn tokens
+        # on a blob the model can't interpret). The original
+        # `rendered_messages` history keeps the path form either way so
+        # reloads stay cheap; only the per-turn copy sent to the
+        # provider is rewritten.
+        rendered_messages = _resolve_image_paths(
+            rendered_messages,
+            model_supports_image=self._current_model_supports_image(),
+        )
+
+        # Snapshot the model config and adapter at turn start so that a
+        # mid-turn global model switch doesn't invalidate the in-flight turn.
+        # The turn keeps using the snapshot model + adapter for its entire
+        # duration; the next turn will pick up the new global config.
+        model_cfg = dict(self.config.get("model", {}))
+        turn_adapter = _create_adapter(self.config)
+        # Cache on the session for other callers (e.g. compact_session) that
+        # need the session's adapter without re-creating it.
+        session.model_adapter = turn_adapter
+
         # Run unified streaming loop; events are emitted to event bus automatically
         final_content = ""
         final_usage = None
         final_finish_reason = "stop"
         cancelled = False
-        async for event in self._run_model_tool_loop(rendered_messages, sid, ctx):
+        async for event in self._run_model_tool_loop(rendered_messages, sid, ctx, model_cfg=model_cfg, model_adapter=turn_adapter):
             if event.get("type") == "model_response":
                 final_content = event.get("content", "")
                 final_usage = event.get("usage")
@@ -380,6 +594,18 @@ class Runtime:
                 break
 
         if cancelled:
+            # Cancel may have fired between the assistant tool_calls
+            # being persisted (line 848) and the tool_result messages
+            # being written (lines 909/920). Without this fix the
+            # JSONL on disk ends with an orphan `assistant` + tool_calls
+            # and the *next* turn replays it to Anthropic, which rejects
+            # with 400 "tool call result does not follow tool call
+            # (2013)". Append synthetic tool_result messages for any
+            # tool_use without a matching result so the next turn can
+            # replay history cleanly.
+            session = self._get_session(sid)
+            self._sanitize_orphaned_tool_calls(sid, list(session.history))
+
             result = ChatResult(
                 role="assistant",
                 content=final_content or "Turn cancelled by user.",
@@ -423,15 +649,29 @@ class Runtime:
         ctx.metadata["_runtime"] = self
 
         session = self._get_session(sid)
-        if not session.history:
-            loaded = self._load_session_from_disk(sid)
-            if loaded:
-                session.history.extend(loaded)
-            else:
-                FileStorage.create_session(self.project_id, {
-                    "id": sid,
-                    "time": {"created": int(time.time() * 1000), "updated": int(time.time() * 1000)},
-                })
+        async with session.load_lock:
+            if not session.history:
+                loaded = self._load_session_from_disk(sid)
+                if loaded:
+                    session.history.extend(loaded)
+                else:
+                    FileStorage.create_session(self._resolve_project_id(sid), {
+                        "id": sid,
+                        "time": {"created": int(time.time() * 1000), "updated": int(time.time() * 1000)},
+                    })
+                # Safety net for sessions whose JSONL ends with an orphaned
+                # assistant+tool_calls message. Covers:
+                #  - Cancels that fired before _sanitize_orphaned_tool_calls
+                #    ran (e.g. session was force-killed mid-cancel).
+                #  - Sessions from older ziva versions that predate the fix.
+                #  - Any other crash path that left history inconsistent.
+                # The function appends synthetic tool_result messages to
+                # both the in-memory history and the JSONL; replaying to
+                # the next turn is then wire-format-safe. We mirror its
+                # returned list back into session.history so the in-memory
+                # copy and the JSONL stay in sync.
+                sanitized = self._sanitize_orphaned_tool_calls(sid, list(session.history))
+                session.history[:] = sanitized
 
         session.history.extend(new_messages)
         for msg in new_messages:
@@ -448,11 +688,44 @@ class Runtime:
         if skill_output:
             rendered_messages.append(ChatMessage(role="system", content=f"Skill output: {skill_output}"))
 
+        last_exc: Exception | None = None
+        # Snapshot model config and adapter at turn start so a mid-turn
+        # global model switch doesn't invalidate this turn.
+        model_cfg = dict(self.config.get("model", {}))
+        turn_adapter = _create_adapter(self.config)
         try:
-            async for event in self._run_model_tool_loop(rendered_messages, sid, ctx, cancellation_token):
-                yield event
-        except Exception as exc:
-            yield {"type": "turn_error", "session_id": sid, "error": str(exc), "class": exc.__class__.__name__}
+            for attempt in (1, 2):
+                try:
+                    async for event in self._run_model_tool_loop(rendered_messages, sid, ctx, cancellation_token, model_cfg=model_cfg, model_adapter=turn_adapter):
+                        yield event
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt == 1 and self._is_retryable_provider_error(exc):
+                        # Stream control event — NOT a toast. Tells the
+                        # client "the partial text on screen from the
+                        # previous attempt is invalidated; drop it." The
+                        # client must remove its current streaming
+                        # assistant block (and any in-flight tool
+                        # cards) so the new attempt's deltas land in a
+                        # fresh block.
+                        #
+                        # Note: disk / history are NOT touched. The
+                        # failure happened during streaming, *before*
+                        # model_response was yielded, so
+                        # `_run_model_tool_loop` never reached the
+                        # history.append / _persist_message calls —
+                        # there's nothing to roll back on the server.
+                        yield {
+                            "type": "stream_reset",
+                            "attempt": 2,
+                            "reason": str(exc)[:200],
+                            "class": exc.__class__.__name__,
+                        }
+                        continue
+                    yield {"type": "turn_error", "session_id": sid, "error": str(exc), "class": exc.__class__.__name__}
+                    break
         finally:
             yield {"type": "turn_end", "session_id": sid}
 
@@ -462,15 +735,20 @@ class Runtime:
         session_id: str,
         ctx: RuntimeContext,
         cancellation_token: CancellationToken | None = None,
+        model_cfg: Dict[str, Any] | None = None,
+        model_adapter: ModelAdapter | None = None,
     ) -> AsyncIterator[Dict[str, Any]]:
 
         await self._connect_mcp_if_needed(session_id)
-        model_cfg = self.config["model"]
+        # Use the snapshot from the turn entry point if provided;
+        # otherwise fall back to current config (for backward compat).
+        if model_cfg is None:
+            model_cfg = dict(self.config.get("model", {}))
+        if model_adapter is None:
+            model_adapter = _create_adapter(self.config)
         raw_max = self.config.get("tool", {}).get("max_rounds", 10)
         max_rounds = None if raw_max in (0, None, "0") else int(raw_max or 10)
         context_window = int(self.config.get("memory", {}).get("context_window_tokens", 200000) or 200000)
-        # Refresh adapter in case config changed (model/provider switch)
-        self.model_adapter = _create_adapter(self.config)
         working = list(messages)
         api_tools = self._build_tools_param(ctx)
         is_sub = ctx.metadata.get("_subagent", False) if ctx else False
@@ -487,7 +765,7 @@ class Runtime:
             _last_user_text = " ".join(p.get("text", "") for p in _last_user_text if isinstance(p, dict) and p.get("type") == "text")
         if _last_user_text.strip() == "/compact":
             summary_list = await compact_messages(
-                working, context_window, model_cfg["name"], self.model_adapter
+                working, context_window, model_cfg["name"], model_adapter
             )
             working = summary_list
             had_summary = any(m._compaction_summary for m in working)
@@ -538,7 +816,7 @@ class Runtime:
 
                     working_before = working   # captured for on-disk composition
                     summary_list = await compact_messages(
-                        working, context_window, model_cfg["name"], self.model_adapter,
+                        working, context_window, model_cfg["name"], model_adapter,
                         keep_last_assistant_turns=AUTO_COMPACT_KEEP_LAST_ASSISTANT_TURNS,
                     )
 
@@ -587,7 +865,7 @@ class Runtime:
             final_reasoning_signature: str | None = None
 
             # Stream from model
-            stream = self.model_adapter.chat_stream(
+            stream = model_adapter.chat_stream(
                 working,
                 model=model_cfg["name"],
                 system_prompt=effective_prompt,
@@ -672,7 +950,21 @@ class Runtime:
                 tool_output = await self._execute_tool(ToolCall(name=tc.name, arguments=tc.arguments), call_ctx)
                 return tool_output, tc
 
-            tool_results = await asyncio.gather(*[_run_tool(tc) for tc in final_tool_calls])
+            try:
+                tool_results = await asyncio.gather(*[_run_tool(tc) for tc in final_tool_calls])
+            except asyncio.CancelledError:
+                # Tool execution was interrupted (user cancelled or task cancelled).
+                # Append synthetic tool_result messages for every tool_call so the
+                # history stays valid (assistant tool_calls must be followed by
+                # tool results). Without this, the next turn would send an
+                # unmatched tool_call to the API, triggering a 400 error.
+                for tc in final_tool_calls:
+                    tool_msg = ChatMessage(role="tool", content="[cancelled]", tool_call_id=tc.id, name=tc.name)
+                    working.append(tool_msg)
+                    session = self._get_session(session_id)
+                    session.history.append(tool_msg)
+                    self._persist_message(session_id, tool_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
+                raise
 
             # Step 3: emit tool_end and process results in original order
             deferred_images: list[ChatMessage] = []
@@ -756,11 +1048,11 @@ class Runtime:
         if session.mcp_connected:
             return
         if session.mcp_connecting:
-            while session.mcp_connecting:
-                await asyncio.sleep(0.1)
+            await session.mcp_connected_event.wait()
             return
 
         session.mcp_connecting = True
+        session.mcp_connected_event.clear()
         try:
             from ziva_runtime.adapters.mcp.client import MCPClient, parse_mcp_config
 
@@ -796,6 +1088,7 @@ class Runtime:
                 session.mcp_connected = True
         finally:
             session.mcp_connecting = False
+            session.mcp_connected_event.set()
 
     def _build_tools_param(self, ctx: RuntimeContext | None = None) -> list[dict]:
         """Build OpenAI-format tools list from registered tools, filtered by context."""
@@ -972,7 +1265,15 @@ class Runtime:
             spec = tool.spec()
             if spec.get("name") == call.name:
                 hook_result = await self._run_hooks("before_tool", {"tool": call.name, "arguments": call.arguments}, ctx)
-                if call.name in ("invoke_subagent", "spawn_agent"):
+                if call.name in ("spawn_agent", "ask_user"):
+                    # These two block on a per-session future that the
+                    # *caller* (UI for ask_user, parent turn for
+                    # spawn_agent) is responsible for resolving or
+                    # cancelling. A 120s default executor timeout would
+                    # race that and surface a synthetic "Error: timeout"
+                    # tool_result, which the model would happily treat
+                    # as a real answer and write a new reply on top of.
+                    # Keep the executor layer out of the way.
                     timeout = None
                 else:
                     timeout = tool_timeouts.get(call.name, default_timeout)
@@ -998,14 +1299,77 @@ class Runtime:
         out[-1] = ChatMessage(role=out[-1].role, content=rendered)
         return out
 
+    def _current_model_supports_image(self) -> bool:
+        """True if the active model can consume `image_url` blocks.
+
+        Reads the current model name from ``self.config["model"]["name"]``
+        and looks it up in the ``providers[*].models[*]`` list. Returns
+        the model's ``supports_image`` field. Defaults to True when the
+        model entry is missing (assume vision-capable — the conservative
+        choice for unknown models, and matches the old behavior before
+        we exposed the flag in settings).
+
+        This drives the image-URL → data-URL vs → text-reference
+        decision in ``_resolve_image_paths``. Vision models get the
+        raw pixels; non-vision models get a path string the model can
+        hand to specialized tools (OCR, read_file, etc.) or surface
+        back to the user.
+        """
+        model_cfg = self.config.get("model", {})
+        model_name = model_cfg.get("name", "")
+        if not model_name:
+            return True
+        providers = self.config.get("providers") or []
+        for p in providers:
+            for m in p.get("models") or []:
+                if m.get("name") == model_name:
+                    return bool(m.get("supports_image", True))
+        # Model not found in any provider entry — default to True so
+        # the user gets a useful error from the provider (e.g.
+        # "model doesn't support image") rather than us silently
+        # rewriting their attachment to a useless text reference.
+        return True
+
+    def _is_retryable_provider_error(self, exc: Exception) -> bool:
+        """True if a provider error is worth a same-input retry.
+
+        We only retry errors that are likely transient or where the
+        provider's own classifier flipped a coin. Concretely:
+
+        * Kimi / MiniMax 1027 (``output new_sensitive``) — content
+          policy fires on the model's own draft. A retry can land on
+          a different draft the classifier accepts. Cheap to retry,
+          no side effects (we haven't persisted the bad output).
+        * Kimi / MiniMax 1026 (``input sensitive``) — classifier
+          flagged a prompt. Usually deterministic, but the
+          classifier is fuzzy so a retry sometimes passes.
+        * HTTP 429 / 5xx — rate limit / server hiccup.
+
+        Everything else (auth, bad request, network unreachable,
+        timeouts that already exhausted internal retries) is left
+        alone — retrying would just burn time and tokens.
+        """
+        msg = str(exc) or ""
+        if "1027" in msg or "new_sensitive" in msg:
+            return True
+        if "1026" in msg or "input_sensitive" in msg:
+            return True
+        # Some providers (LiteLLM proxy, OpenAI-compatible) embed
+        # the HTTP status in the exception message; check both.
+        lower = msg.lower()
+        if "rate limit" in lower or " 429" in lower or "429 " in lower:
+            return True
+        if " 5xx" in lower or "internal server error" in lower or "bad gateway" in lower:
+            return True
+        if "unknown error" in lower or " 999" in lower or "999 " in lower:
+            return True
+        return False
+
     def _build_environment_context(self) -> str:
         timezone = _detect_timezone()
         shell = os.environ.get("SHELL", "")
         model_cfg = self.config.get("model", {})
         model_name = model_cfg.get("name", "unknown")
-        models_list = model_cfg.get("models", [])
-        current_model = next((m for m in models_list if m.get("name") == model_name), {})
-        supports_image = current_model.get("supports_image", False)
         lines = [
             "## Environment",
             f"cwd: {self.workspace_root}",
@@ -1013,7 +1377,7 @@ class Runtime:
             f"current_date: {_current_date_for_timezone(timezone)}",
             f"timezone: {timezone}",
             f"model: {model_name}",
-            f"supports_image: {supports_image}",
+            f"supports_image: {str(self._current_model_supports_image()).lower()}",
         ]
         return "\n".join(lines)
 
@@ -1054,6 +1418,68 @@ class Runtime:
 
     # ============= Storage Methods =============
 
+    def _sanitize_orphaned_tool_calls(
+        self,
+        session_id: str,
+        history: List["ChatMessage"],
+        cancel_message: str = "Tool execution cancelled by user.",
+    ) -> List["ChatMessage"]:
+        """Append dummy tool_result messages for any assistant tool_calls
+        that have no matching tool result.
+
+        Anthropic (and every strict tool-use API) requires every
+        ``tool_use`` block to be followed by a corresponding
+        ``tool_result`` block. If a turn is cancelled *between* the
+        assistant message being persisted and the tool results being
+        written — or if the runtime dies between rounds — the JSONL on
+        disk can end up with an orphaned ``assistant`` + ``tool_calls``
+        message whose tool_calls have no follow-up. Replaying that
+        history to the next turn produces a 400
+        ``tool call result does not follow tool call (2013)``.
+
+        We don't try to surgically edit the JSONL in place (line offsets
+        would shift and break anything tailing the file). Instead we
+        *append* synthetic ``role="tool"`` messages for the missing
+        call IDs. That's append-only, monotonic, and downstream code
+        (compaction, anthropic adapter, UI) treats them like normal
+        tool results. The synthetic message carries
+        ``is_error=True`` semantics via the text content so the model
+        knows the tool didn't actually run, but the wire-format
+        constraint is satisfied either way.
+        """
+        # Collect every tool_call_id that *does* have a matching
+        # role="tool" result somewhere in history. We can't just look at
+        # the immediate next message — earlier rounds' results are
+        # interleaved with later rounds' assistant messages.
+        answered: set[str] = set()
+        for m in history:
+            if m.role == "tool" and m.tool_call_id:
+                answered.add(m.tool_call_id)
+
+        sanitized: List["ChatMessage"] = []
+        appended_any = False
+        for m in history:
+            sanitized.append(m)
+            if m.role != "assistant" or not m.tool_calls:
+                continue
+            for tc in m.tool_calls:
+                if tc.id and tc.id not in answered:
+                    synthetic = ChatMessage(
+                        role="tool",
+                        content=f"[cancelled] {cancel_message}",
+                        tool_call_id=tc.id,
+                        name=tc.name,
+                    )
+                    sanitized.append(synthetic)
+                    self._persist_message(
+                        session_id,
+                        synthetic,
+                        is_subagent=False,
+                        sub_call_id=None,
+                    )
+                    appended_any = True
+        return sanitized
+
     def _load_session_from_disk(self, session_id: str) -> List[ChatMessage]:
         """Load messages from disk for a session.
 
@@ -1063,7 +1489,7 @@ class Runtime:
         should not bloat the next chat() call's prompt.
         """
         messages = []
-        for msg_data in FileStorage.get_messages(self.project_id, session_id):
+        for msg_data in FileStorage.get_messages(self._resolve_project_id(session_id), session_id):
             messages.append(ChatMessage(
                 role=msg_data.get("role", "user"),
                 content=msg_data.get("content", ""),
@@ -1080,6 +1506,7 @@ class Runtime:
                 reasoning_content=msg_data.get("reasoning_content"),
                 reasoning_signature=msg_data.get("reasoning_signature"),
                 _compaction_summary=msg_data.get("_compaction_summary", False),
+                _hidden=msg_data.get("_hidden", False),
             ))
         return _llm_context(messages)
 
@@ -1107,8 +1534,8 @@ class Runtime:
             record["_compaction_summary"] = True
         if message._hidden:
             record["_hidden"] = True
-        FileStorage.append_message(self.project_id, session_id, record)
-        FileStorage.update_session(self.project_id, session_id, {
+        FileStorage.append_message(self._resolve_project_id(session_id), session_id, record)
+        FileStorage.update_session(self._resolve_project_id(session_id), session_id, {
             "id": session_id,
             "time": {"updated": int(time.time() * 1000)}
         })
@@ -1116,22 +1543,22 @@ class Runtime:
     def update_session_usage(self, session_id: str, usage: Dict[str, int] | None) -> None:
         """Persist usage data to session metadata."""
         if usage and usage.get("prompt_tokens"):
-            FileStorage.update_session(self.project_id, session_id, {
+            FileStorage.update_session(self._resolve_project_id(session_id), session_id, {
                 "last_usage": usage,
             })
 
 
-    def list_sessions(self) -> List[dict]:
+    def list_sessions(self, project_id: str | None = None) -> List[dict]:
         """List all sessions for this project."""
-        return FileStorage.list_sessions(self.project_id)
+        return FileStorage.list_sessions(project_id or self.project_id)
 
     def get_session(self, session_id: str) -> dict | None:
         """Get session metadata."""
-        return FileStorage.get_session(self.project_id, session_id)
+        return FileStorage.get_session(self._resolve_project_id(session_id), session_id)
 
     def delete_session(self, session_id: str) -> None:
         """Delete a session and its messages."""
-        FileStorage.delete_session(self.project_id, session_id)
+        FileStorage.delete_session(self._resolve_project_id(session_id), session_id)
         self._sessions.pop(session_id, None)
 
     async def shutdown(self) -> None:

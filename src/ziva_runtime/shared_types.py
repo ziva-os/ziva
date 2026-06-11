@@ -109,6 +109,7 @@ class ToolResult:
 
 @dataclass
 class SessionState:
+    project_id: str | None = None
     history: list[ChatMessage] = field(default_factory=list)
     event_seq: int = 0
     pending_questions: dict[str, asyncio.Future] = field(default_factory=dict)
@@ -116,7 +117,10 @@ class SessionState:
     mcp_client: Any = None
     mcp_connected: bool = False
     mcp_connecting: bool = False
+    mcp_connected_event: asyncio.Event = field(default_factory=asyncio.Event, init=False, repr=False)
     cancel_token: CancellationToken | None = None
     turn_task: asyncio.Task | None = None
     event_queue: asyncio.Queue | None = None
     event_history: deque = field(default_factory=lambda: deque(maxlen=100))
+    model_adapter: Any = None
+    load_lock: asyncio.Lock = field(default_factory=asyncio.Lock)

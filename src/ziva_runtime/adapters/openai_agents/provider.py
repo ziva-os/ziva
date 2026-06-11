@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, AsyncIterator, Iterable, Protocol
 
 from ziva_runtime.shared_types import ChatMessage, ChatResult, StreamDelta, ToolCallItem
@@ -15,7 +16,6 @@ def _build_api_messages(messages: Iterable[ChatMessage], system_prompt: str | No
         msg: dict[str, Any] = {"role": m.role, "content": m.content}
         
         if m.role == "assistant" and isinstance(m.content, str):
-            import re
             thinking_matches = re.findall(r'(?i)<think[^>]*>([\s\S]*?)</think[^>]*>', m.content)
             main_text = re.sub(r'(?i)<think[^>]*>[\s\S]*?</think[^>]*>', '', m.content).strip()
             if thinking_matches:
@@ -58,6 +58,7 @@ class ModelAdapter(Protocol):
         model: str,
         system_prompt: str | None = None,
         tools: list[dict] | None = None,
+        thinking_config: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamDelta]: ...
 
 
@@ -65,8 +66,10 @@ class OpenAIChatAdapter:
     """Adapter using openai SDK Chat Completions with native function calling."""
 
     def __init__(self, base_url: str | None = None, api_key: str | None = None):
+        from openai import AsyncOpenAI
         self._base_url = base_url or os.environ.get("OPENAI_BASE_URL")
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY")
+        self._client = AsyncOpenAI(base_url=self._base_url, api_key=self._api_key)
 
     async def chat(
         self,
@@ -76,9 +79,6 @@ class OpenAIChatAdapter:
         tools: list[dict] | None = None,
         thinking_config: dict[str, Any] | None = None,
     ) -> ChatResult:
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(base_url=self._base_url, api_key=self._api_key)
         thinking_enabled = thinking_config is not None and thinking_config.get("type") == "enabled"
         api_messages = _build_api_messages(messages, system_prompt, model=model, thinking_enabled=thinking_enabled)
 
@@ -91,7 +91,7 @@ class OpenAIChatAdapter:
             if model.startswith("o1") or model.startswith("o3"):
                 kwargs["reasoning_effort"] = thinking_config.get("mode", "medium")
 
-        resp = await client.chat.completions.create(**kwargs)
+        resp = await self._client.chat.completions.create(**kwargs)
         choice = resp.choices[0]
         content = choice.message.content or ""
         usage_dict = None
@@ -134,9 +134,6 @@ class OpenAIChatAdapter:
         tools: list[dict] | None = None,
         thinking_config: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamDelta]:
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(base_url=self._base_url, api_key=self._api_key)
         thinking_enabled = thinking_config is not None and thinking_config.get("type") == "enabled"
         api_messages = _build_api_messages(messages, system_prompt, model=model, thinking_enabled=thinking_enabled)
 
@@ -149,7 +146,7 @@ class OpenAIChatAdapter:
             if model.startswith("o1") or model.startswith("o3"):
                 kwargs["reasoning_effort"] = thinking_config.get("mode", "medium")
 
-        response = await client.chat.completions.create(**kwargs)
+        response = await self._client.chat.completions.create(**kwargs)
 
         tool_calls_acc: dict[int, dict] = {}
         in_think_block = False

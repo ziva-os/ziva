@@ -1,10 +1,12 @@
 import asyncio
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase, unittest_run_loop
 
+from ziva_runtime import runtime as runtime_mod
 from ziva_runtime.runtime import Runtime
 from ziva_runtime.shared_types import ChatMessage, ChatResult, StreamDelta
 from ziva_runtime.storage.file_storage import FileStorage
@@ -15,15 +17,28 @@ class FakeAdapter:
     async def chat(self, messages, model, system_prompt=None, tools=None):
         return ChatResult(role="assistant", content="response", model=model, usage={}, finish_reason="stop")
 
-    async def chat_stream(self, messages, model, system_prompt=None, tools=None):
+    async def chat_stream(self, messages, model, system_prompt=None, tools=None, thinking_config=None):
         yield StreamDelta(content="response")
         yield StreamDelta(finish_reason="stop", usage={})
 
 
+# _create_adapter is the function both `Runtime.chat()` and the
+# server's `/compact` / `_run_automation_once` paths reach for to
+# build a fresh adapter per call. Tests that don't want to hit a
+# real provider patch this single entry point — production code
+# stays untouched.
+def _fake_create_adapter(config=None):
+    return FakeAdapter()
+
+
 def _make_server() -> DesktopAPIServer:
     root = Path(__file__).resolve().parents[1]
-    rt = Runtime.create(workspace_root=root, model_adapter=FakeAdapter())
-    return DesktopAPIServer(rt)
+    # Patch the symbol the runtime module exposes (server.py imports
+    # _create_adapter from here too, so a single patch covers both
+    # call sites).
+    with patch.object(runtime_mod, "_create_adapter", _fake_create_adapter):
+        rt = Runtime.create(workspace_root=root, model_adapter=FakeAdapter())
+        return DesktopAPIServer(rt)
 
 
 class TestDesktopToolsPlan(AioHTTPTestCase):
