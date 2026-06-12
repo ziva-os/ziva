@@ -14,6 +14,8 @@
     "vite": "^5.4.0"
   },
   "dependencies": {
+    "@xterm/xterm": "^5.5.0",
+    "@xterm/addon-fit": "^0.10.0",
     "katex": "^0.17.0",
     "marked": "^12.0.0",
     "prismjs": "^1.29.0"

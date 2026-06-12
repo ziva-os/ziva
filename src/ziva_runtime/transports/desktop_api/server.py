@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import mimetypes
+import os
+import pty
 import shlex
+import struct
+import subprocess
+import sys
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -189,6 +195,11 @@ class DesktopAPIServer:
         self.app.router.add_get("/api/system/choose-folder", self.choose_folder)
         self.app.router.add_get("/api/workspace/recent", self.get_recent_workspaces)
         self.app.router.add_post("/api/workspace/switch", self.switch_workspace)
+        # Panel endpoints: files tree, file read, terminal websocket, proxy
+        self.app.router.add_get("/api/files/tree", self.files_tree)
+        self.app.router.add_get("/api/files/read", self.files_read)
+        self.app.router.add_get("/ws/terminal", self.terminal_ws)
+        self.app.router.add_get("/api/proxy", self.proxy_url)
         # Serve static assets from build output
         static_dir = Path(__file__).resolve().parent / "static"
         self.app.router.add_static("/assets", static_dir / "assets")
@@ -1485,3 +1496,169 @@ class DesktopAPIServer:
             pass
         finally:
             await self.stop()
+
+    # ---- Panel endpoints ----
+
+    async def files_tree(self, req: web.Request) -> web.Response:
+        """Return directory tree for the current workspace."""
+        workspace = self.runtime.workspace_root
+        if not workspace or not Path(workspace).is_dir():
+            return web.json_response({"entries": []})
+        depth = min(int(req.query.get("depth", "2")), 5)
+        base = Path(workspace).resolve()
+
+        def _scan(path: Path, d: int) -> list:
+            items: list = []
+            try:
+                for child in sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+                    # Skip hidden dirs and common non-essential dirs
+                    if child.name.startswith(".") or child.name in ("node_modules", "__pycache__", ".git", "venv", ".venv", ".tox", ".mypy_cache"):
+                        continue
+                    entry: Dict[str, Any] = {"name": child.name, "path": str(child.relative_to(base)), "type": "dir" if child.is_dir() else "file"}
+                    if child.is_dir() and d > 0:
+                        entry["children"] = _scan(child, d - 1)
+                    items.append(entry)
+            except PermissionError:
+                pass
+            return items
+
+        entries = _scan(base, depth)
+        return web.json_response({"entries": entries})
+
+    async def files_read(self, req: web.Request) -> web.Response:
+        """Read a file from the workspace. Supports binary mode for images."""
+        rel_path = req.query.get("path", "")
+        binary = req.query.get("binary", "")
+        workspace = self.runtime.workspace_root
+        if not workspace:
+            return web.json_response({"error": "No workspace"}, status=400)
+        base = Path(workspace).resolve()
+        target = (base / rel_path).resolve()
+        # Security: ensure target is under workspace
+        if not str(target).startswith(str(base)):
+            return web.json_response({"error": "Path outside workspace"}, status=403)
+        if not target.is_file():
+            return web.json_response({"error": "Not a file"}, status=404)
+        try:
+            size = target.stat().st_size
+            if binary:
+                # Return raw binary content with correct mime type
+                if size > 10 * 1024 * 1024:  # 10MB for images
+                    return web.json_response({"error": "File too large"}, status=413)
+                ct, _ = mimetypes.guess_type(str(target))
+                return web.Response(body=target.read_bytes(), content_type=ct or "application/octet-stream")
+            if size > 2 * 1024 * 1024:  # 2MB limit for text
+                return web.json_response({"error": "File too large"}, status=413)
+            content = target.read_text(errors="replace")
+            return web.json_response({"content": content, "path": rel_path, "size": size})
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
+    async def terminal_ws(self, req: web.Request) -> web.Response:
+        """WebSocket endpoint for interactive terminal."""
+        ws = web.WebSocketResponse()
+        await ws.prepare(req)
+
+        import termios as _termios_mod
+
+        workspace = self.runtime.workspace_root or str(Path.home())
+        master_fd, slave_fd = pty.openpty()
+
+        proc = subprocess.Popen(
+            [os.environ.get("SHELL", "/bin/bash")],
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            cwd=workspace,
+            env={**os.environ, "TERM": "xterm-256color"},
+            close_fds=True,
+        )
+        os.close(slave_fd)
+
+        async def _read_pty() -> None:
+            loop = asyncio.get_event_loop()
+            reader = asyncio.StreamReader()
+            transport, _ = await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), os.fdopen(master_fd, "rb"))
+            try:
+                while True:
+                    data = await reader.read(4096)
+                    if not data:
+                        break
+                    try:
+                        await ws.send_json({"type": "output", "data": data.decode(errors="replace")})
+                    except Exception:
+                        break
+            except Exception:
+                pass
+            finally:
+                transport.close()
+
+        async def _write_pty() -> None:
+            try:
+                async for msg in ws:
+                    if msg.type == web.WSMsgType.TEXT:
+                        try:
+                            data = json.loads(msg.data)
+                            if data.get("type") == "input":
+                                os.write(master_fd, data["data"].encode())
+                            elif data.get("type") == "resize":
+                                cols = max(1, int(data.get("cols", 80)))
+                                rows = max(1, int(data.get("rows", 24)))
+                                winsize = struct.pack("HHHH", rows, cols, 0, 0)
+                                fcntl.ioctl(master_fd, _termios_mod.TIOCSWINSZ, winsize)
+                        except Exception:
+                            pass
+                    elif msg.type in (web.WSMsgType.ERROR, web.WSMsgType.CLOSE):
+                        break
+            except Exception:
+                pass
+
+        reader_task = asyncio.create_task(_read_pty())
+        writer_task = asyncio.create_task(_write_pty())
+
+        try:
+            await asyncio.gather(reader_task, writer_task, return_exceptions=True)
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
+            reader_task.cancel()
+            writer_task.cancel()
+
+        return ws
+
+    async def proxy_url(self, req: web.Request) -> web.Response:
+        """Proxy a URL for the browser panel (fallback for non-Electron)."""
+        import aiohttp
+        url = req.query.get("url", "")
+        if not url:
+            return web.json_response({"error": "Missing url parameter"}, status=400)
+        if not url.startswith(("http://", "https://")):
+            return web.json_response({"error": "Only http/https allowed"}, status=400)
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "identity",
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15), allow_redirects=True) as resp:
+                    body = await resp.read()
+                    ct = resp.headers.get("Content-Type", "text/html")
+                    # Inject base tag to fix relative URLs in proxied HTML
+                    if "text/html" in ct:
+                        html = body.decode("utf-8", errors="replace")
+                        import html as html_mod
+                        safe_url = html_mod.escape(url)
+                        html = html.replace("<head>", f'<head><base href="{safe_url}">')
+                        body = html.encode("utf-8")
+                    return web.Response(body=body, content_type=ct.split(";")[0])
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=502)

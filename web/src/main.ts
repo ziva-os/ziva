@@ -2,11 +2,14 @@ import "./styles/base.css";
 import "./styles/theme-dark.css";
 import "./styles/theme-light.css";
 import "./styles/components.css";
+import "@xterm/xterm/css/xterm.css";
 import * as api from "./api";
 import { SSEPool } from "./sse";
 import { renderMarkdown, addCopyButtons, highlightCode, extractThinking } from "./markdown";
 import { Store } from "./state";
-import type { AppState, PendingAttachment } from "./state";
+import type { AppState, PendingAttachment, RightPanelTab } from "./state";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
 
 // ---- Helpers ----
 function esc(s: string): string {
@@ -82,6 +85,9 @@ const store = new Store<AppState>({
   latencyMs: null,
   sidebarOpen: true,
   diffPanelOpen: false,
+  rightPanelOpen: false,
+  rightPanelTabs: [],
+  activeRightTabId: null,
   theme: (document.documentElement.getAttribute("data-theme") as "dark" | "light") || "dark",
   autoScroll: true,
 });
@@ -130,6 +136,516 @@ function showEmptyState(show: boolean) {
   const center = document.querySelector(".ziva-center");
   if (center) center.classList.toggle("has-messages", !show);
   $("messages").style.display = show ? "none" : "block";
+}
+
+// ---- Right Panel Tab System ----
+const panelTypes = [
+  { type: "review", label: "Code Review", icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>' },
+  { type: "terminal", label: "Terminal", icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>' },
+  { type: "browser", label: "Browser", icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>' },
+  { type: "files", label: "Files", icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>' },
+] as const;
+
+let _tabIdCounter = 0;
+function nextTabId(): string { return "tab_" + (++_tabIdCounter); }
+
+function openRightPanel(type: RightPanelTab["type"], title?: string) {
+  const { rightPanelTabs } = store.get();
+  const pt = panelTypes.find(p => p.type === type);
+  const tab: RightPanelTab = { id: nextTabId(), type, title: title || (pt ? pt.label : type) };
+  const tabs = [...rightPanelTabs, tab];
+  store.set({ rightPanelTabs: tabs, activeRightTabId: tab.id, rightPanelOpen: true });
+  $("rightPanel").classList.add("show");
+  $("btnOpenRightPanel")?.classList.add("panel-open");
+  renderTabBar();
+  activateTab(tab.id);
+  // Scroll tab bar to the end so the new tab is visible
+  const scroll = document.querySelector(".rp-tabs-scroll");
+  if (scroll) scroll.scrollLeft = scroll.scrollWidth;
+}
+
+function closeRightPanelTab(tabId: string) {
+  const { rightPanelTabs, activeRightTabId } = store.get();
+  const idx = rightPanelTabs.findIndex(t => t.id === tabId);
+  if (idx < 0) return;
+  const tabs = rightPanelTabs.filter(t => t.id !== tabId);
+  let newActive = activeRightTabId;
+  if (activeRightTabId === tabId) {
+    if (tabs.length === 0) {
+      newActive = null;
+      closeRightPanel();
+    } else {
+      newActive = tabs[Math.min(idx, tabs.length - 1)].id;
+    }
+  }
+  store.set({ rightPanelTabs: tabs, activeRightTabId: newActive });
+  renderTabBar();
+  if (newActive) activateTab(newActive);
+}
+
+function activateTab(tabId: string) {
+  const { rightPanelTabs } = store.get();
+  store.set({ activeRightTabId: tabId });
+  const tab = rightPanelTabs.find(t => t.id === tabId);
+  if (!tab) return;
+  const rp = $("rightPanel");
+  const body = rp.querySelector(".right-panel-body") as HTMLElement;
+  if (!body) return;
+  body.querySelectorAll(".panel-content").forEach(el => ((el as HTMLElement).style.display = "none"));
+  let content = body.querySelector(`[data-tab-id="${tabId}"]`) as HTMLElement;
+  if (!content) {
+    content = document.createElement("div");
+    content.className = "panel-content";
+    content.dataset.tabId = tabId;
+    body.appendChild(content);
+    renderTabContent(tab, content);
+  }
+  content.style.display = "flex";
+  renderTabBar();
+}
+
+function renderTabBar() {
+  const { rightPanelTabs, activeRightTabId } = store.get();
+  const rp = $("rightPanel");
+  let bar = rp.querySelector(".right-panel-tabs") as HTMLElement;
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.className = "right-panel-tabs";
+    rp.prepend(bar);
+  }
+  let html = '<div class="rp-tabs-scroll">';
+  for (const tab of rightPanelTabs) {
+    const pt = panelTypes.find(p => p.type === tab.type);
+    const icon = pt ? pt.icon : "";
+    const active = tab.id === activeRightTabId ? " active" : "";
+    html += `<div class="rp-tab${active}" data-tab-id="${tab.id}">
+      ${icon}<span class="rp-tab-title">${esc(tab.title)}</span>
+      <button class="rp-tab-close" data-close-tab="${tab.id}">&times;</button>
+    </div>`;
+  }
+  html += `</div>`;
+  html += `<button class="rp-tab-add" id="btnAddTab" title="New tab">+</button>`;
+  // Toggle/close button — same icon as toolbar-right-toggle (mirrored sidebar icon)
+  html += `<button class="rp-tab-toggle" id="btnToggleRight" title="Close panel">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
+  </button>`;
+  bar.innerHTML = html;
+  bar.querySelectorAll(".rp-tab").forEach(el => {
+    (el as HTMLElement).onclick = (e) => {
+      if ((e.target as HTMLElement).classList.contains("rp-tab-close")) return;
+      activateTab((el as HTMLElement).dataset.tabId!);
+    };
+  });
+  bar.querySelectorAll(".rp-tab-close").forEach(btn => {
+    (btn as HTMLElement).onclick = (e) => {
+      e.stopPropagation();
+      closeRightPanelTab(((btn as HTMLElement).dataset.closeTab)!);
+    };
+  });
+  const addBtn = bar.querySelector("#btnAddTab");
+  if (addBtn) addBtn.onclick = showAddTabMenu;
+  const toggleBtn = bar.querySelector("#btnToggleRight");
+  if (toggleBtn) toggleBtn.addEventListener("click", toggleRightPanel);
+}
+
+let _addTabMenu: HTMLElement | null = null;
+let _addTabOutsideHandler: ((e: MouseEvent) => void) | null = null;
+function showAddTabMenu() {
+  if (_addTabMenu) { closeAddTabMenu(); return; }
+  const menu = document.createElement("div");
+  menu.className = "panel-dropdown add-tab-menu";
+  for (const pt of panelTypes) {
+    const el = document.createElement("div");
+    el.className = "panel-dropdown-item";
+    el.innerHTML = pt.icon + `<span>${pt.label}</span>`;
+    el.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      closeAddTabMenu();
+      openRightPanel(pt.type);
+    });
+    menu.appendChild(el);
+  }
+  document.body.appendChild(menu);
+  _addTabMenu = menu;
+  // Position below the + button, clamped to viewport
+  const btn = $("btnAddTab");
+  if (btn) {
+    const rect = btn.getBoundingClientRect();
+    let top = rect.bottom + 4;
+    let left = rect.left;
+    const menuH = menu.offsetHeight || 180;
+    const menuW = 180;
+    if (left + menuW > window.innerWidth) left = window.innerWidth - menuW - 4;
+    if (top + menuH > window.innerHeight) top = rect.top - menuH - 4;
+    menu.style.position = "fixed";
+    menu.style.top = Math.max(4, top) + "px";
+    menu.style.left = Math.max(4, left) + "px";
+  }
+  // Close on any outside click
+  _addTabOutsideHandler = (e: MouseEvent) => {
+    if (_addTabMenu && !_addTabMenu.contains(e.target as Node) && (e.target as HTMLElement)?.id !== "btnAddTab") {
+      closeAddTabMenu();
+    }
+  };
+  setTimeout(() => {
+    document.addEventListener("click", _addTabOutsideHandler!, true);
+  }, 10);
+}
+
+function closeAddTabMenu() {
+  if (_addTabMenu) { _addTabMenu.remove(); _addTabMenu = null; }
+  if (_addTabOutsideHandler) {
+    document.removeEventListener("click", _addTabOutsideHandler, true);
+    _addTabOutsideHandler = null;
+  }
+}
+
+function toggleRightPanel() {
+  const rp = $("rightPanel");
+  const isOpen = rp.classList.toggle("show");
+  store.set({ rightPanelOpen: isOpen });
+  if (isOpen) {
+    $("btnOpenRightPanel")?.classList.add("panel-open");
+    const { rightPanelTabs, activeRightTabId } = store.get();
+    if (rightPanelTabs.length === 0) {
+      renderTabBar();
+    } else if (activeRightTabId) {
+      activateTab(activeRightTabId);
+    }
+  } else {
+    $("btnOpenRightPanel")?.classList.remove("panel-open");
+    const layout = document.querySelector(".ziva-layout");
+    layout?.classList.remove("panel-fullscreen");
+  }
+}
+
+function closeRightPanel() {
+  $("rightPanel").classList.remove("show");
+  $("btnOpenRightPanel")?.classList.remove("panel-open");
+  store.set({ rightPanelOpen: false });
+  const layout = document.querySelector(".ziva-layout");
+  layout?.classList.remove("panel-fullscreen");
+}
+
+function toggleFullscreenPanel() {
+  const layout = document.querySelector(".ziva-layout");
+  layout?.classList.toggle("panel-fullscreen");
+}
+
+// ---- Resizable Right Panel ----
+function initResizablePanel() {
+  const rp = $("rightPanel");
+  const handle = document.createElement("div");
+  handle.className = "rp-resize-handle";
+  rp.prepend(handle);
+  let startX = 0, startW = 0;
+  handle.addEventListener("mousedown", (e: MouseEvent) => {
+    e.preventDefault();
+    startX = e.clientX;
+    startW = rp.offsetWidth;
+    const onMouseMove = (e2: MouseEvent) => {
+      const dx = startX - e2.clientX;
+      const newW = Math.max(280, Math.min(window.innerWidth * 0.8, startW + dx));
+      rp.style.flex = `0 0 ${newW}px`;
+    };
+    const onMouseUp = () => {
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  });
+}
+
+// ---- Panel Content Renderers ----
+
+function renderTabContent(tab: RightPanelTab, container: HTMLElement) {
+  switch (tab.type) {
+    case "review": renderReviewTab(container); break;
+    case "terminal": renderTerminalTab(container); break;
+    case "browser": renderBrowserTab(container); break;
+    case "files": renderFilesTab(container); break;
+  }
+}
+
+function renderReviewTab(container: HTMLElement) {
+  container.innerHTML = `
+    <div class="review-header">
+      <div class="review-header-info">
+        <span class="review-branch" data-review-branch></span>
+        <span class="review-stats" data-review-stats></span>
+      </div>
+      <div class="review-header-actions">
+        <button class="review-action-btn" data-action="expand-all" title="Expand all">Expand All</button>
+        <button class="review-action-btn" data-action="collapse-all" title="Collapse all">Collapse All</button>
+        <button class="panel-fullscreen-btn" title="Fullscreen">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="panel-content-body">
+      <div class="review-layout">
+        <div class="review-diff-area" data-review-body>
+          <div class="diff-empty">No changes yet</div>
+        </div>
+        <div class="review-file-sidebar">
+          <div class="review-file-search">
+            <input type="text" placeholder="Filter files..." data-review-filter />
+          </div>
+          <div class="review-file-list" data-review-files></div>
+        </div>
+      </div>
+    </div>`;
+  container.querySelector(".panel-fullscreen-btn")!.addEventListener("click", toggleFullscreenPanel);
+  const body = container.querySelector("[data-review-body]") as HTMLElement;
+  container.querySelector('[data-action="expand-all"]')!.onclick = () => body.querySelectorAll(".diff-file-content").forEach(el => ((el as HTMLElement).style.display = "block"));
+  container.querySelector('[data-action="collapse-all"]')!.onclick = () => body.querySelectorAll(".diff-file-content").forEach(el => ((el as HTMLElement).style.display = "none"));
+  // Filter handler
+  const filterInput = container.querySelector("[data-review-filter]") as HTMLInputElement;
+  filterInput.addEventListener("input", () => {
+    const q = filterInput.value.toLowerCase();
+    container.querySelectorAll("[data-review-file-item]").forEach(el => {
+      const path = (el as HTMLElement).dataset.path || "";
+      (el as HTMLElement).style.display = path.toLowerCase().includes(q) ? "" : "none";
+    });
+  });
+  refreshDiffForContainer(container);
+}
+
+function renderTerminalTab(container: HTMLElement) {
+  const tabId = container.dataset.tabId!;
+  container.innerHTML = `
+    <div class="panel-content-header">
+      <span class="panel-content-title">Terminal</span>
+      <div style="flex:1"></div>
+      <button class="panel-fullscreen-btn" title="Fullscreen">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+      </button>
+    </div>
+    <div class="panel-content-body">
+      <div id="terminalContainer_${tabId}" class="terminal-container"></div>
+    </div>`;
+  container.querySelector(".panel-fullscreen-btn")!.addEventListener("click", toggleFullscreenPanel);
+  initTerminal(tabId);
+}
+
+function renderBrowserTab(container: HTMLElement) {
+  const isElectron = !!(window as any).electronAPI;
+  container.innerHTML = `
+    <div class="panel-content-header browser-header-bar">
+      <button class="browser-nav-btn" data-action="back" title="Back">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <button class="browser-nav-btn" data-action="forward" title="Forward">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+      </button>
+      <button class="browser-nav-btn" data-action="reload" title="Reload">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+      </button>
+      <input type="text" class="browser-url-input" value="" placeholder="Enter URL..." />
+      <button class="browser-go-btn">Go</button>
+      <div style="flex:1"></div>
+      <button class="panel-fullscreen-btn" title="Fullscreen">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+      </button>
+    </div>
+    <div class="panel-content-body">
+      ${isElectron
+        ? `<webview class="browser-frame" src="about:blank" allowpopups></webview>`
+        : `<iframe class="browser-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" src="about:blank"></iframe>`}
+    </div>`;
+  container.querySelector(".panel-fullscreen-btn")!.addEventListener("click", toggleFullscreenPanel);
+  const urlInput = container.querySelector(".browser-url-input") as HTMLInputElement;
+  const frame = container.querySelector(isElectron ? "webview" : "iframe") as any;
+  const navigate = () => {
+    let url = urlInput.value.trim();
+    if (!url) return;
+    if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+    urlInput.value = url;
+    if (isElectron) { if (frame) frame.loadURL(url); }
+    else { frame.src = "/api/proxy?url=" + encodeURIComponent(url); }
+  };
+  container.querySelector(".browser-go-btn")!.onclick = navigate;
+  urlInput.addEventListener("keydown", (e: KeyboardEvent) => { if (e.key === "Enter") navigate(); });
+  if (isElectron) {
+    frame?.addEventListener("did-navigate", (e: any) => { urlInput.value = e.url; });
+    frame?.addEventListener("did-navigate-in-page", (e: any) => { urlInput.value = e.url; });
+    container.querySelector('[data-action="back"]')!.onclick = () => { try { frame?.goBack(); } catch {} };
+    container.querySelector('[data-action="forward"]')!.onclick = () => { try { frame?.goForward(); } catch {} };
+    container.querySelector('[data-action="reload"]')!.onclick = () => { try { frame?.reload(); } catch {} };
+  } else {
+    container.querySelector('[data-action="back"]')!.onclick = () => { try { frame.contentWindow?.history.back(); } catch {} };
+    container.querySelector('[data-action="forward"]')!.onclick = () => { try { frame.contentWindow?.history.forward(); } catch {} };
+    container.querySelector('[data-action="reload"]')!.onclick = () => { try { frame.contentWindow?.location.reload(); } catch { frame.src = frame.src; } };
+  }
+}
+
+function renderFilesTab(container: HTMLElement) {
+  container.innerHTML = `
+    <div class="panel-content-header">
+      <span class="panel-content-title">Files</span>
+      <div style="flex:1"></div>
+      <button class="panel-fullscreen-btn" title="Fullscreen">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+      </button>
+    </div>
+    <div class="panel-content-body">
+      <div class="files-layout">
+        <div class="files-tree" data-files-tree></div>
+        <div class="files-viewer" data-files-viewer>
+          <div class="files-viewer-empty">Select a file to view</div>
+        </div>
+      </div>
+    </div>`;
+  container.querySelector(".panel-fullscreen-btn")!.addEventListener("click", toggleFullscreenPanel);
+  loadFileTreeForContainer(container);
+}
+
+function initTerminal(tabId: string) {
+  const container = document.getElementById("terminalContainer_" + tabId);
+  if (!container) return;
+  const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(`${wsProto}//${location.host}/ws/terminal`);
+  const term = new Terminal({
+    theme: { background: "#1a1a1a", foreground: "#e0e0e0", cursor: "#e0e0e0" },
+    fontSize: 13,
+    fontFamily: "var(--mono)",
+    cursorBlink: true,
+  });
+  const fitAddon = new FitAddon();
+  term.loadAddon(fitAddon);
+  term.open(container);
+  setTimeout(() => fitAddon.fit(), 0);
+  term.onData((data: string) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "input", data })); });
+  ws.onmessage = (ev) => {
+    try { const msg = JSON.parse(ev.data); if (msg.type === "output") term.write(msg.data); } catch {}
+  };
+  ws.onclose = () => term.write("\r\n\x1b[90m[Connection closed]\x1b[0m");
+  ws.onerror = () => term.write("\r\n\x1b[31m[Connection error]\x1b[0m");
+  const onResize = () => {
+    fitAddon.fit();
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+  };
+  window.addEventListener("resize", onResize);
+  (container as any)._cleanup = () => { window.removeEventListener("resize", onResize); term.dispose(); };
+}
+
+async function loadFileTreeForContainer(panelContainer: HTMLElement) {
+  const tree = panelContainer.querySelector("[data-files-tree]") as HTMLElement;
+  const viewer = panelContainer.querySelector("[data-files-viewer]") as HTMLElement;
+  if (!tree) return;
+  tree.innerHTML = '<div style="padding:14px;color:var(--muted);font-size:12px">Loading...</div>';
+  try {
+    const resp = await fetch("/api/files/tree?depth=2");
+    if (!resp.ok) throw new Error("Failed");
+    const data = await resp.json();
+    renderFileTreeIn(tree, data.entries || [], 0, viewer);
+  } catch {
+    tree.innerHTML = '<div style="padding:14px;color:var(--red);font-size:12px">Failed to load files</div>';
+  }
+}
+
+function renderFileTreeIn(container: HTMLElement, entries: any[], depth: number, viewer: HTMLElement) {
+  container.innerHTML = "";
+  const sorted = [...entries].sort((a, b) => {
+    if (a.type !== b.type) return a.type === "dir" ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+  for (const entry of sorted) {
+    const item = document.createElement("div");
+    item.className = "files-tree-item";
+    item.style.paddingLeft = (10 + depth * 16) + "px";
+    const icon = entry.type === "dir"
+      ? '<span class="file-icon">&#128193;</span>'
+      : '<span class="file-icon">&#128196;</span>';
+    item.innerHTML = `${icon}<span class="${entry.type === "dir" ? "files-tree-dir" : ""}">${esc(entry.name)}</span>`;
+    item.onclick = () => {
+      if (entry.type === "dir") {
+        const expanded = item.dataset.expanded === "true";
+        item.dataset.expanded = expanded ? "false" : "true";
+        let next = item.nextElementSibling as HTMLElement;
+        while (next && parseInt(next.style.paddingLeft || "10px") > parseInt(item.style.paddingLeft || "10px")) {
+          const toRemove = next;
+          next = next.nextElementSibling as HTMLElement;
+          toRemove.remove();
+        }
+        if (!expanded && entry.children) {
+          renderFileTreeAtIn(item, entry.children, depth + 1, viewer);
+        }
+      } else {
+        container.querySelectorAll(".files-tree-item.active").forEach(el => el.classList.remove("active"));
+        item.classList.add("active");
+        loadFileContentIn(viewer, entry.path);
+      }
+    };
+    container.appendChild(item);
+  }
+}
+
+function renderFileTreeAtIn(afterEl: HTMLElement, entries: any[], depth: number, viewer: HTMLElement) {
+  const parent = afterEl.parentElement;
+  if (!parent) return;
+  const sorted = [...entries].sort((a, b) => {
+    if (a.type !== b.type) return a.type === "dir" ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+  let refNode = afterEl.nextElementSibling;
+  for (const entry of sorted) {
+    const item = document.createElement("div");
+    item.className = "files-tree-item";
+    item.style.paddingLeft = (10 + depth * 16) + "px";
+    const icon = entry.type === "dir" ? '<span class="file-icon">&#128193;</span>' : '<span class="file-icon">&#128196;</span>';
+    item.innerHTML = `${icon}<span class="${entry.type === "dir" ? "files-tree-dir" : ""}">${esc(entry.name)}</span>`;
+    item.onclick = () => {
+      if (entry.type === "dir") {
+        const expanded = item.dataset.expanded === "true";
+        item.dataset.expanded = expanded ? "false" : "true";
+        let next = item.nextElementSibling as HTMLElement;
+        while (next && parseInt(next.style.paddingLeft || "10px") > parseInt(item.style.paddingLeft || "10px")) {
+          const toRemove = next;
+          next = next.nextElementSibling as HTMLElement;
+          toRemove.remove();
+        }
+        if (!expanded && entry.children) renderFileTreeAtIn(item, entry.children, depth + 1, viewer);
+      } else {
+        parent!.querySelectorAll(".files-tree-item.active").forEach(el => el.classList.remove("active"));
+        item.classList.add("active");
+        loadFileContentIn(viewer, entry.path);
+      }
+    };
+    parent.insertBefore(item, refNode);
+  }
+}
+
+async function loadFileContentIn(viewer: HTMLElement, path: string) {
+  viewer.innerHTML = '<div class="file-empty">Loading...</div>';
+  const ext = (path.split(".").pop() || "").toLowerCase();
+  const imgExts = ["png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "bmp"];
+  if (imgExts.includes(ext)) {
+    const imgSrc = "/api/files/read?path=" + encodeURIComponent(path) + "&binary=1";
+    viewer.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;padding:14px;background:var(--surface)">
+      <img src="${imgSrc}" style="max-width:100%;max-height:100%;object-fit:contain;border-radius:6px" alt="${esc(path)}" />
+    </div>`;
+    return;
+  }
+  try {
+    const resp = await fetch("/api/files/read?path=" + encodeURIComponent(path));
+    if (!resp.ok) throw new Error("Failed");
+    const data = await resp.json();
+    const lang: Record<string, string> = { py: "python", ts: "typescript", js: "javascript", css: "css", html: "html", json: "json", md: "markdown", yaml: "yaml", yml: "yaml", sh: "bash", rs: "rust", go: "go", toml: "toml" };
+    const pre = document.createElement("pre");
+    pre.className = "language-" + (lang[ext] || "text");
+    pre.textContent = data.content || "";
+    viewer.innerHTML = "";
+    viewer.appendChild(pre);
+    if (typeof Prism !== "undefined") Prism.highlightElement(pre);
+  } catch {
+    viewer.innerHTML = '<div class="file-empty">Failed to load file</div>';
+  }
 }
 
 // ---- Relative time formatting ----
@@ -199,20 +715,24 @@ function init() {
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
             <span>Theme</span>
           </button>
-          <button class="sidebar-nav-item" id="btnRightPanel">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
-            <span>Changes</span>
-          </button>
           <button class="sidebar-nav-item" id="btnSettings">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
             <span>Settings</span>
           </button>
         </div>
       </aside>
-      <button class="sidebar-open-btn" id="btnOpenSidebar" title="Open sidebar" aria-label="Open sidebar">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
-      </button>
       <main class="ziva-center">
+        <div class="ziva-toolbar" id="zivaToolbar">
+          <button class="toolbar-sidebar-open" id="btnOpenSidebar" title="Open sidebar" aria-label="Open sidebar">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+          </button>
+          <div class="toolbar-title" id="toolbarTitle"></div>
+          <div class="toolbar-actions">
+            <button class="toolbar-right-toggle" id="btnOpenRightPanel" title="Toggle panel" aria-label="Toggle panel">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
+            </button>
+          </div>
+        </div>
         <div class="empty-state" id="emptyState">
         </div>
         <div class="messages" id="messages" style="display:none"></div>
@@ -267,14 +787,7 @@ function init() {
         </div>
       </main>
       <aside class="ziva-right-panel" id="rightPanel">
-        <div class="right-panel-header">
-          <span>Changes</span>
-          <span class="stats" id="diffStats"></span>
-          <button id="btnCloseRight">&times;</button>
-        </div>
-        <div class="right-panel-body" id="diffBody">
-          <div class="diff-empty">No changes yet</div>
-        </div>
+        <div class="right-panel-body"></div>
       </aside>
     </div>`;
 
@@ -337,8 +850,8 @@ function bindEvents() {
   if (pendingBarText) pendingBarText.onclick = editPendingMessage;
   if (pendingBarClear) pendingBarClear.onclick = clearPendingMessage;
   $("btnNewSession").onclick = () => createSession();
-  $("btnRightPanel").onclick = toggleDiff;
-  $("btnCloseRight").onclick = toggleDiff;
+  $("btnOpenRightPanel").onclick = toggleRightPanel;
+  initResizablePanel();
 
   $("btnSkills").onclick = () => openSkillsBrowser();
   $("btnScheduled").onclick = () => openAutomationsModal();
@@ -447,7 +960,7 @@ function bindEvents() {
   );
 
   document.addEventListener("keydown", (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "d") { e.preventDefault(); toggleDiff(); }
+    if ((e.metaKey || e.ctrlKey) && e.key === "d") { e.preventDefault(); toggleRightPanel(); }
     if ((e.metaKey || e.ctrlKey) && e.key === "b") { e.preventDefault(); toggleSidebar(); }
     if ((e.metaKey || e.ctrlKey) && e.key === "n") { e.preventDefault(); createSession(); }
     if (e.key === "Escape") {
@@ -1422,7 +1935,7 @@ async function switchSession(sid: string, opts: { skipGitRefresh?: boolean } = {
   loadPromptDraft(sid);
   updateSendStopButton();
   refreshPlan();
-  if ($("rightPanel").classList.contains("show")) refreshDiff();
+  if ($("rightPanel").classList.contains("show")) refreshActiveReviewTabs();
 
   // Show/hide compact toast based on session state
   const { compactingSessions } = store.get();
@@ -2598,7 +3111,7 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
       currentAssistantEl = null;
       updateSendStopButton();
       refreshPlan();
-      if ($("rightPanel").classList.contains("show")) refreshDiff();
+      if ($("rightPanel").classList.contains("show")) refreshActiveReviewTabs();
       // Codex-style: flush this session's queued prompt now that the
       // turn has closed. Look up by the active sid (the SSE stream is
       // per-session, so we never flush another session's queue here).
@@ -3757,32 +4270,43 @@ const FILE_MUTATING_TOOLS = new Set<string>([
 
 let _diffRefreshTimer: number | null = null;
 function scheduleDiffRefresh() {
-  // Opening the panel later will fetch once via toggleDiff(), so
-  // there's no need to refresh in the background when it's closed.
   if (!$("rightPanel").classList.contains("show")) return;
   if (_diffRefreshTimer !== null) clearTimeout(_diffRefreshTimer);
   _diffRefreshTimer = window.setTimeout(() => {
     _diffRefreshTimer = null;
-    void refreshDiff();
+    refreshActiveReviewTabs();
   }, 250);
 }
 
-function toggleDiff() {
-  const panel = $("rightPanel");
-  panel.classList.toggle("show");
-  store.set({ diffPanelOpen: panel.classList.contains("show") });
-  if (panel.classList.contains("show")) refreshDiff();
+function refreshActiveReviewTabs() {
+  const { rightPanelTabs, activeRightTabId } = store.get();
+  const activeTab = rightPanelTabs.find(t => t.id === activeRightTabId && t.type === "review");
+  if (!activeTab) return;
+  const rp = $("rightPanel");
+  const container = rp.querySelector(`[data-tab-id="${activeTab.id}"]`) as HTMLElement;
+  if (container) refreshDiffForContainer(container);
 }
 
-async function refreshDiff() {
+async function refreshDiffForContainer(container: HTMLElement) {
   const { activeSid } = store.get();
   if (!activeSid) return;
   const diff = await api.getDiff(activeSid);
-  const body = $("diffBody");
-  const stats = $("diffStats");
+  const body = container.querySelector("[data-review-body]") as HTMLElement;
+  const fileList = container.querySelector("[data-review-files]") as HTMLElement;
+  const statsEl = container.querySelector("[data-review-stats]") as HTMLElement;
+  const branchEl = container.querySelector("[data-review-branch]") as HTMLElement;
+  if (!body || !fileList) return;
+
+  // Show branch
+  if (branchEl) {
+    const branchName = $("gitBranchName")?.textContent || "main";
+    branchEl.textContent = `${branchName} → origin/${branchName}`;
+  }
+
   if (!diff) {
     body.innerHTML = '<div class="diff-empty">No changes</div>';
-    stats.textContent = "";
+    fileList.innerHTML = "";
+    if (statsEl) statsEl.textContent = "";
     return;
   }
 
@@ -3804,53 +4328,106 @@ async function refreshDiff() {
     }
   }
 
-  stats.textContent = `${fileGroups.length} files, +${totalAdds} -${totalDels}`;
+  // Stats header
+  if (statsEl) statsEl.innerHTML = `<span class="review-stat-add">+${totalAdds}</span> <span class="review-stat-del">-${totalDels}</span>`;
 
-  let html = "";
-  for (const fg of fileGroups) {
-    html += `<div class="diff-file">`;
-    html += `<div class="diff-file-header" data-path="${esc(fg.path)}">`;
-    html += `<span>${esc(fg.path)}</span>`;
-    html += `<span class="file-stats">+${fg.adds} -${fg.dels}</span>`;
-    html += `<button class="revert-btn" data-path="${esc(fg.path)}">Revert</button>`;
+  // File sidebar
+  let fileHtml = "";
+  for (let i = 0; i < fileGroups.length; i++) {
+    const fg = fileGroups[i];
+    const iconColor = getFileIconColor(fg.path);
+    fileHtml += `<div class="review-file-item" data-review-file-item data-path="${esc(fg.path)}" data-index="${i}">
+      <span class="review-file-type" style="color:${iconColor}">${getFileIconText(fg.path)}</span>
+      <span class="review-file-name">${esc(fg.path)}</span>
+      <span class="review-file-stat">+${fg.adds} -${fg.dels}</span>
+    </div>`;
+  }
+  fileList.innerHTML = fileHtml;
+
+  // Diff viewer — only show selected file initially (first file selected)
+  let selectedIdx = 0;
+  const renderFileDiff = (idx: number) => {
+    const fg = fileGroups[idx];
+    if (!fg) { body.innerHTML = '<div class="diff-empty">Select a file</div>'; return; }
+    let lineNum = 0;
+    let html = `<div class="diff-file-active">`;
+    html += `<div class="diff-active-header">`;
+    html += `<span class="diff-active-indicator"></span>`;
+    html += `<span class="diff-active-path">${esc(fg.path)}</span>`;
+    html += `<span class="diff-active-stats">+${fg.adds} -${fg.dels}</span>`;
+    html += `<button class="revert-btn" data-path="${esc(fg.path)}" title="Revert this file">Revert</button>`;
     html += `</div>`;
-    html += `<div class="diff-file-content" style="display:none">`;
+    html += `<div class="diff-file-content" style="display:block">`;
     for (const line of fg.lines) {
-      if (line.startsWith("+++") || line.startsWith("---") || line.startsWith("@@")) {
-        html += `<div class="diff-line hdr">${esc(line)}</div>`;
+      lineNum++;
+      if (line.startsWith("+++") || line.startsWith("---")) {
+        continue; // skip file path headers
+      } else if (line.startsWith("@@")) {
+        const hunkMatch = line.match(/@@ -(\d+)/);
+        lineNum = hunkMatch ? parseInt(hunkMatch[1]) - 1 : lineNum;
+        html += `<div class="diff-line hdr"><span class="diff-linenum"></span><span class="diff-line-content">${esc(line)}</span></div>`;
       } else if (line.startsWith("+")) {
-        html += `<div class="diff-line add">${esc(line)}</div>`;
+        lineNum++;
+        html += `<div class="diff-line add"><span class="diff-linenum">${lineNum}</span><span class="diff-line-content">${esc(line.substring(1))}</span></div>`;
       } else if (line.startsWith("-")) {
-        html += `<div class="diff-line del">${esc(line)}</div>`;
+        html += `<div class="diff-line del"><span class="diff-linenum"></span><span class="diff-line-content">${esc(line.substring(1))}</span></div>`;
       } else {
-        html += `<div class="diff-line ctx">${esc(line)}</div>`;
+        lineNum++;
+        html += `<div class="diff-line ctx"><span class="diff-linenum">${lineNum}</span><span class="diff-line-content">${esc(line)}</span></div>`;
       }
     }
     html += `</div></div>`;
-  }
+    body.innerHTML = html;
 
-  body.innerHTML = html;
+    body.querySelectorAll(".revert-btn").forEach((btn) => {
+      (btn as HTMLElement).onclick = async (e) => {
+        e.stopPropagation();
+        const path = (btn as HTMLElement).dataset.path!;
+        if (!confirm(`Revert ${path}?`)) return;
+        try {
+          await api.revertFiles(activeSid, [path]);
+          refreshDiffForContainer(container);
+        } catch {}
+      };
+    });
+  };
+  renderFileDiff(0);
 
-  body.querySelectorAll(".diff-file-header").forEach((hdr) => {
-    const el = hdr as HTMLElement;
-    const content = el.nextElementSibling as HTMLElement;
-    el.onclick = (e) => {
-      if ((e.target as HTMLElement).classList.contains("revert-btn")) return;
-      content.style.display = content.style.display === "none" ? "block" : "none";
+  // File sidebar click
+  fileList.querySelectorAll("[data-review-file-item]").forEach((el) => {
+    (el as HTMLElement).onclick = () => {
+      fileList.querySelectorAll(".review-file-item.active").forEach(e => e.classList.remove("active"));
+      (el as HTMLElement).classList.add("active");
+      renderFileDiff(parseInt((el as HTMLElement).dataset.index || "0"));
     };
   });
+  // Highlight first file
+  const firstItem = fileList.querySelector("[data-review-file-item]") as HTMLElement;
+  if (firstItem) firstItem.classList.add("active");
+}
 
-  body.querySelectorAll(".revert-btn").forEach((btn) => {
-    (btn as HTMLElement).onclick = async (e) => {
-      e.stopPropagation();
-      const path = (btn as HTMLElement).dataset.path!;
-      if (!confirm(`Revert ${path}?`)) return;
-      try {
-        await api.revertFiles(activeSid!, [path]);
-        refreshDiff();
-      } catch { /* ignore */ }
-    };
-  });
+function getFileIconText(path: string): string {
+  const ext = path.split(".").pop()?.toLowerCase() || "";
+  const map: Record<string, string> = {
+    py: "PY", ts: "TS", tsx: "TX", js: "JS", jsx: "JX", rs: "RS", go: "GO",
+    css: "CS", html: "HT", json: "{ }", md: "MD", yaml: "YM", yml: "YM",
+    toml: "TM", sql: "SQ", sh: "SH", txt: "TX", svg: "SV", png: "PN",
+    jpg: "JP", jpeg: "JP", gif: "GI", webp: "WP", ico: "IC", bmp: "BM",
+    lock: "LK", gitignore: "GI", cfg: "CF", ini: "IN",
+  };
+  return map[ext] || ext.substring(0, 2).toUpperCase() || "FI";
+}
+
+function getFileIconColor(path: string): string {
+  const ext = path.split(".").pop()?.toLowerCase() || "";
+  const colors: Record<string, string> = {
+    py: "#3572A5", ts: "#3178C6", tsx: "#3178C6", js: "#F7DF1E", jsx: "#F7DF1E",
+    rs: "#DEA584", go: "#00ADD8", css: "#563D7C", html: "#E34C26",
+    json: "#FBC02D", md: "#81C995", yaml: "#CB171E", yml: "#CB171E",
+    sh: "#89E051", sql: "#E38C00", svg: "#FF9900", png: "#F28B82",
+    jpg: "#F28B82", jpeg: "#F28B82", gif: "#F28B82", webp: "#F28B82",
+  };
+  return colors[ext] || "var(--muted)";
 }
 
 // ---- MCP Status ----

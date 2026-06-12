@@ -1,3 +1,9 @@
+export interface RightPanelTab {
+  id: string;
+  type: "review" | "terminal" | "browser" | "files";
+  title: string;
+}
+
 export interface Session {
   id: string;
   preview?: string;
@@ -51,6 +57,9 @@ export interface AppState {
   latencyMs: number | null;
   sidebarOpen: boolean;
   diffPanelOpen: boolean;
+  rightPanelOpen: boolean;
+  rightPanelTabs: RightPanelTab[];
+  activeRightTabId: string | null;
   theme: "dark" | "light";
   autoScroll: boolean;
 }
