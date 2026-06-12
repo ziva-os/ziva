@@ -8,12 +8,14 @@ from ziva_runtime.shared_types import RuntimeContext, ToolResult
 
 _TOOL_LIMITS: dict[str, int] = {
     "shell": 30_000,
-    "read_file": 20_000,
     "grep": 20_000,
     "web_fetch": 50_000,
 }
 _DEFAULT_LIMIT = 20_000
-_PREVIEW_CHARS = 2_048
+_UNLIMITED = {"read_file"}
+_PREVIEW_HEAD_LINES = 50
+_PREVIEW_TAIL_LINES = 20
+_PREVIEW_LINE_WIDTH = 200
 
 
 class TruncationHook:
@@ -31,9 +33,15 @@ class TruncationHook:
         else:
             return payload
 
+        if tool_name in _UNLIMITED:
+            return payload
+
         limit = _TOOL_LIMITS.get(tool_name, _DEFAULT_LIMIT)
         if len(text) <= limit:
             return payload
+
+        lines = text.split("\n")
+        total_lines = len(lines)
 
         workspace = getattr(ctx.metadata.get("_runtime"), "workspace_root", None)
         tmp_dir = Path(workspace) / "tmp" if workspace else Path("tmp")
@@ -46,14 +54,33 @@ class TruncationHook:
         except Exception:
             pass
 
-        preview = text[:_PREVIEW_CHARS]
+        # Build preview with line numbers (head + tail)
+        def _trim(line: str) -> str:
+            return line if len(line) <= _PREVIEW_LINE_WIDTH else line[:_PREVIEW_LINE_WIDTH] + "..."
+
+        if total_lines <= _PREVIEW_HEAD_LINES + _PREVIEW_TAIL_LINES:
+            preview_lines = [f"{i + 1:6d} | {_trim(lines[i])}" for i in range(total_lines)]
+        else:
+            head_end = _PREVIEW_HEAD_LINES
+            tail_start = total_lines - _PREVIEW_TAIL_LINES + 1
+            preview_lines = [f"{i + 1:6d} | {_trim(lines[i])}" for i in range(head_end)]
+            omitted = tail_start - head_end
+            preview_lines.append(f"       ... {omitted} lines omitted (lines {head_end + 1}–{tail_start - 1}) ...")
+            for i in range(tail_start - 1, total_lines):
+                preview_lines.append(f"{i + 1:6d} | {_trim(lines[i])}")
+
+        preview = "\n".join(preview_lines)
+
         output.text = (
-            f"Output too large ({len(text)} chars). Full output saved to: {file_path}\n\n"
-            f"Preview:\n{preview}\n\n"
-            f"Use read_file to view the full output."
+            f"Output too large ({len(text)} chars, {total_lines} lines). "
+            f"Full output saved to: {file_path}\n\n"
+            f"{preview}\n\n"
+            f"Use read_file(\"{file_path}\") to view full content, "
+            f"or read_file with offset/limit for specific line ranges."
         )
         output.metadata["_truncated"] = True
         output.metadata["_full_output_path"] = str(file_path)
+        output.metadata["_total_lines"] = total_lines
 
         payload["output"] = output
         return payload
