@@ -516,6 +516,13 @@
   padding: 4px 6px; border-radius: 4px; display: flex; align-items: center;
 }
 .panel-fullscreen-btn:hover { background: var(--surface-hover); color: var(--ink); }
+.panel-content-path {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* Review tab action buttons */
 .review-action-btn {

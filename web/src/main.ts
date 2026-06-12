@@ -225,6 +225,9 @@ function renderTabBar() {
   }
   html += `</div>`;
   html += `<button class="rp-tab-add" id="btnAddTab" title="New tab">+</button>`;
+  html += `<button class="rp-tab-toggle rp-tab-fullscreen" id="btnFullscreenPanel" title="Fullscreen">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+  </button>`;
   // Toggle/close button — same icon as toolbar-right-toggle (mirrored sidebar icon)
   html += `<button class="rp-tab-toggle" id="btnToggleRight" title="Close panel">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
@@ -244,6 +247,8 @@ function renderTabBar() {
   });
   const addBtn = bar.querySelector("#btnAddTab");
   if (addBtn) addBtn.onclick = showAddTabMenu;
+  const fsBtn = bar.querySelector("#btnFullscreenPanel");
+  if (fsBtn) fsBtn.addEventListener("click", toggleFullscreenPanel);
   const toggleBtn = bar.querySelector("#btnToggleRight");
   if (toggleBtn) toggleBtn.addEventListener("click", toggleRightPanel);
 }
@@ -382,9 +387,6 @@ function renderReviewTab(container: HTMLElement) {
       <div class="review-header-actions">
         <button class="review-action-btn" data-action="expand-all" title="Expand all">Expand All</button>
         <button class="review-action-btn" data-action="collapse-all" title="Collapse all">Collapse All</button>
-        <button class="panel-fullscreen-btn" title="Fullscreen">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
-        </button>
       </div>
     </div>
     <div class="panel-content-body">
@@ -400,7 +402,6 @@ function renderReviewTab(container: HTMLElement) {
         </div>
       </div>
     </div>`;
-  container.querySelector(".panel-fullscreen-btn")!.addEventListener("click", toggleFullscreenPanel);
   const body = container.querySelector("[data-review-body]") as HTMLElement;
   container.querySelector('[data-action="expand-all"]')!.onclick = () => body.querySelectorAll(".diff-file-content").forEach(el => ((el as HTMLElement).style.display = "block"));
   container.querySelector('[data-action="collapse-all"]')!.onclick = () => body.querySelectorAll(".diff-file-content").forEach(el => ((el as HTMLElement).style.display = "none"));
@@ -419,17 +420,9 @@ function renderReviewTab(container: HTMLElement) {
 function renderTerminalTab(container: HTMLElement) {
   const tabId = container.dataset.tabId!;
   container.innerHTML = `
-    <div class="panel-content-header">
-      <span class="panel-content-title">Terminal</span>
-      <div style="flex:1"></div>
-      <button class="panel-fullscreen-btn" title="Fullscreen">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
-      </button>
-    </div>
-    <div class="panel-content-body">
+    <div class="panel-content-body" style="height:100%">
       <div id="terminalContainer_${tabId}" class="terminal-container"></div>
     </div>`;
-  container.querySelector(".panel-fullscreen-btn")!.addEventListener("click", toggleFullscreenPanel);
   initTerminal(tabId);
 }
 
@@ -448,17 +441,12 @@ function renderBrowserTab(container: HTMLElement) {
       </button>
       <input type="text" class="browser-url-input" value="" placeholder="Enter URL..." />
       <button class="browser-go-btn">Go</button>
-      <div style="flex:1"></div>
-      <button class="panel-fullscreen-btn" title="Fullscreen">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
-      </button>
     </div>
     <div class="panel-content-body">
       ${isElectron
         ? `<webview class="browser-frame" src="about:blank" allowpopups></webview>`
         : `<iframe class="browser-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" src="about:blank"></iframe>`}
     </div>`;
-  container.querySelector(".panel-fullscreen-btn")!.addEventListener("click", toggleFullscreenPanel);
   const urlInput = container.querySelector(".browser-url-input") as HTMLInputElement;
   const frame = container.querySelector(isElectron ? "webview" : "iframe") as any;
   const navigate = () => {
@@ -485,13 +473,12 @@ function renderBrowserTab(container: HTMLElement) {
 }
 
 function renderFilesTab(container: HTMLElement) {
+  const ws = store.get().config.workspace || "";
+  const wsName = ws.split("/").pop() || ws || "Files";
   container.innerHTML = `
     <div class="panel-content-header">
-      <span class="panel-content-title">Files</span>
-      <div style="flex:1"></div>
-      <button class="panel-fullscreen-btn" title="Fullscreen">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
-      </button>
+      <span class="panel-content-title" title="${esc(ws)}">${esc(wsName)}</span>
+      <span class="panel-content-path">${esc(ws)}</span>
     </div>
     <div class="panel-content-body">
       <div class="files-layout">
@@ -501,7 +488,6 @@ function renderFilesTab(container: HTMLElement) {
         </div>
       </div>
     </div>`;
-  container.querySelector(".panel-fullscreen-btn")!.addEventListener("click", toggleFullscreenPanel);
   loadFileTreeForContainer(container);
 }
 
