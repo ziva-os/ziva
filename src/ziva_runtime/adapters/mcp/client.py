@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import shlex
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
 from ziva_runtime.shared_types import ToolResult
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -250,7 +253,7 @@ class MCPClient:
             try:
                 await self._connect_server(cfg)
             except Exception as e:
-                print(f"MCP: Failed to connect to {cfg.name}: {e}")
+                logger.warning("MCP: Failed to connect to %s: %s", cfg.name, e)
         self._connected = True
         return self._tools
 
@@ -288,6 +291,18 @@ class MCPClient:
             )
         else:
             raise ValueError(f"Unsupported MCP transport: {cfg.transport}")
+
+        # Suppress MCP subprocess stderr (install logs, startup banners).
+        # Use a real file (devnull) so subprocess.spawn gets a valid fd.
+        if transport in ("stdio", "local"):
+            import os
+            _devnull = open(os.devnull, "w")
+
+            def _quiet_streams():
+                from mcp.client.stdio import stdio_client
+                return stdio_client(server.params, errlog=_devnull)
+
+            server.create_streams = _quiet_streams  # type: ignore[assignment]
 
         self._servers[cfg.name] = server
         await server.connect()

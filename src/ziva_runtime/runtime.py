@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import time
 import uuid
@@ -12,6 +13,8 @@ from typing import Any, AsyncIterator, Dict, Iterable, List
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ziva_runtime.adapters.openai_agents.provider import ModelAdapter, OpenAIAgentsAdapter
+
+logger = logging.getLogger(__name__)
 from ziva_runtime.capabilities.events import EventBus
 from ziva_runtime.capabilities.registries import CapabilityRegistry
 from ziva_runtime.config.instructions import load_layered_instructions
@@ -334,6 +337,7 @@ class Runtime:
     workspace_root: Path
     _sessions: Dict[str, SessionState] = field(default_factory=dict)
     _project_id: str | None = None
+    _ask_user_callbacks: list = field(default_factory=list)
 
     @property
     def project_id(self) -> str:
@@ -1084,7 +1088,7 @@ class Runtime:
                 session.mcp_client = client
                 session.mcp_connected = True
             except Exception as e:
-                print(f"MCP initialization failed: {e}")
+                logger.error("MCP initialization failed: %s", e)
                 session.mcp_connected = True
         finally:
             session.mcp_connecting = False
@@ -1121,6 +1125,15 @@ class Runtime:
         payload = {"session_id": session_id, "seq": seq, "ts": int(time.time() * 1000)}
         payload.update(event)
         await self.event_bus.publish(session_id, payload)
+
+    def on_ask_user(self, callback) -> None:
+        """Register a callback for ask_user_question events.
+
+        The callback receives (session_id, question, options, call_id)
+        and should call set_user_answer() to resolve the question.
+        Used by the REPL to handle ask_user inline.
+        """
+        self._ask_user_callbacks.append(callback)
 
     async def await_user_answer(self, session_id: str, call_id: str = "") -> Dict[str, Any]:
         """Block the calling tool until the user replies via the UI.

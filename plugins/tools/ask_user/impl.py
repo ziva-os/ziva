@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict
 
 from ziva_runtime.shared_types import ToolResult
@@ -96,7 +97,21 @@ class AskUserTool:
             },
         )
 
-        raw = await runtime.await_user_answer(session_id=ctx.session_id, call_id=call_id)
+        # Create the future first so set_user_answer can find it
+        answer_task = asyncio.create_task(
+            runtime.await_user_answer(session_id=ctx.session_id, call_id=call_id)
+        )
+
+        # Fire REPL callbacks (may be sync or async, they call set_user_answer)
+        for cb in runtime._ask_user_callbacks:
+            try:
+                result = cb(ctx.session_id, question, options, call_id, multi_select=multi_select)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                pass
+
+        raw = await answer_task
         if isinstance(raw, ToolResult):
             return raw
         if isinstance(raw, dict) and raw.get("status") == "cancelled":
