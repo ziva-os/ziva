@@ -52,9 +52,10 @@ const JSON_HEADERS = { "Content-Type": "application/json" };
 
 const API_TIMEOUT_MS = 30_000;
 
-export async function api<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
+export async function api<T = unknown>(method: string, path: string, body?: unknown, timeoutMs?: number): Promise<T> {
+  const timeout = timeoutMs ?? API_TIMEOUT_MS;
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
   const opts: RequestInit = { method, headers: JSON_HEADERS, signal: controller.signal };
   if (body !== undefined) opts.body = JSON.stringify(body);
   let r: Response;
@@ -62,7 +63,7 @@ export async function api<T = unknown>(method: string, path: string, body?: unkn
     r = await fetch(path, opts);
   } catch (e: any) {
     if (e.name === "AbortError") {
-      throw new Error(`Request to ${path} timed out after ${API_TIMEOUT_MS / 1000}s`);
+      throw new Error(`Request to ${path} timed out after ${timeout / 1000}s`);
     }
     throw e;
   } finally {
@@ -249,7 +250,7 @@ export async function updateAutomation(aid: string, patch: { name?: string; prom
 }
 
 export async function runAutomationNow(aid: string): Promise<{ ok: boolean; result?: { role: string; content: string; finish_reason?: string }; automation: Automation }> {
-  return api("POST", `/automations/${aid}/run`, {});
+  return api("POST", `/automations/${aid}/run`, {}, 300_000);
 }
 
 export async function deleteAutomation(aid: string): Promise<void> {

@@ -666,7 +666,7 @@ function init() {
         <div class="sidebar-top">
           <button id="btnNewSession" class="sidebar-btn">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
-            <span>New conversation</span>
+            <span>新对话</span>
           </button>
         </div>
         <div class="sidebar-nav">
@@ -2455,6 +2455,39 @@ function appendToolCard(
   return card;
 }
 
+function appendPlanCard(steps: { id?: string; description?: string; status?: string }[]): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "tool-card open plan-card";
+  const completed = steps.filter((s) => s.status === "completed").length;
+  const inProgress = steps.filter((s) => s.status === "in_progress").length;
+  const total = steps.length;
+  const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+  const summary = `${completed}/${total} completed` + (inProgress > 0 ? `, ${inProgress} active` : "");
+
+  let body = `<div class="plan-progress-bar"><div class="plan-progress-fill" style="width:${pct}%"></div></div>`;
+  body += `<div class="plan-steps">`;
+  for (const step of steps) {
+    const icon = step.status === "completed" ? "✓" : step.status === "in_progress" ? "●" : "○";
+    const cls = step.status || "pending";
+    body += `<div class="plan-step plan-step-${esc(cls)}"><span class="plan-step-icon">${icon}</span><span class="plan-step-text">${esc(step.description || step.id || "")}</span></div>`;
+  }
+  body += `</div>`;
+
+  card.innerHTML = `
+    <div class="tool-card-header">
+      <span class="tool-icon">📋</span>
+      <span class="tool-name">Plan</span>
+      <span class="tool-args">${esc(summary)} (${pct}%)</span>
+      <span class="tool-status"><span class="status-dot success"></span>updated</span>
+    </div>
+    <div class="tool-card-body">${body}</div>`;
+
+  (card.querySelector(".tool-card-header") as HTMLElement).onclick = () => card.classList.toggle("open");
+  $("messages").appendChild(card);
+  currentAssistantEl = null;
+  return card;
+}
+
 function appendApprovalCard(requestId: string, toolName: string, args: Record<string, unknown>) {
   const card = document.createElement("div");
   card.className = "approval-card";
@@ -3022,6 +3055,11 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
       // Card is already on screen via the earlier `ask_user_question`
       // event. Don't create a second one — the user has already (or
       // is about to) answer it.
+    } else if (ev.tool === "update_plan") {
+      const planSteps = (ev.output as any)?.plan as { id?: string; description?: string; status?: string }[] | undefined;
+      if (planSteps && planSteps.length > 0) {
+        appendPlanCard(planSteps);
+      }
     } else {
       const status = ev.error_class ? "error" : "success";
       let subagentTools: string[] | undefined;
