@@ -1,0 +1,40 @@
+{
+  "name": "ziva",
+  "version": "1.0.0",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "npm run build && electron .",
+    "build:frontend": "cd ../web && npm run build",
+    "build:backend": "pyinstaller ziva-backend.spec --clean --noconfirm",
+    "build:all": "npm run build:frontend && npm run build:backend && npm run build",
+    "pack": "npm run build:all && electron-builder --dir",
+    "dist": "npm run build:all && electron-builder"
+  },
+  "dependencies": {
+    "electron-store": "^8.1.0"
+  },
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^26.0.0",
+    "typescript": "^5.5.0"
+  },
+  "build": {
+    "appId": "com.ziva.desktop",
+    "productName": "Ziva",
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": ["dmg", "zip"]
+    },
+    "files": [
+      "dist/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "dist/ziva-backend",
+        "to": "ziva-backend"
+      }
+    ]
+  }
+}

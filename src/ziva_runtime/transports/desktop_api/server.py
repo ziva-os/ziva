@@ -201,7 +201,10 @@ class DesktopAPIServer:
         self.app.router.add_get("/ws/terminal", self.terminal_ws)
         self.app.router.add_get("/api/proxy", self.proxy_url)
         # Serve static assets from build output
-        static_dir = Path(__file__).resolve().parent / "static"
+        if getattr(sys, 'frozen', False):
+            static_dir = Path(sys._MEIPASS) / "static"
+        else:
+            static_dir = Path(__file__).resolve().parent / "static"
         self.app.router.add_static("/assets", static_dir / "assets")
         self.app.on_startup.append(self._on_startup)
         self.app.on_cleanup.append(self._on_cleanup)
@@ -327,7 +330,10 @@ class DesktopAPIServer:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def index(self, _request: web.Request) -> web.Response:
-        html = (Path(__file__).resolve().parent / "static" / "index.html").read_text(encoding="utf-8")
+        if getattr(sys, 'frozen', False):
+            html = (Path(sys._MEIPASS) / "static" / "index.html").read_text(encoding="utf-8")
+        else:
+            html = (Path(__file__).resolve().parent / "static" / "index.html").read_text(encoding="utf-8")
         return web.Response(text=html, content_type="text/html")
 
     async def create_session(self, request: web.Request) -> web.Response:
