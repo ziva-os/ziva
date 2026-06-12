@@ -684,6 +684,9 @@ function formatRelativeTime(ts?: number): string {
 // ---- DOM Bootstrap — Ziva layout ----
 function init() {
   initLightbox();
+  if ((window as any).electronAPI && navigator.platform.toLowerCase().includes("mac")) {
+    document.body.classList.add("electron-darwin");
+  }
   const app = $("app");
   app.innerHTML = `
     <div class="ziva-layout">
@@ -3089,16 +3092,11 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     } else if (ev.tool === "update_plan") {
       const planSteps = (ev.output as any)?.plan as { id?: string; description?: string; status?: string }[] | undefined;
       if (planSteps && planSteps.length > 0) {
-        // Ensure a Plan tab is open in the right sidebar
         const { rightPanelTabs } = store.get();
         const existing = rightPanelTabs.find(t => t.type === "plan");
         if (!existing) {
+          // First plan: auto-open sidebar tab
           openRightPanel("plan");
-        } else if (!store.get().rightPanelOpen) {
-          $("rightPanel").classList.add("show");
-          $("btnOpenRightPanel")?.classList.add("panel-open");
-          store.set({ rightPanelOpen: true, activeRightTabId: existing.id });
-          activateTab(existing.id);
         }
         updatePlanTabContent(planSteps);
       }

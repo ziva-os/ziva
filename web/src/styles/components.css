@@ -358,6 +358,10 @@
   flex-shrink: 0;
   min-height: 40px;
 }
+/* macOS Electron: leave room for traffic light buttons (close/minimize/maximize) */
+.electron-darwin .ziva-toolbar {
+  padding-left: 72px;
+}
 .ziva-toolbar .toolbar-title {
   font-size: 12px;
   font-weight: 500;
