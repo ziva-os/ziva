@@ -959,11 +959,14 @@ class DesktopAPIServer:
         automation = self.automations.get(aid)
         if not automation:
             return web.json_response({"error": "not_found"}, status=404)
-        result = await self._run_automation_once(automation, scheduled=False)
-        payload = {"ok": result is not None, "automation": self._automation_payload(automation)}
-        if result is not None:
-            payload["result"] = {"role": result.role, "content": result.content, "finish_reason": result.finish_reason}
-        return web.json_response(payload, status=200 if result is not None else 500)
+
+        async def _run_and_emit():
+            await self._run_automation_once(automation, scheduled=False)
+            # Result is already persisted on the automation object and
+            # emitted via the automation_run SSE event by _run_automation_once.
+
+        asyncio.create_task(_run_and_emit())
+        return web.json_response({"accepted": True, "automation": self._automation_payload(automation)})
 
     async def delete_automation(self, request: web.Request) -> web.Response:
         self._load_persisted_automations()

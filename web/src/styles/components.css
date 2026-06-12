@@ -1056,11 +1056,16 @@ webview.browser-frame {
 /* Plan Progress Card */
 .plan-card { border-left: 3px solid var(--purple); }
 .plan-card .tool-card-header .tool-icon { opacity: 1; }
-.plan-progress-bar { height: 4px; background: var(--surface-alt); border-radius: 2px; margin-bottom: 10px; overflow: hidden; }
-.plan-progress-fill { height: 100%; background: var(--green); border-radius: 2px; transition: width 0.3s ease; }
-.plan-steps { display: flex; flex-direction: column; gap: 4px; }
-.plan-step { display: flex; align-items: center; gap: 8px; font-size: 12.5px; padding: 3px 0; }
-.plan-step-icon { flex-shrink: 0; width: 18px; text-align: center; font-size: 13px; }
+
+/* Plan Panel (right sidebar) */
+.plan-panel { padding: 12px 14px; overflow-y: auto; }
+.plan-panel .plan-empty { color: var(--muted); font-size: 13px; text-align: center; padding: 40px 0; }
+.plan-panel .plan-summary { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+.plan-progress-bar { height: 6px; background: var(--surface-alt); border-radius: 3px; margin-bottom: 14px; overflow: hidden; }
+.plan-progress-fill { height: 100%; background: var(--green); border-radius: 3px; transition: width 0.3s ease; }
+.plan-steps { display: flex; flex-direction: column; gap: 6px; }
+.plan-step { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; padding: 4px 0; line-height: 1.4; }
+.plan-step-icon { flex-shrink: 0; width: 20px; text-align: center; font-size: 14px; line-height: 1.4; }
 .plan-step-completed .plan-step-icon { color: var(--green); }
 .plan-step-in_progress .plan-step-icon { color: var(--blue); animation: pulse-dot 1s infinite; }
 .plan-step-pending .plan-step-icon { color: var(--muted); opacity: 0.5; }

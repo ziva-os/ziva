@@ -141,6 +141,7 @@ function showEmptyState(show: boolean) {
 // ---- Right Panel Tab System ----
 const panelTypes = [
   { type: "review", label: "Code Review", icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>' },
+  { type: "plan", label: "Plan", icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>' },
   { type: "terminal", label: "Terminal", icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>' },
   { type: "browser", label: "Browser", icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>' },
   { type: "files", label: "Files", icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>' },
@@ -371,10 +372,40 @@ function initResizablePanel() {
 function renderTabContent(tab: RightPanelTab, container: HTMLElement) {
   switch (tab.type) {
     case "review": renderReviewTab(container); break;
+    case "plan": renderPlanTab(container); break;
     case "terminal": renderTerminalTab(container); break;
     case "browser": renderBrowserTab(container); break;
     case "files": renderFilesTab(container); break;
   }
+}
+
+let _currentPlanSteps: { id?: string; description?: string; status?: string }[] = [];
+
+function renderPlanTab(container: HTMLElement) {
+  container.innerHTML = `<div class="panel-content-body plan-panel"><div class="plan-empty">No active plan</div></div>`;
+  if (_currentPlanSteps.length > 0) updatePlanTabContent(_currentPlanSteps);
+}
+
+function updatePlanTabContent(steps: { id?: string; description?: string; status?: string }[]) {
+  _currentPlanSteps = steps;
+  const panel = document.querySelector(".plan-panel") as HTMLElement;
+  if (!panel) return;
+
+  const completed = steps.filter((s) => s.status === "completed").length;
+  const inProgress = steps.filter((s) => s.status === "in_progress").length;
+  const total = steps.length;
+  const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+  let html = `<div class="plan-summary">${completed}/${total} done (${pct}%)</div>`;
+  html += `<div class="plan-progress-bar"><div class="plan-progress-fill" style="width:${pct}%"></div></div>`;
+  html += `<div class="plan-steps">`;
+  for (const step of steps) {
+    const icon = step.status === "completed" ? "✓" : step.status === "in_progress" ? "●" : "○";
+    const cls = step.status || "pending";
+    html += `<div class="plan-step plan-step-${esc(cls)}"><span class="plan-step-icon">${icon}</span><span class="plan-step-text">${esc(step.description || step.id || "")}</span></div>`;
+  }
+  html += `</div>`;
+  panel.innerHTML = html;
 }
 
 function renderReviewTab(container: HTMLElement) {
@@ -3058,7 +3089,18 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     } else if (ev.tool === "update_plan") {
       const planSteps = (ev.output as any)?.plan as { id?: string; description?: string; status?: string }[] | undefined;
       if (planSteps && planSteps.length > 0) {
-        appendPlanCard(planSteps);
+        // Ensure a Plan tab is open in the right sidebar
+        const { rightPanelTabs } = store.get();
+        const existing = rightPanelTabs.find(t => t.type === "plan");
+        if (!existing) {
+          openRightPanel("plan");
+        } else if (!store.get().rightPanelOpen) {
+          $("rightPanel").classList.add("show");
+          $("btnOpenRightPanel")?.classList.add("panel-open");
+          store.set({ rightPanelOpen: true, activeRightTabId: existing.id });
+          activateTab(existing.id);
+        }
+        updatePlanTabContent(planSteps);
       }
     } else {
       const status = ev.error_class ? "error" : "success";
@@ -3246,6 +3288,12 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
       // else: the user already replaced this turn via cancel→
       // sendFromQueue. A fresh turn_start has bumped runningSessions
       // back to true; don't tear that down.
+    }
+  } else if (t === "automation_run") {
+    // Refresh automation list when a run completes/fails
+    const modal = $("automationModal");
+    if (modal && modal.classList.contains("show")) {
+      void loadAutomationsIntoModal();
     }
   }
 
@@ -4077,8 +4125,8 @@ function wireAutomationDetailActions(initial: api.Automation) {
       btn.textContent = "▶ Running…";
       try {
         await api.runAutomationNow(current.id);
-        await refetch();
-        rerender();
+        // Server runs async — result comes via SSE automation_run event
+        setTimeout(() => { btn.disabled = false; btn.textContent = "▶ Run now"; }, 3000);
       } catch (err) {
         alert(`Run failed: ${(err as Error).message}`);
         btn.disabled = false;
