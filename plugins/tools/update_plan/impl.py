@@ -45,7 +45,18 @@ class UpdatePlanTool:
                 "status": status,
             })
 
-        ctx.metadata["plan"] = validated
+        # Persist to runtime session state (in-memory) + on-disk session file
+        runtime = ctx.metadata.get("_runtime")
+        if runtime:
+            session = runtime._get_session(ctx.session_id)
+            session.plan = validated
+            # Persist to disk so plan survives server restart
+            try:
+                from ziva_runtime.storage.file_storage import FileStorage
+                FileStorage.update_session(runtime.project_id, ctx.session_id, {"plan": validated})
+            except Exception:
+                pass
+
         status_counts = {}
         for s in validated:
             st = s["status"]

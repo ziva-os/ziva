@@ -336,6 +336,7 @@ class Runtime:
     event_bus: EventBus
     workspace_root: Path
     _sessions: Dict[str, SessionState] = field(default_factory=dict)
+    _background_agents: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     _project_id: str | None = None
     _ask_user_callbacks: list = field(default_factory=list)
 
@@ -1102,8 +1103,9 @@ class Runtime:
         for tool_rec in self.registry.list_kind("tool"):
             spec = tool_rec.instance.spec()
             name = spec["name"]
-            # Sub-agents cannot see spawn_agent in their tool list
-            if is_subagent and name == "spawn_agent":
+            # Sub-agents cannot see parent-only tools in their tool list
+            _parent_only = {"spawn_agent", "get_agent_result", "cancel_agent"}
+            if is_subagent and name in _parent_only:
                 continue
             # If whitelist specified, only include those tools
             if allowed_tools is not None and name not in allowed_tools:
@@ -1189,8 +1191,9 @@ class Runtime:
         # Check sub-agent tool restrictions
         is_subagent = ctx.metadata.get("_subagent")
         if is_subagent:
-            if call.name == "spawn_agent":
-                return ToolResult(text="Error: tool_blocked\nSub-agents cannot spawn further sub-agents", error=True)
+            _parent_only = {"spawn_agent", "get_agent_result", "cancel_agent"}
+            if call.name in _parent_only:
+                return ToolResult(text=f"Error: tool_blocked\nSub-agents cannot use '{call.name}'", error=True)
             allowed_tools = ctx.metadata.get("_allowed_tools")
             if allowed_tools is not None and call.name not in allowed_tools:
                 return ToolResult(text=f"Error: tool_blocked\nTool '{call.name}' is not available in this sub-agent", error=True)

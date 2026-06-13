@@ -124,3 +124,4 @@ class SessionState:
     event_history: deque = field(default_factory=lambda: deque(maxlen=100))
     model_adapter: Any = None
     load_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    plan: list[dict] | None = None

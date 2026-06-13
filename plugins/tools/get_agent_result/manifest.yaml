@@ -1,0 +1,7 @@
+id: tool.get_agent_result
+type: tool
+version: 0.1.0
+entry: impl.py:GetAgentResultTool
+permissions:
+  agent: [spawn]
+enabled_by_default: true

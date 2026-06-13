@@ -174,14 +174,17 @@ function closeRightPanelTab(tabId: string) {
   if (activeRightTabId === tabId) {
     if (tabs.length === 0) {
       newActive = null;
-      closeRightPanel();
     } else {
       newActive = tabs[Math.min(idx, tabs.length - 1)].id;
     }
   }
   store.set({ rightPanelTabs: tabs, activeRightTabId: newActive });
   renderTabBar();
-  if (newActive) activateTab(newActive);
+  if (newActive) {
+    activateTab(newActive);
+  } else if (tabs.length === 0) {
+    renderWelcomeState();
+  }
 }
 
 function activateTab(tabId: string) {
@@ -193,6 +196,8 @@ function activateTab(tabId: string) {
   const body = rp.querySelector(".right-panel-body") as HTMLElement;
   if (!body) return;
   body.querySelectorAll(".panel-content").forEach(el => ((el as HTMLElement).style.display = "none"));
+  const welcome = body.querySelector(".welcome-state") as HTMLElement;
+  if (welcome) welcome.style.display = "none";
   let content = body.querySelector(`[data-tab-id="${tabId}"]`) as HTMLElement;
   if (!content) {
     content = document.createElement("div");
@@ -252,6 +257,37 @@ function renderTabBar() {
   if (fsBtn) fsBtn.addEventListener("click", toggleFullscreenPanel);
   const toggleBtn = bar.querySelector("#btnToggleRight");
   if (toggleBtn) toggleBtn.addEventListener("click", toggleRightPanel);
+}
+
+function renderWelcomeState() {
+  const rp = $("rightPanel");
+  const body = rp.querySelector(".right-panel-body") as HTMLElement;
+  if (!body) return;
+  body.querySelectorAll(".panel-content").forEach(el => ((el as HTMLElement).style.display = "none"));
+  let welcome = body.querySelector(".welcome-state") as HTMLElement;
+  if (!welcome) {
+    welcome = document.createElement("div");
+    welcome.className = "welcome-state";
+    welcome.innerHTML = `
+      <div class="welcome-icon">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+        </svg>
+      </div>
+      <div class="welcome-title">工具面板</div>
+      <div class="welcome-desc">点击 <strong>+</strong> 按钮打开面板</div>
+      <div class="welcome-actions">
+        ${panelTypes.map(pt => `<button class="welcome-action-btn" data-panel-type="${pt.type}">${pt.icon}<span>${pt.label}</span></button>`).join("")}
+      </div>`;
+    body.appendChild(welcome);
+    welcome.querySelectorAll(".welcome-action-btn").forEach(btn => {
+      (btn as HTMLElement).onclick = () => {
+        const type = (btn as HTMLElement).dataset.panelType;
+        if (type) openRightPanel(type);
+      };
+    });
+  }
+  welcome.style.display = "flex";
 }
 
 let _addTabMenu: HTMLElement | null = null;
@@ -315,6 +351,7 @@ function toggleRightPanel() {
     const { rightPanelTabs, activeRightTabId } = store.get();
     if (rightPanelTabs.length === 0) {
       renderTabBar();
+      renderWelcomeState();
     } else if (activeRightTabId) {
       activateTab(activeRightTabId);
     }
@@ -382,13 +419,52 @@ function renderTabContent(tab: RightPanelTab, container: HTMLElement) {
 let _currentPlanSteps: { id?: string; description?: string; status?: string }[] = [];
 
 function renderPlanTab(container: HTMLElement) {
-  container.innerHTML = `<div class="panel-content-body plan-panel"><div class="plan-empty">No active plan</div></div>`;
-  if (_currentPlanSteps.length > 0) updatePlanTabContent(_currentPlanSteps);
+  container.innerHTML = `<div class="panel-content-body plan-panel"><div class="plan-empty">Loading...</div></div>`;
+  // Load latest plan from server
+  const sid = store.get().activeSid;
+  if (sid) {
+    api.getPlan(sid).then(steps => {
+      if (steps && steps.length > 0) {
+        _currentPlanSteps = steps as { id?: string; description?: string; status?: string }[];
+        updatePlanTabContent(_currentPlanSteps);
+      } else if (_currentPlanSteps.length > 0) {
+        updatePlanTabContent(_currentPlanSteps);
+      } else {
+        const panel = container.querySelector(".plan-panel") as HTMLElement;
+        if (panel) panel.innerHTML = `<div class="plan-empty">No active plan</div>`;
+      }
+    }).catch(() => {
+      const panel = container.querySelector(".plan-panel") as HTMLElement;
+      if (panel) panel.innerHTML = `<div class="plan-empty">No active plan</div>`;
+    });
+  } else {
+    const panel = container.querySelector(".plan-panel") as HTMLElement;
+    if (panel) panel.innerHTML = `<div class="plan-empty">No active plan</div>`;
+  }
 }
 
 function updatePlanTabContent(steps: { id?: string; description?: string; status?: string }[]) {
   _currentPlanSteps = steps;
-  const panel = document.querySelector(".plan-panel") as HTMLElement;
+  const { rightPanelTabs } = store.get();
+  const planTab = rightPanelTabs.find(t => t.type === "plan");
+  if (!planTab) return;
+
+  // Always find the panel-content via the right panel body to avoid wrong container
+  const rp = $("rightPanel");
+  const body = rp.querySelector(".right-panel-body") as HTMLElement;
+  if (!body) return;
+  let content = body.querySelector(`[data-tab-id="${planTab.id}"]`) as HTMLElement;
+  if (!content) {
+    activateTab(planTab.id);
+    content = body.querySelector(`[data-tab-id="${planTab.id}"]`) as HTMLElement;
+  }
+  if (!content) return;
+  let panel = content.querySelector(".plan-panel") as HTMLElement;
+  if (!panel) {
+    // renderPlanTab should have created it via activateTab → renderTabContent
+    renderPlanTab(content);
+    panel = content.querySelector(".plan-panel") as HTMLElement;
+  }
   if (!panel) return;
 
   const completed = steps.filter((s) => s.status === "completed").length;
@@ -496,6 +572,42 @@ function renderBrowserTab(container: HTMLElement) {
     container.querySelector('[data-action="back"]')!.onclick = () => { try { frame?.goBack(); } catch {} };
     container.querySelector('[data-action="forward"]')!.onclick = () => { try { frame?.goForward(); } catch {} };
     container.querySelector('[data-action="reload"]')!.onclick = () => { try { frame?.reload(); } catch {} };
+    // Right-click on selected text → send to chat input with context
+    frame?.addEventListener("context-menu", (e: any) => {
+      const selected = (e.selectionText || "").trim();
+      if (!selected) return;
+      const menu = document.createElement("div");
+      menu.className = "panel-dropdown add-tab-menu";
+      menu.style.position = "fixed";
+      const rect = { left: e.params?.x || 100, top: e.params?.y || 100 };
+      // Use screen coordinates from the event
+      menu.style.top = Math.max(4, rect.top) + "px";
+      menu.style.left = Math.max(4, rect.left) + "px";
+      const item = document.createElement("div");
+      item.className = "panel-dropdown-item";
+      item.textContent = selected.length > 50 ? `Send to chat: "${selected.slice(0, 50)}..."` : `Send to chat: "${selected}"`;
+      item.onclick = (ev) => {
+        ev.stopPropagation();
+        menu.remove();
+        const pageUrl = urlInput.value || "";
+        const title = frame?.getTitle?.() || "";
+        let snippet = `[Browser selection]\nURL: ${pageUrl}`;
+        if (title) snippet += `\nTitle: ${title}`;
+        snippet += `\n\n${selected}`;
+        const input = $("chatInput") as HTMLTextAreaElement;
+        if (input) {
+          input.value = snippet;
+          input.focus();
+          input.dispatchEvent(new Event("input"));
+        }
+      };
+      menu.appendChild(item);
+      document.body.appendChild(menu);
+      const closeMenu = (ev: MouseEvent) => {
+        if (!menu.contains(ev.target as Node)) { menu.remove(); document.removeEventListener("click", closeMenu, true); }
+      };
+      setTimeout(() => document.addEventListener("click", closeMenu, true), 10);
+    });
   } else {
     container.querySelector('[data-action="back"]')!.onclick = () => { try { frame.contentWindow?.history.back(); } catch {} };
     container.querySelector('[data-action="forward"]')!.onclick = () => { try { frame.contentWindow?.history.forward(); } catch {} };
@@ -788,6 +900,9 @@ function init() {
                   </svg>
                   <span class="context-pct" id="contextPct"></span>
                 </div>
+                <button id="btnMic" class="composer-action-btn mic-btn" title="Voice input">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+                </button>
                 <button id="btnSend" class="send-btn" title="Send">→</button>
               </div>
             </div>
@@ -1001,6 +1116,69 @@ function bindEvents() {
 
   // Image upload: attach button, paste, drag-and-drop
   $("btnAttach").onclick = () => ($("imageFileInput") as HTMLInputElement).click();
+
+  // ── Voice input (microphone) ───────────────────────────────
+  const btnMic = $("btnMic") as HTMLButtonElement | null;
+  let mediaRecorder: MediaRecorder | null = null;
+  let audioChunks: Blob[] = [];
+  let isRecording = false;
+
+  if (btnMic) {
+    btnMic.onclick = async () => {
+      if (isRecording) {
+        mediaRecorder?.stop();
+        return;
+      }
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // Prefer webm/opus, fallback to whatever is available
+        const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+          ? "audio/webm;codecs=opus"
+          : MediaRecorder.isTypeSupported("audio/webm")
+            ? "audio/webm"
+            : "";
+        mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+        audioChunks = [];
+
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) audioChunks.push(e.data);
+        };
+
+        mediaRecorder.onstop = async () => {
+          stream.getTracks().forEach((t) => t.stop());
+          isRecording = false;
+          btnMic.classList.remove("recording");
+          btnMic.title = "Voice input";
+
+          const blob = new Blob(audioChunks, { type: mediaRecorder?.mimeType || "audio/webm" });
+          try {
+            btnMic.title = "Transcribing…";
+            const formData = new FormData();
+            formData.append("audio", blob, "recording.webm");
+            const res = await fetch("/api/stt", { method: "POST", body: formData });
+            const data = await res.json();
+            if (data.text) {
+              const ta = $("prompt") as HTMLTextAreaElement;
+              ta.value = ta.value ? ta.value + "\n" + data.text : data.text;
+              ta.dispatchEvent(new Event("input"));
+              ta.focus();
+            }
+          } catch (err: any) {
+            console.error("STT failed:", err);
+          } finally {
+            btnMic.title = "Voice input";
+          }
+        };
+
+        mediaRecorder.start();
+        isRecording = true;
+        btnMic.classList.add("recording");
+        btnMic.title = "Stop recording";
+      } catch (err: any) {
+        console.error("Microphone access denied:", err);
+      }
+    };
+  }
   ($("imageFileInput") as HTMLInputElement).onchange = (e) => {
     const files = (e.target as HTMLInputElement).files;
     if (files) for (const f of files) addImageFile(f);
@@ -2489,39 +2667,6 @@ function appendToolCard(
   return card;
 }
 
-function appendPlanCard(steps: { id?: string; description?: string; status?: string }[]): HTMLElement {
-  const card = document.createElement("div");
-  card.className = "tool-card open plan-card";
-  const completed = steps.filter((s) => s.status === "completed").length;
-  const inProgress = steps.filter((s) => s.status === "in_progress").length;
-  const total = steps.length;
-  const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
-  const summary = `${completed}/${total} completed` + (inProgress > 0 ? `, ${inProgress} active` : "");
-
-  let body = `<div class="plan-progress-bar"><div class="plan-progress-fill" style="width:${pct}%"></div></div>`;
-  body += `<div class="plan-steps">`;
-  for (const step of steps) {
-    const icon = step.status === "completed" ? "✓" : step.status === "in_progress" ? "●" : "○";
-    const cls = step.status || "pending";
-    body += `<div class="plan-step plan-step-${esc(cls)}"><span class="plan-step-icon">${icon}</span><span class="plan-step-text">${esc(step.description || step.id || "")}</span></div>`;
-  }
-  body += `</div>`;
-
-  card.innerHTML = `
-    <div class="tool-card-header">
-      <span class="tool-icon">📋</span>
-      <span class="tool-name">Plan</span>
-      <span class="tool-args">${esc(summary)} (${pct}%)</span>
-      <span class="tool-status"><span class="status-dot success"></span>updated</span>
-    </div>
-    <div class="tool-card-body">${body}</div>`;
-
-  (card.querySelector(".tool-card-header") as HTMLElement).onclick = () => card.classList.toggle("open");
-  $("messages").appendChild(card);
-  currentAssistantEl = null;
-  return card;
-}
-
 function appendApprovalCard(requestId: string, toolName: string, args: Record<string, unknown>) {
   const card = document.createElement("div");
   card.className = "approval-card";
@@ -2977,12 +3122,83 @@ async function reconcileRunningSessions() {
 }
 
 function handleEvent(ev: api.Event, updateScroll: boolean = true) {
-  // Skip all sub-agent events — they are shown in a collapsed card, not individually
-  if ((ev as any)._subagent) return;
+  // Skip re-emitted internal sub-agent events (delta, tool_start, tool_end, etc.)
+  // But let subagent_start / subagent_end through for background agent display.
+  if ((ev as any)._subagent && ev.type !== "subagent_start" && ev.type !== "subagent_end") return;
 
   const sid = (ev as any).session_id;
   const t = ev.type as string;
   const { activeSid, sessions } = store.get();
+
+  if (t === "subagent_start") {
+    const agentId = (ev as any).agent_id;
+    const taskDesc = String((ev as any).task || "Background agent");
+    const isBg = !!(ev as any).background;
+    if (isBg && (!sid || sid === activeSid)) {
+      removeTyping();
+      const card = document.createElement("div");
+      card.className = "agent-card agent-running";
+      card.id = `agent-card-${agentId}`;
+      card.innerHTML = `
+        <div class="agent-card-header">
+          <span class="agent-card-icon">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+          </span>
+          <span class="agent-card-title">Background Agent</span>
+          <span class="agent-card-status running">Running</span>
+        </div>
+        <div class="agent-card-task">${esc(taskDesc)}</div>
+      `;
+      $("messages").appendChild(card);
+      if (updateScroll) scrollBottom();
+    }
+    return;
+  } else if (t === "subagent_end") {
+    const agentId = (ev as any).agent_id;
+    const isBg = !!(ev as any).background;
+    const status = (ev as any).status || "completed";
+    if (isBg && agentId) {
+      const card = document.getElementById(`agent-card-${agentId}`);
+      if (card) {
+        card.classList.remove("agent-running");
+        card.classList.add(status === "failed" || status === "cancelled" ? "agent-failed" : "agent-done");
+        const statusEl = card.querySelector(".agent-card-status");
+        if (statusEl) {
+          statusEl.classList.remove("running");
+          statusEl.classList.add(status === "failed" || status === "cancelled" ? "failed" : "done");
+          statusEl.textContent = status === "failed" ? "Failed" : status === "cancelled" ? "Cancelled" : "Done";
+        }
+        const toolsUsed = (ev as any).tools_used || 0;
+        const resultPreview = String((ev as any).result_preview || "");
+        let detail = `<div class="agent-card-meta">${toolsUsed} tools used</div>`;
+        if (resultPreview) {
+          detail += `<div class="agent-card-result">${renderMarkdown(resultPreview)}</div>`;
+        }
+        card.innerHTML = card.innerHTML.replace('</div>'.repeat(1), '') + detail + '</div>';
+        // Simpler: just rebuild the body
+        const taskDesc = card.querySelector(".agent-card-task")?.textContent || "";
+        card.innerHTML = `
+          <div class="agent-card-header">
+            <span class="agent-card-icon">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                ${status === "completed"
+                  ? '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>'
+                  : '<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>'
+                }
+              </svg>
+            </span>
+            <span class="agent-card-title">Background Agent</span>
+            <span class="agent-card-status ${status === 'failed' || status === 'cancelled' ? 'failed' : 'done'}">${status === 'failed' ? 'Failed' : status === 'cancelled' ? 'Cancelled' : 'Done'}</span>
+          </div>
+          <div class="agent-card-task">${esc(taskDesc)}</div>
+          <div class="agent-card-meta">${toolsUsed} tools used</div>
+          ${resultPreview ? `<div class="agent-card-result">${renderMarkdown(resultPreview)}</div>` : ''}
+        `;
+      }
+      if (updateScroll) scrollBottom();
+    }
+    return;
+  }
 
   if (t === "turn_start") {
     if (sid) {
@@ -3089,17 +3305,6 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
       // Card is already on screen via the earlier `ask_user_question`
       // event. Don't create a second one — the user has already (or
       // is about to) answer it.
-    } else if (ev.tool === "update_plan") {
-      const planSteps = (ev.output as any)?.plan as { id?: string; description?: string; status?: string }[] | undefined;
-      if (planSteps && planSteps.length > 0) {
-        const { rightPanelTabs } = store.get();
-        const existing = rightPanelTabs.find(t => t.type === "plan");
-        if (!existing) {
-          // First plan: auto-open sidebar tab
-          openRightPanel("plan");
-        }
-        updatePlanTabContent(planSteps);
-      }
     } else {
       const status = ev.error_class ? "error" : "success";
       let subagentTools: string[] | undefined;
@@ -3124,6 +3329,16 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
         }
       }
       appendToolCard(ev.tool as string, (ev.arguments || {}) as Record<string, unknown>, status, output, subagentTools);
+      // Update plan tab if this is an update_plan tool
+      if (ev.tool === "update_plan") {
+        const planSteps = (output as any)?.plan as { id?: string; description?: string; status?: string }[] | undefined;
+        if (planSteps && planSteps.length > 0) {
+          _currentPlanSteps = planSteps;
+          const { rightPanelTabs } = store.get();
+          const planTab = rightPanelTabs.find(t => t.type === "plan");
+          if (planTab) updatePlanTabContent(planSteps);
+        }
+      }
     }
     // If this tool may have modified workspace files, refresh the diff
     // panel in the background so the user sees changes live. Only when

@@ -21,6 +21,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "approval": {"policy": "suggest", "allow_without_prompt": []},
     "sandbox": {"mode": "off", "writable_dirs": [], "blocked_commands": []},
     "mcp": {"enabled": False, "servers": [], "extra_skill_paths": []},
+    "stt": {"model": "mlx-community/whisper-small-mlx"},
 }
 
 

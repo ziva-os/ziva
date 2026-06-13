@@ -487,6 +487,60 @@
 }
 .rp-resize-handle:hover { background: var(--accent); opacity: 0.3; }
 
+/* Welcome state when no tabs are open */
+.welcome-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  gap: 12px;
+  padding: 40px 20px;
+  color: var(--text-secondary);
+}
+.welcome-icon {
+  opacity: 0.3;
+  margin-bottom: 4px;
+}
+.welcome-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+.welcome-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.welcome-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+  justify-content: center;
+}
+.welcome-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.welcome-action-btn:hover {
+  background: var(--hover);
+  border-color: var(--text-secondary);
+}
+.welcome-action-btn svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
 /* Panel content inside right panel */
 .panel-content {
   display: flex;
@@ -1239,6 +1293,13 @@ webview.browser-frame {
   transition: background 0.15s, color 0.15s;
 }
 .composer-action-btn:hover { background: var(--surface-hover); color: var(--ink); }
+
+/* Mic button recording state */
+.mic-btn.recording { color: #e53e3e; animation: mic-pulse 1.2s ease-in-out infinite; }
+@keyframes mic-pulse {
+  0%, 100% { background: transparent; }
+  50% { background: rgba(229, 62, 62, 0.12); }
+}
 
 /* Send button — circular Antigravity style */
 .send-btn {
@@ -2383,4 +2444,40 @@ webview.browser-frame {
   .fullpage-body { padding: 16px 18px 24px; }
   .fullpage-topbar { padding: 12px 16px; }
   .fullpage-toolbar { padding: 12px 16px; }
+}
+
+/* ============ Agent Card (background sub-agent) ============ */
+.agent-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin: 6px 0;
+  background: var(--surface);
+  font-size: 13px;
+}
+.agent-card.agent-running { border-color: var(--accent); }
+.agent-card.agent-done { border-color: #38a169; }
+.agent-card.agent-failed { border-color: #e53e3e; }
+
+.agent-card-header {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 6px;
+}
+.agent-card-icon { color: var(--muted); display: flex; align-items: center; }
+.agent-card-title { font-weight: 600; color: var(--ink); }
+.agent-card-status {
+  margin-left: auto; font-size: 11px; font-weight: 500;
+  padding: 2px 8px; border-radius: 10px;
+}
+.agent-card-status.running { background: rgba(59, 130, 246, 0.12); color: #3b82f6; }
+.agent-card-status.done { background: rgba(56, 161, 105, 0.12); color: #38a169; }
+.agent-card-status.failed { background: rgba(229, 62, 62, 0.12); color: #e53e3e; }
+
+.agent-card-task { color: var(--ink); margin-bottom: 4px; }
+.agent-card-meta { color: var(--muted); font-size: 11px; }
+.agent-card-result {
+  margin-top: 8px; padding-top: 8px;
+  border-top: 1px solid var(--line);
+  max-height: 200px; overflow-y: auto;
+  font-size: 12px; color: var(--ink);
 }

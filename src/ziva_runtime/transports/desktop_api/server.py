@@ -200,6 +200,10 @@ class DesktopAPIServer:
         self.app.router.add_get("/api/files/read", self.files_read)
         self.app.router.add_get("/ws/terminal", self.terminal_ws)
         self.app.router.add_get("/api/proxy", self.proxy_url)
+        self.app.router.add_post("/api/stt", self.speech_to_text)
+        self.app.router.add_get("/api/agents", self.list_background_agents)
+        self.app.router.add_get("/api/agents/{agent_id}", self.get_background_agent)
+        self.app.router.add_post("/api/agents/{agent_id}/cancel", self.cancel_background_agent)
         # Serve static assets from build output
         if getattr(sys, 'frozen', False):
             static_dir = Path(sys._MEIPASS) / "static"
@@ -779,13 +783,16 @@ class DesktopAPIServer:
         if not session:
             return web.json_response({"error": "session_not_found"}, status=404)
 
-        plan_steps = []
-        for turn in session.get("turns", []):
-            for ev in turn.get("events", []):
-                if ev.get("type") == "tool_end" and isinstance(ev.get("output"), dict):
-                    output = ev["output"]
-                    if "plan" in output:
-                        plan_steps = output["plan"]
+        # Prefer persisted plan from session file (survives restart)
+        plan_steps = session.get("plan") or []
+        # Fallback: scan turn events for latest plan output
+        if not plan_steps:
+            for turn in session.get("turns", []):
+                for ev in turn.get("events", []):
+                    if ev.get("type") == "tool_end" and isinstance(ev.get("output"), dict):
+                        output = ev["output"]
+                        if "plan" in output:
+                            plan_steps = output["plan"]
         return web.json_response({"plan": plan_steps})
 
     async def get_diff(self, request: web.Request) -> web.Response:
@@ -1671,3 +1678,96 @@ class DesktopAPIServer:
                     return web.Response(body=body, content_type=ct.split(";")[0])
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=502)
+
+    async def speech_to_text(self, request: web.Request) -> web.Response:
+        """Transcribe audio using mlx-whisper (Apple Silicon GPU-accelerated)."""
+        import tempfile
+        try:
+            # Parse multipart form data to extract audio blob
+            audio_data = None
+            ext = ".wav"
+            reader = await request.multipart()
+            while True:
+                part = await reader.next()
+                if part is None:
+                    break
+                if part.name == "audio":
+                    audio_data = await part.read()
+                    # Detect format from part headers
+                    ct = (part.headers.get("Content-Type") or "").lower()
+                    if "webm" in ct:
+                        ext = ".webm"
+                    elif "mp4" in ct or "mpeg" in ct:
+                        ext = ".mp4"
+                    elif "ogg" in ct:
+                        ext = ".ogg"
+                    elif "wav" in ct:
+                        ext = ".wav"
+                    break
+
+            if not audio_data:
+                return web.json_response({"error": "No audio data"}, status=400)
+
+            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                tmp.write(audio_data)
+                tmp_path = tmp.name
+
+            try:
+                import mlx_whisper
+                models_dir = Path.home() / ".ziva" / "models"
+                models_dir.mkdir(parents=True, exist_ok=True)
+                stt_model = self.runtime.config.get("stt", {}).get(
+                    "model", "whisper-small-mlx"
+                )
+                # Check local models_dir first, fall back to HF repo
+                local_path = None
+                for candidate in [models_dir / stt_model, models_dir / "mlx-community" / stt_model]:
+                    if candidate.exists() and (candidate / "weights.npz").exists():
+                        local_path = candidate
+                        break
+                model_ref = str(local_path) if local_path else f"mlx-community/{stt_model}"
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: mlx_whisper.transcribe(
+                        tmp_path,
+                        path_or_hf_repo=model_ref,
+                        language=None,
+                    ),
+                )
+                text = result.get("text", "").strip()
+                return web.json_response({"text": text})
+            finally:
+                os.unlink(tmp_path)
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
+    async def list_background_agents(self, request: web.Request) -> web.Response:
+        agents = list(self.runtime._background_agents.values())
+        return web.json_response({"agents": agents})
+
+    async def get_background_agent(self, request: web.Request) -> web.Response:
+        agent_id = request.match_info["agent_id"]
+        agent = self.runtime._background_agents.get(agent_id)
+        if not agent:
+            return web.json_response({"error": "not_found"}, status=404)
+        return web.json_response({"agent": agent})
+
+    async def cancel_background_agent(self, request: web.Request) -> web.Response:
+        agent_id = request.match_info["agent_id"]
+        agent = self.runtime._background_agents.get(agent_id)
+        if not agent:
+            return web.json_response({"error": "not_found"}, status=404)
+        if agent["status"] != "running":
+            return web.json_response({"error": "not_running", "status": agent["status"]}, status=409)
+        agent["status"] = "cancelled"
+        agent["error"] = "Cancelled by user"
+        if self.runtime.event_bus:
+            await self.runtime.event_bus.publish(agent["session_id"], {
+                "type": "subagent_end",
+                "agent_id": agent_id,
+                "call_id": agent.get("call_id"),
+                "status": "cancelled",
+                "background": True,
+            })
+        return web.json_response({"ok": True, "agent_id": agent_id})
