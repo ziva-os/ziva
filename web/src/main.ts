@@ -80,6 +80,7 @@ const store = new Store<AppState>({
   compactingSessions: {},
   questionPending: false,
   config: { model: "unknown", models: [], modelDetails: [], approval: "suggest", workspace: "", tools: [], contextWindow: 200000 },
+  recentWorkspaces: [],
   connected: false,
   tokenUsage: null,
   latencyMs: null,
@@ -461,9 +462,12 @@ function updatePlanTabContent(steps: { id?: string; description?: string; status
   if (!content) return;
   let panel = content.querySelector(".plan-panel") as HTMLElement;
   if (!panel) {
-    // renderPlanTab should have created it via activateTab → renderTabContent
-    renderPlanTab(content);
-    panel = content.querySelector(".plan-panel") as HTMLElement;
+    // Create the plan-panel directly instead of calling renderPlanTab,
+    // which would asynchronously fetch from the server and overwrite
+    // the steps we already have from the live tool_end event.
+    panel = document.createElement("div");
+    panel.className = "panel-content-body plan-panel";
+    content.appendChild(panel);
   }
   if (!panel) return;
 
@@ -1020,12 +1024,12 @@ function bindEvents() {
 
   $("batchDeleteBtn").onclick = async () => {
     const checked = $("sessionList").querySelectorAll<HTMLInputElement>(".session-checkbox:checked");
-    const ids = Array.from(checked).map(cb => cb.dataset.sid!);
-    if (ids.length === 0) return;
-    if (!confirm(`Delete ${ids.length} sessions?`)) return;
+    const items = Array.from(checked).map(cb => ({ sid: cb.dataset.sid!, workspace: cb.dataset.workspace }));
+    if (items.length === 0) return;
+    if (!confirm(`Delete ${items.length} sessions?`)) return;
     const { activeSid } = store.get();
-    for (const sid of ids) {
-      await api.deleteSession(sid);
+    for (const { sid, workspace } of items) {
+      await api.deleteSession(sid, workspace ? { workspace } : undefined);
       if (sid === activeSid) {
         store.set({ activeSid: null });
         $("messages").innerHTML = "";
@@ -1037,7 +1041,7 @@ function bindEvents() {
     ($("batchDeleteBtn") as HTMLElement).style.display = "none";
     await refreshSessions();
     // Switch to first remaining session if current was deleted
-    if (ids.includes(activeSid || "")) {
+    if (items.some(it => it.sid === activeSid)) {
       const sessions = store.get().sessions;
       if (sessions.length > 0) {
         switchSession(sessions[0].id);
@@ -1274,7 +1278,27 @@ function disposePendingImageThumbs(arr: Array<{ thumbUrl?: string }>) {
   }
 }
 
-function addImageFile(file: File) {
+async function addImageFile(file: File) {
+  // If there's no active session (e.g. the user just switched workspace
+  // and openProjectInSidebar cleared activeSid), create one so the
+  // attachment has somewhere to land. Mirrors sendMessage's fallback at
+  // /main.ts around the send loop. The session UUID is generated
+  // client-side and the server lazy-creates it on the attachment POST
+  // (see upload_attachment in desktop_api/server.py) — same flow as
+  // sendMessage's "send into a never-persisted session" path.
+  if (!store.get().activeSid) {
+    try {
+      await createSession();
+    } catch (e: any) {
+      appendError(`Cannot attach image: failed to create session (${e?.message || "unknown"})`);
+      return;
+    }
+    if (!store.get().activeSid) {
+      appendError("Cannot attach image: failed to create a session");
+      return;
+    }
+  }
+
   // Generate a local blob URL for the in-input preview *first*
   // (synchronous, can't fail), then kick off the upload so the user
   // sees the thumbnail immediately even on slow links.
@@ -1735,7 +1759,15 @@ async function refreshSessions() {
   // Always sort by creation time so sessions never jump when a turn completes
   sessions.sort((a, b) => (b.time?.created || 0) - (a.time?.created || 0));
 
-  store.set({ sessions });
+  // The server returns the workspace list alongside sessions; keep it so
+  // the sidebar can render empty projects too.
+  let recentWorkspaces: string[] = [];
+  try {
+    const wsRes = await api.getRecentWorkspaces();
+    recentWorkspaces = wsRes.workspaces || [];
+  } catch { /* ignore */ }
+
+  store.set({ sessions, recentWorkspaces });
   renderSessions();
   // Enrichment (preview / turnCount / status) requires hitting endpoints
   // that are scoped to the active runtime project. Cross-project sessions
@@ -1831,6 +1863,16 @@ function _doRenderSessions() {
     if (!groupMap.has(ws)) groupMap.set(ws, []);
     groupMap.get(ws)!.push(s);
   }
+  // Also show recent workspaces that have no sessions yet, so a user who
+  // switches to a brand-new project sees it in the sidebar immediately.
+  for (const ws of store.get().recentWorkspaces) {
+    if (ws && !groupMap.has(ws)) {
+      groupMap.set(ws, []);
+    }
+  }
+  if (activeWs && !groupMap.has(activeWs)) {
+    groupMap.set(activeWs, []);
+  }
   // Stable display order: active workspace first, then the rest sorted by
   // most-recently-updated session in each group.
   const groups: SessionGroup[] = Array.from(groupMap.entries()).map(([ws, list_]) => ({
@@ -1896,8 +1938,9 @@ function _doRenderSessions() {
         const div = document.createElement("div");
         div.className = "session-item" + (s.id === activeSid ? " active" : "");
         const timeStr = formatRelativeTime(s.time?.updated || s.time?.created);
+        const inActiveWs = (s.workspace || activeWs) === activeWs;
         div.innerHTML = `
-          ${selectMode ? `<input type="checkbox" class="session-checkbox" data-sid="${s.id}" checked />` : ""}
+          ${selectMode && inActiveWs ? `<input type="checkbox" class="session-checkbox" data-sid="${s.id}" data-workspace="${esc(s.workspace || activeWs)}" checked />` : ""}
           <span class="session-chevron">›</span>
           <span class="session-name">${esc(s.preview || s.id)}</span>
           <span class="session-time">${timeStr}</span>
@@ -1978,7 +2021,7 @@ function _doRenderSessions() {
 }
 
 async function createSession() {
-  const id = crypto.randomUUID();
+  const id = await api.createSession();
   // New sessions always belong to the active workspace, so tag them here
   // so they show up in the right project group without waiting for the
   // next /sessions refresh.
@@ -2157,6 +2200,7 @@ async function deleteSession(sid: string, workspace?: string) {
     store.set({ activeSid: null });
     $("messages").innerHTML = "";
     showEmptyState(true);
+    updateContextProgress(0, 0);
   }
   // Drop the deleted session's draft + queued images so we don't keep
   // dead keys around. Other sessions' drafts are untouched.
@@ -2283,9 +2327,13 @@ function renderMessages(target: HTMLElement, msgs: any[]): void {
         continue;
       }
       const toolCalls = (m as any).tool_calls as { id: string; name: string; arguments: Record<string, unknown> }[] | undefined;
+      // Persisted by runtime.py into the assistant message's
+      // `reasoning_content` field; surfaced here so reloading history
+      // shows the same thinking card the user saw during streaming.
+      const reasoning = ((m as any).reasoning_content as string | undefined) || "";
       if (toolCalls && toolCalls.length > 0) {
         pendingToolCalls = toolCalls;
-        const { thinking } = extractThinking(m.content);
+        const thinking = mergeThinking(reasoning || undefined, m.content);
         if (thinking) {
           const thinkDiv = document.createElement("div");
           thinkDiv.className = "thinking-card-inline";
@@ -2293,7 +2341,7 @@ function renderMessages(target: HTMLElement, msgs: any[]): void {
           target.appendChild(thinkDiv);
         }
       } else {
-        appendAssistantMsg(m.content, target);
+        appendAssistantMsg(m.content, target, reasoning);
         pendingToolCalls = [];
       }
     } else if (m.role === "tool") {
@@ -2467,10 +2515,25 @@ function appendUserMsg(text: string | unknown[], target: HTMLElement = $("messag
   return div;
 }
 
-function appendAssistantMsg(text: string, target: HTMLElement = $("messages")) {
+// Combine the provider's `reasoning_content` field (sent as
+// `reasoning_delta` events during streaming, persisted on the assistant
+// message as `reasoning_content`) with any <think>...</think> tags the
+// provider embedded in the main content. Returns a single string to
+// display inside the thinking card, or "" if neither source produced
+// anything.
+function mergeThinking(reasoning: string | undefined, content: string): string {
+  const { thinking: inlineThink } = extractThinking(content);
+  if (reasoning && inlineThink) return reasoning + "\n\n---\n\n" + inlineThink;
+  if (reasoning) return reasoning.trim();
+  if (inlineThink) return inlineThink;
+  return "";
+}
+
+function appendAssistantMsg(text: string, target: HTMLElement = $("messages"), reasoning: string = "") {
   const div = document.createElement("div");
   div.className = "msg assistant";
-  const { thinking, main } = extractThinking(text);
+  const thinking = mergeThinking(reasoning || undefined, text);
+  const { main } = extractThinking(text);
   let content = "";
   if (thinking) {
     content += `<details class="thinking-card"><summary>Thinking</summary><div class="thinking-card-content">${esc(thinking)}</div></details>`;
@@ -2513,8 +2576,31 @@ function getOrCreateAssistantEl(): HTMLElement {
     currentAssistantEl = div.querySelector(".md") as HTMLElement;
     currentTextParts = { thinking: "", main: "" };
     (currentAssistantEl as any)._main = "";
+    // Buffer for streaming `reasoning_delta` events (Anthropic / OpenAI
+    // `reasoning_effort` providers send thinking in a separate field,
+    // not embedded as <think> tags in the main content). Rendered into
+    // the thinking card alongside any inline <think> blocks.
+    (currentAssistantEl as any)._reasoning = "";
   }
   return currentAssistantEl!;
+}
+
+// Render the assistant message body (thinking card + markdown) from the
+// streaming buffers stashed on the .md element. Called from both the
+// throttled timer in the delta / reasoning_delta handlers and from
+// model_response (which cancels the timer to land the final state
+// deterministically).
+function renderAssistantContent(el: HTMLElement) {
+  const mainStr = (el as any)._main || "";
+  const reasoningStr = (el as any)._reasoning || "";
+  const thinking = mergeThinking(reasoningStr || undefined, mainStr);
+  const { main } = extractThinking(mainStr);
+  let html = "";
+  if (thinking) {
+    html += `<details class="thinking-card"><summary>Thinking</summary><div class="thinking-card-content">${esc(thinking)}</div></details>`;
+  }
+  html += renderMarkdown(main);
+  el.innerHTML = html;
 }
 
 function appendTyping() {
@@ -3240,13 +3326,26 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     if (!(el as any)._renderTimer) {
       (el as any)._renderTimer = setTimeout(() => {
         (el as any)._renderTimer = null;
-        const { thinking, main } = extractThinking((el as any)._main);
-        let html = "";
-        if (thinking) {
-          html += `<details class="thinking-card"><summary>Thinking</summary><div class="thinking-card-content">${esc(thinking)}</div></details>`;
-        }
-        html += renderMarkdown(main);
-        el.innerHTML = html;
+        renderAssistantContent(el);
+        if (updateScroll) scrollBottom();
+      }, 80);
+    }
+  } else if (t === "reasoning_delta") {
+    // Anthropic / OpenAI o1/o3 with `reasoning_effort` emit chain-of-thought
+    // in a separate `reasoning_content` field, surfaced by the runtime as
+    // `reasoning_delta` events. Accumulate into a buffer alongside the
+    // main content; renderAssistantContent() merges both into the
+    // thinking card. We share the same throttle timer as the main
+    // `delta` handler so a fast reasoning burst doesn't double-render.
+    removeTyping();
+    showEmptyState(false);
+    const el = getOrCreateAssistantEl();
+    const content = (ev.content as string) || "";
+    (el as any)._reasoning += content;
+    if (!(el as any)._renderTimer) {
+      (el as any)._renderTimer = setTimeout(() => {
+        (el as any)._renderTimer = null;
+        renderAssistantContent(el);
         if (updateScroll) scrollBottom();
       }, 80);
     }
@@ -3262,13 +3361,10 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     }
     const content = (ev.content as string) || "";
     (el as any)._main = content;
-    const { thinking, main } = extractThinking((el as any)._main);
-    let html = "";
-    if (thinking) {
-      html += `<details class="thinking-card"><summary>Thinking</summary><div class="thinking-card-content">${esc(thinking)}</div></details>`;
-    }
-    html += renderMarkdown(main);
-    el.innerHTML = html;
+    // The runtime currently doesn't include `reasoning_content` in the
+    // model_response payload — we keep the value accumulated from the
+    // earlier `reasoning_delta` events, which is the canonical source.
+    renderAssistantContent(el);
     addCopyButtons(el.parentElement!);
     highlightCode(el.parentElement!);
     if (updateScroll) scrollBottom();
@@ -4101,13 +4197,31 @@ async function openProjectPicker(e: MouseEvent) {
 
   recent.filter((r) => r !== current).forEach((r) => {
     const el = document.createElement("div");
-    el.className = "popup-item";
+    el.className = "popup-item popup-item-with-action";
     const name = r.split("/").pop() || r;
-    el.innerHTML = `<span class="popup-icon"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-1.22-1.8A2 2 0 0 0 7.53 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg></span><span class="popup-text" title="${esc(r)}">${esc(name)}</span>`;
-    el.onclick = async () => {
+    el.innerHTML = `
+      <span class="popup-icon"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-1.22-1.8A2 2 0 0 0 7.53 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg></span>
+      <span class="popup-text" title="${esc(r)}">${esc(name)}</span>
+      <span class="popup-action remove-workspace-btn" title="Remove from recent">&times;</span>`;
+    el.onclick = async (ev) => {
+      if ((ev.target as HTMLElement).classList.contains("remove-workspace-btn")) return;
       popup.remove();
       await openProjectInSidebar(r);
     };
+    const removeBtn = el.querySelector(".remove-workspace-btn");
+    if (removeBtn) {
+      (removeBtn as HTMLElement).onclick = async (ev) => {
+        ev.stopPropagation();
+        if (!confirm(`Remove "${name}" from recent projects?\nThis does not delete any data.`)) return;
+        try {
+          await api.removeWorkspace(r);
+          popup.remove();
+          await refreshSessions();
+        } catch (e: any) {
+          alert("Failed to remove project: " + (e?.message || "unknown"));
+        }
+      };
+    }
     listDiv.appendChild(el);
   });
 
@@ -4177,6 +4291,11 @@ async function openProjectInSidebar(
   if (workspaceNameEl) workspaceNameEl.textContent = wn;
   const contextWorkspaceEl = $("contextWorkspace");
   if (contextWorkspaceEl) contextWorkspaceEl.title = workspace;
+
+  // Keep the local recent list in sync so the sidebar can show the new
+  // project immediately even before the next refreshSessions() call.
+  const recentWorkspaces = [workspace, ...store.get().recentWorkspaces.filter(w => w !== workspace)];
+  store.set({ recentWorkspaces });
 
   // Reset the "show all" toggle since it's per-project.
   const list = $("sessionList");

@@ -863,6 +863,28 @@ webview.browser-frame {
   background: var(--line);
   margin: 4px 0;
 }
+.popup-item-with-action {
+  padding-right: 10px;
+}
+.popup-item .popup-action {
+  display: none;
+  width: 20px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.popup-item:hover .popup-action {
+  display: flex;
+}
+.popup-item .popup-action:hover {
+  background: var(--surface-alt);
+  color: var(--red);
+}
 
 /* ============ Messages ============ */
 .messages { flex: 1; overflow-y: auto; padding: 16px 0; scroll-behavior: smooth; }
@@ -2433,6 +2455,12 @@ webview.browser-frame {
   cursor: pointer;
 }
 .settings-model-check input { cursor: pointer; }
+.settings-cap-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
 
 /* ============ Responsive ============ */
 @media (max-width: 860px) {

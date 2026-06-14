@@ -58,7 +58,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _runtime_for_workspace(path: str, session_override: dict | None = None) -> Runtime:
     workspace = Path(path).resolve()
-    return Runtime.create(workspace_root=workspace, workspace_config_path=workspace / ".ziva" / "config.yaml", session_override=session_override)
+    global_config = Path.home() / ".ziva" / "config.yaml"
+    return Runtime.create(
+        workspace_root=workspace,
+        global_config_path=global_config,
+        workspace_config_path=workspace / ".ziva" / "config.yaml",
+        session_override=session_override,
+    )
 
 
 # ---- Compact tool formatting (reference aicoder, but tighter) ----

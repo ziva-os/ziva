@@ -289,3 +289,7 @@ export async function getRecentWorkspaces(): Promise<{ workspaces: string[] }> {
 export async function switchWorkspace(path: string): Promise<{ success: boolean }> {
   return api("POST", "/api/workspace/switch", { path });
 }
+
+export async function removeWorkspace(path: string): Promise<{ workspaces: string[] }> {
+  return api("POST", "/api/workspace/remove", { path });
+}

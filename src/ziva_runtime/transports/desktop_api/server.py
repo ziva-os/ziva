@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import json
+import logging
 import mimetypes
 import os
 import pty
@@ -18,10 +19,14 @@ from typing import Any, Dict, List
 
 from aiohttp import web
 
+from ziva_runtime.config.loader import _deep_merge
 from ziva_runtime.permissions import get_permission_manager
 from ziva_runtime.runtime import Runtime
 from ziva_runtime.shared_types import CancellationToken, ChatMessage, ChatResult, ToolCallItem
 from ziva_runtime.storage.file_storage import FileStorage, _project_hash
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -139,10 +144,27 @@ class DesktopAPIServer:
         self._setup_app()
 
     def _pid_for(self, sid: str) -> str:
-        """Resolve project_id from session context, falling back to active workspace."""
+        """Resolve project_id from session context, falling back to active workspace.
+
+        If the session is not currently loaded in memory (e.g. it was created
+        before this process started or belongs to a recently-used workspace),
+        search the known workspace directories on disk so cross-workspace
+        uploads and message reads still route to the correct project.
+        """
         session = self.runtime._sessions.get(sid)
         if session and session.project_id:
             return session.project_id
+
+        for ws in [str(self.runtime.workspace_root), *self._read_recent_workspaces()]:
+            if not ws:
+                continue
+            try:
+                pid = _project_hash(Path(ws))
+                if FileStorage.get_session(pid, sid):
+                    return pid
+            except Exception:
+                continue
+
         return self.runtime.project_id
 
     # Bump the per-request body limit well above aiohttp's 1 MB
@@ -195,6 +217,7 @@ class DesktopAPIServer:
         self.app.router.add_get("/api/system/choose-folder", self.choose_folder)
         self.app.router.add_get("/api/workspace/recent", self.get_recent_workspaces)
         self.app.router.add_post("/api/workspace/switch", self.switch_workspace)
+        self.app.router.add_post("/api/workspace/remove", self.remove_workspace)
         # Panel endpoints: files tree, file read, terminal websocket, proxy
         self.app.router.add_get("/api/files/tree", self.files_tree)
         self.app.router.add_get("/api/files/read", self.files_read)
@@ -526,6 +549,10 @@ class DesktopAPIServer:
                 "name": m.name,
                 "tool_calls": [{"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in m.tool_calls],
             }
+            if m.reasoning_content:
+                record["reasoning_content"] = m.reasoning_content
+            if m.reasoning_signature:
+                record["reasoning_signature"] = m.reasoning_signature
             if m._compaction_summary:
                 record["_compaction_summary"] = True
             records.append(record)
@@ -644,7 +671,7 @@ class DesktopAPIServer:
         # Create an adapter that matches the current model_cfg so the provider
         # and model name stay in sync (avoids sending a new model name to an
         # old provider's adapter).
-        model_adapter = _create_adapter({"model": model_cfg, "providers": self.runtime.config.get("providers", [])})
+        model_adapter = _create_adapter(self.runtime.config)
         try:
             summary_list = await compact_messages(
                 llm_visible, context_window, model_name, model_adapter,
@@ -1040,9 +1067,20 @@ class DesktopAPIServer:
         """
         from ziva_runtime.storage.file_storage import FileStorage
         sid = request.match_info["sid"]
-        pid = self.runtime.project_id
+        pid = self._pid_for(sid)
+        # Lazy-create on first attachment upload, mirroring create_turn.
+        # The frontend generates UUIDs locally for new sessions and only
+        # registers them with the server when the first message is sent.
+        # If the user attaches an image to a brand-new session before
+        # sending a message — e.g. right after switching workspace — we
+        # need to persist the session here too, otherwise the upload
+        # silently fails with session_not_found and the user's image
+        # disappears without explanation.
         if not FileStorage.get_session(pid, sid) and sid not in self.store._loaded_sessions:
-            return web.json_response({"error": "session_not_found"}, status=404)
+            FileStorage.create_session(pid, {
+                "id": sid,
+                "time": {"created": int(time.time() * 1000), "updated": int(time.time() * 1000)},
+            })
 
         try:
             reader = await request.multipart()
@@ -1101,15 +1139,26 @@ class DesktopAPIServer:
         read primitive.
         """
         from ziva_runtime.storage.file_storage import FileStorage
-        pid = self.runtime.project_id
-        root = (FileStorage._project_dir(pid) / "attachments").resolve()
 
         raw = request.query.get("path", "")
         try:
             candidate = Path(raw).resolve()
         except (OSError, ValueError):
             return web.json_response({"error": "invalid_path"}, status=400)
-        # Reject anything outside the attachments root (no path traversal).
+
+        # Resolve the session's project from the path itself so attachments
+        # keep working after the user switches workspace.
+        parts = candidate.parts
+        try:
+            attachments_idx = parts.index("attachments")
+            sid = parts[attachments_idx + 1]
+        except (ValueError, IndexError):
+            return web.json_response({"error": "invalid_attachment_path"}, status=400)
+
+        pid = self._pid_for(sid)
+        root = (FileStorage._project_dir(pid) / "attachments").resolve()
+
+        # Reject anything outside the session's attachments root (no path traversal).
         try:
             candidate.relative_to(root)
         except ValueError:
@@ -1274,12 +1323,32 @@ class DesktopAPIServer:
             },
         })
 
+    @property
+    def _global_config_path(self) -> Path:
+        return Path.home() / ".ziva" / "config.yaml"
+
     async def update_config(self, request: web.Request) -> web.Response:
         payload = await request.json()
+        config_path = self._global_config_path
+        import yaml
+
+        # Always base writes on the current disk content.  If a stale server
+        # process is still running with an old/default in-memory config, this
+        # prevents it from overwriting newer edits made by the user.
+        fresh: Dict[str, Any] = {}
+        if config_path.exists():
+            try:
+                loaded = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    fresh = loaded
+            except Exception:
+                pass
+        if not fresh:
+            fresh = dict(self.runtime.config)
+
         if "model" in payload:
-            if "model" not in self.runtime.config:
-                self.runtime.config["model"] = {}
-            self.runtime.config["model"].update(payload["model"])
+            fresh.setdefault("model", {}).update(payload["model"])
+            self.runtime.config.setdefault("model", {}).update(payload["model"])
             # Invalidate all per-session model adapters so the next turn
             # re-creates them from the updated config.  Without this,
             # sessions created before the switch keep using the stale
@@ -1288,31 +1357,30 @@ class DesktopAPIServer:
             for sess in self.runtime._sessions.values():
                 sess.model_adapter = None
         if "approval" in payload:
-            if "approval" not in self.runtime.config:
-                self.runtime.config["approval"] = {}
-            self.runtime.config["approval"].update(payload["approval"])
-        # Persist updated config to disk so changes survive restarts
-        import yaml
-        config_path = self.runtime.workspace_root / ".ziva" / "config.yaml"
+            fresh.setdefault("approval", {}).update(payload["approval"])
+            self.runtime.config.setdefault("approval", {}).update(payload["approval"])
+
+        # Persist the merged config and keep the runtime in sync.
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(
-            yaml.dump(self.runtime.config, default_flow_style=False, allow_unicode=True, sort_keys=False),
+            yaml.dump(fresh, default_flow_style=False, allow_unicode=True, sort_keys=False),
             encoding="utf-8",
         )
+        self.runtime.config = fresh
         return web.json_response({"ok": True})
 
     async def get_config_yaml(self, _request: web.Request) -> web.Response:
         """Return the raw YAML config file content."""
-        config_path = self.runtime.workspace_root / ".ziva" / "config.yaml"
+        config_path = self._global_config_path
         if not config_path.exists():
             return web.json_response({"yaml": ""})
         return web.json_response({"yaml": config_path.read_text(encoding="utf-8")})
 
     async def save_config_yaml(self, request: web.Request) -> web.Response:
-        """Save raw YAML content to the workspace config file."""
+        """Save raw YAML content to the global config file."""
         payload = await request.json()
         yaml_text = payload.get("yaml", "")
-        config_path = self.runtime.workspace_root / ".ziva" / "config.yaml"
+        config_path = self._global_config_path
         config_path.parent.mkdir(parents=True, exist_ok=True)
         import yaml
         try:
@@ -1329,14 +1397,30 @@ class DesktopAPIServer:
         return web.json_response(self.runtime.config)
 
     async def save_config_json(self, request: web.Request) -> web.Response:
-        """Save a JSON config object, writing it as YAML."""
+        """Save a JSON config object, writing it as YAML to the global config.
+
+        Merges the payload onto the current on-disk config so that fields the
+        UI doesn't send (or that are missing from a stale in-memory copy) are
+        not silently dropped.
+        """
         payload = await request.json()
         import yaml
-        config_path = self.runtime.workspace_root / ".ziva" / "config.yaml"
+        config_path = self._global_config_path
+
+        disk_config: Dict[str, Any] = {}
+        if config_path.exists():
+            try:
+                loaded = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    disk_config = loaded
+            except Exception:
+                pass
+
+        merged = _deep_merge(disk_config, payload)
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(yaml.dump(payload, default_flow_style=False, allow_unicode=True, sort_keys=False), encoding="utf-8")
+        config_path.write_text(yaml.dump(merged, default_flow_style=False, allow_unicode=True, sort_keys=False), encoding="utf-8")
         # Hot-reload the in-memory config
-        self.runtime.config.update(payload)
+        self.runtime.config = merged
         return web.json_response({"ok": True})
     async def choose_folder(self, _request: web.Request) -> web.Response:
         """Use osascript to open a native folder selection dialog."""
@@ -1364,6 +1448,24 @@ class DesktopAPIServer:
             pass
         return web.json_response({"workspaces": []})
 
+    async def remove_workspace(self, request: web.Request) -> web.Response:
+        """Remove a workspace from the recent list without deleting its data."""
+        payload = await request.json()
+        path = payload.get("path")
+        if not isinstance(path, str) or not path:
+            return web.json_response({"error": "Missing path"}, status=400)
+        recent_path = Path.home() / ".ziva" / "recent_workspaces.json"
+        try:
+            workspaces = []
+            if recent_path.exists():
+                workspaces = json.loads(recent_path.read_text())
+            workspaces = [w for w in workspaces if w != path]
+            recent_path.parent.mkdir(parents=True, exist_ok=True)
+            recent_path.write_text(json.dumps(workspaces))
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+        return web.json_response({"workspaces": workspaces})
+
     async def switch_workspace(self, request: web.Request) -> web.Response:
         payload = await request.json()
         new_path = payload.get("path")
@@ -1379,6 +1481,24 @@ class DesktopAPIServer:
         # stored project_id routes FileStorage calls correctly.
         self.runtime.workspace_root = target
         self.runtime._project_id = _project_hash(target)
+
+        # Config is global (shared across workspaces). Reload from the global
+        # config so external edits are picked up, but do NOT switch to the
+        # target workspace's local .ziva/config.yaml — the settings UI is
+        # workspace-agnostic and users expect model/MCP/etc. to stay the same
+        # after switching projects.
+        from ziva_runtime.config.loader import load_effective_config
+        try:
+            self.runtime.config = load_effective_config(
+                self._global_config_path,
+                None,
+                None,
+            )
+        except Exception as e:
+            # Don't fail the switch if the global config is broken — surface
+            # the error and keep the old config so existing sessions don't get
+            # torn down mid-flight.
+            logger.warning("Failed to reload global config: %s", e)
 
         # Reload automations for the new workspace
         self.automations.clear()
@@ -1427,7 +1547,7 @@ class DesktopAPIServer:
         clicking a skill resolves to `/skills/file?path=<SKILL.md>`
         for the markdown body.
         """
-        skill_index = self.runtime.config.get("_skill_index", [])
+        skill_index = self.runtime.build_skill_index()
         return web.json_response({"skills": skill_index})
 
     async def read_skill_file(self, request: web.Request) -> web.Response:

@@ -46,12 +46,13 @@ export interface AppState {
   config: {
     model: string;
     models: string[];
-    modelDetails: Array<{ name: string; supports_image?: boolean }>;
+    modelDetails: Array<{ name: string; capabilities?: { vision?: boolean; thinking?: boolean; tools?: boolean } }>;
     approval: string;
     workspace: string;
     tools: string[];
     contextWindow: number;
   };
+  recentWorkspaces: string[];
   connected: boolean;
   tokenUsage: { input: number; output: number } | null;
   latencyMs: number | null;

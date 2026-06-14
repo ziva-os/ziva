@@ -52,8 +52,37 @@ class MCPToolWrapper:
         if not runtime:
             return ToolResult(text="Error: mcp_unavailable\nRuntime not accessible", error=True)
         session = runtime._get_session(ctx.session_id)
+
+        # If the session has no MCP client, try to connect now using the
+        # current runtime config. This handles the case where the user enabled
+        # MCP after the session was created, or switched from a workspace
+        # without MCP to one with MCP configured.
         if not session.mcp_client:
-            return ToolResult(text="Error: mcp_not_connected\nMCP not connected for this session", error=True)
+            try:
+                await runtime._connect_mcp_if_needed(ctx.session_id)
+            except Exception as e:
+                logger.warning("MCP on-demand connect failed: %s", e)
+
+        if not session.mcp_client:
+            # Distinguish "no MCP configured" from "configured but failed to connect".
+            from ziva_runtime.shared_types import MCPConnectStatus
+            if session.mcp_status == MCPConnectStatus.NO_CONFIG:
+                return ToolResult(
+                    text="Error: mcp_not_configured\n"
+                         "MCP is not configured. Add servers in Settings → MCP.",
+                    error=True,
+                )
+            if session.mcp_status == MCPConnectStatus.FAILED:
+                return ToolResult(
+                    text="Error: mcp_connect_failed\n"
+                         "MCP server failed to connect. "
+                         "Check the configured command and environment.",
+                    error=True,
+                )
+            return ToolResult(
+                text="Error: mcp_not_connected\nMCP not connected for this session",
+                error=True,
+            )
         server = session.mcp_client.get_server(self._server_name)
         if not server:
             return ToolResult(text=f"Error: mcp_server_not_found\nMCP server '{self._server_name}' not found", error=True)

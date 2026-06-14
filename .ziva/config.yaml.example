@@ -1,5 +1,5 @@
 model:
-  provider: openai_agents
+  provider: openai
   name: MiniMax-M2.7
   api_key: "YOUR_API_KEY_HERE"
   base_url: "https://api.minimaxi.com/v1"

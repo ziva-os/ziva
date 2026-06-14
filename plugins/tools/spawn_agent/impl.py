@@ -151,9 +151,10 @@ class SpawnAgentTool:
 
     async def _run_background(self, runtime, task, call_id, child_messages, child_ctx, session_id) -> ToolResult:
         """Background sub-agent: returns immediately, runs via asyncio.create_task."""
+        import time
+
         agent_id = f"bg_{call_id}"
 
-        # Register in runtime tracker
         runtime._background_agents[agent_id] = {
             "agent_id": agent_id,
             "call_id": call_id,
@@ -163,6 +164,8 @@ class SpawnAgentTool:
             "result": None,
             "error": None,
             "tools_used": 0,
+            "task": None,
+            "finished_at": 0,
         }
 
         if runtime.event_bus:
@@ -175,65 +178,95 @@ class SpawnAgentTool:
             })
 
         async def _run():
-            result_content = ""
-            tool_count = 0
-            tool_names: list[str] = []
-            try:
-                async for event in runtime._run_model_tool_loop(
-                    child_messages, session_id, child_ctx,
-                ):
-                    t = event.get("type")
-                    if t == "model_response":
-                        result_content = event.get("content", "")
-                    elif t == "tool_start":
-                        tool_count += 1
-                        tn = event.get("tool")
-                        if tn:
-                            tool_names.append(str(tn))
+            # Hold the concurrency permit for the entire run so the
+            # configured cap (spawn.max_concurrency, default 20) bounds
+            # simultaneously-active background agents. Spawning is not
+            # blocked — only the work inside _run is gated.
+            async with runtime._agent_concurrency:
+                result_content = ""
+                tool_count = 0
+                tool_names: list[str] = []
+                try:
+                    async for event in runtime._run_model_tool_loop(
+                        child_messages, session_id, child_ctx,
+                    ):
+                        if runtime._background_agents.get(agent_id, {}).get("status") == "cancelled":
+                            break
+                        t = event.get("type")
+                        if t == "model_response":
+                            result_content = event.get("content", "")
+                        elif t == "tool_start":
+                            tool_count += 1
+                            tn = event.get("tool")
+                            if tn:
+                                tool_names.append(str(tn))
 
+                        if runtime.event_bus:
+                            event_copy = dict(event)
+                            event_copy["_subagent"] = True
+                            event_copy["_subagent_call_id"] = call_id
+                            event_copy["_agent_id"] = agent_id
+                            await runtime.event_bus.publish(session_id, event_copy)
+
+                except asyncio.CancelledError:
+                    runtime._background_agents[agent_id]["status"] = "cancelled"
+                    runtime._background_agents[agent_id]["finished_at"] = time.time()
                     if runtime.event_bus:
-                        event_copy = dict(event)
-                        event_copy["_subagent"] = True
-                        event_copy["_subagent_call_id"] = call_id
-                        event_copy["_agent_id"] = agent_id
-                        await runtime.event_bus.publish(session_id, event_copy)
+                        await runtime.event_bus.publish(session_id, {
+                            "type": "subagent_end",
+                            "call_id": call_id,
+                            "agent_id": agent_id,
+                            "task": task[:200],
+                            "status": "cancelled",
+                            "result_length": len(result_content),
+                            "background": True,
+                        })
+                    raise
+                except Exception as exc:
+                    runtime._background_agents[agent_id]["status"] = "failed"
+                    runtime._background_agents[agent_id]["error"] = str(exc)
+                    runtime._background_agents[agent_id]["result"] = result_content[:2000]
+                    runtime._background_agents[agent_id]["finished_at"] = time.time()
+                    if runtime.event_bus:
+                        await runtime.event_bus.publish(session_id, {
+                            "type": "subagent_end",
+                            "call_id": call_id,
+                            "agent_id": agent_id,
+                            "task": task[:200],
+                            "status": "failed",
+                            "error": str(exc),
+                            "result_length": len(result_content),
+                            "background": True,
+                        })
+                    return
 
-            except Exception as exc:
-                runtime._background_agents[agent_id]["status"] = "failed"
-                runtime._background_agents[agent_id]["error"] = str(exc)
-                runtime._background_agents[agent_id]["result"] = result_content[:2000]
+                if runtime._background_agents.get(agent_id, {}).get("status") == "cancelled":
+                    return
+
+                runtime._background_agents[agent_id]["status"] = "completed"
+                runtime._background_agents[agent_id]["result"] = result_content
+                runtime._background_agents[agent_id]["tools_used"] = tool_count
+                runtime._background_agents[agent_id]["finished_at"] = time.time()
+
                 if runtime.event_bus:
                     await runtime.event_bus.publish(session_id, {
                         "type": "subagent_end",
                         "call_id": call_id,
                         "agent_id": agent_id,
                         "task": task[:200],
-                        "status": "failed",
-                        "error": str(exc),
+                        "status": "completed",
+                        "tools_used": tool_count,
+                        "tools": tool_names,
                         "result_length": len(result_content),
+                        "result_preview": result_content[:500],
                         "background": True,
                     })
-                return
 
-            runtime._background_agents[agent_id]["status"] = "completed"
-            runtime._background_agents[agent_id]["result"] = result_content
-            runtime._background_agents[agent_id]["tools_used"] = tool_count
-
-            if runtime.event_bus:
-                await runtime.event_bus.publish(session_id, {
-                    "type": "subagent_end",
-                    "call_id": call_id,
-                    "agent_id": agent_id,
-                    "task": task[:200],
-                    "status": "completed",
-                    "tools_used": tool_count,
-                    "tools": tool_names,
-                    "result_length": len(result_content),
-                    "result_preview": result_content[:500],
-                    "background": True,
-                })
-
-        asyncio.create_task(_run())
+        # Store the task reference on the tracker so cancel_agent can
+        # interrupt it and the GC doesn't collect a never-awaited task.
+        bg_task = asyncio.create_task(_run())
+        runtime._background_agents[agent_id]["task"] = bg_task
+        bg_task.add_done_callback(lambda _: runtime._prune_background_agents())
 
         return ToolResult(
             text=f"Background agent started (id: {agent_id}). It will run independently and results will be delivered via events.",

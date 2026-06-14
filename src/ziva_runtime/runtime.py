@@ -9,10 +9,10 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, Iterable, List
+from typing import Any, AsyncIterator, Dict, Iterable, List, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from ziva_runtime.adapters.openai_agents.provider import ModelAdapter, OpenAIAgentsAdapter
+from ziva_runtime.adapters.openai.provider import ModelAdapter, OpenAIChatAdapter
 
 logger = logging.getLogger(__name__)
 from ziva_runtime.capabilities.events import EventBus
@@ -35,42 +35,92 @@ from ziva_runtime.session.compaction import (
     find_last_summary_idx,
     find_cutoff_in_llm_visible,
 )
-from ziva_runtime.shared_types import ApprovalRequest, ApprovalPolicy, CancellationToken, ChatMessage, ChatResult, RuntimeContext, SessionState, ToolCall, ToolCallItem, ToolResult
+from ziva_runtime.shared_types import ApprovalRequest, ApprovalPolicy, CancellationToken, ChatMessage, ChatResult, MCPConnectStatus, RuntimeContext, SessionState, ToolCall, ToolCallItem, ToolResult
 from ziva_runtime.storage.file_storage import FileStorage, _project_hash
 
 
+_ADAPTER_REGISTRY: dict[tuple, "ModelAdapter"] = {}
+
+
+def _find_provider_for_model(config: dict) -> dict | None:
+    model_name = config.get("model", {}).get("name", "")
+    for p in config.get("providers", []) or []:
+        if any(m.get("name") == model_name for m in p.get("models", [])):
+            return p
+    return None
+
+
+def _resolve_capabilities(provider_cfg: dict, model_name: str) -> dict:
+    """Merge provider-level and model-level capabilities. Model overrides provider."""
+    merged: dict = {}
+    for key, val in (provider_cfg.get("capabilities") or {}).items():
+        merged[key] = val
+    for m in provider_cfg.get("models", []) or []:
+        if m.get("name") == model_name:
+            for key, val in (m.get("capabilities") or {}).items():
+                merged[key] = val
+            break
+    return merged
+
+
+def _build_adapter(provider_cfg: dict, *, model_name: str, max_tokens: int) -> "ModelAdapter":
+    """Construct a fresh adapter from a provider config dict (no caching)."""
+    from ziva_runtime.adapters.openai.provider import OpenAIChatAdapter
+
+    capabilities = _resolve_capabilities(provider_cfg, model_name)
+    api_type = provider_cfg.get("api_type", "openai_compatible")
+    if api_type == "anthropic":
+        from ziva_runtime.adapters.anthropic.provider import AnthropicChatAdapter
+        return AnthropicChatAdapter(
+            api_key=provider_cfg.get("api_key") or None,
+            base_url=provider_cfg.get("base_url") or None,
+            default_max_tokens=max_tokens,
+            capabilities=capabilities,
+        )
+    return OpenAIChatAdapter(
+        base_url=provider_cfg.get("base_url") or None,
+        api_key=provider_cfg.get("api_key") or None,
+        capabilities=capabilities,
+        options=provider_cfg.get("options") or {},
+    )
+
+
 def _create_adapter(config: dict) -> "ModelAdapter":
-    """Create the appropriate model adapter based on config provider/api_type."""
-    from ziva_runtime.adapters.openai_agents.provider import OpenAIChatAdapter
+    """Return a cached adapter for the provider owning config's model.
 
-    model_cfg = config.get("model", {})
-    model_name = model_cfg.get("name", "")
-    providers = config.get("providers", [])
+    Cached by (api_type, base_url, api_key) so HTTP connection pools are reused
+    across turns and across sessions. Raises ValueError if the configured model
+    is not declared in any provider's models list — no silent fallback.
+    """
+    provider_cfg = _find_provider_for_model(config)
+    if provider_cfg is None:
+        model_name = config.get("model", {}).get("name", "")
+        available = [p.get("name") for p in (config.get("providers") or [])]
+        raise ValueError(
+            f"Model '{model_name}' is not listed in any provider's models. "
+            f"Available providers: {available}. Add the model to a provider entry "
+            f"in .ziva/config.yaml, or change model.name to match a declared model."
+        )
 
-    # Find the provider that owns the current model
-    for p in providers:
-        models = p.get("models", [])
-        if any(m.get("name") == model_name for m in models):
-            api_type = p.get("api_type", "openai_compatible")
-            if api_type == "anthropic":
-                from ziva_runtime.adapters.anthropic.provider import AnthropicChatAdapter
-                return AnthropicChatAdapter(api_key=p.get("api_key"), base_url=p.get("base_url"))
-            else:
-                return OpenAIChatAdapter(
-                    base_url=p.get("base_url") or None,
-                    api_key=p.get("api_key") or None,
-                )
+    key = (
+        provider_cfg.get("api_type", "openai_compatible"),
+        provider_cfg.get("base_url") or "",
+        provider_cfg.get("api_key") or "",
+    )
+    cached = _ADAPTER_REGISTRY.get(key)
+    if cached is not None:
+        return cached
 
-    # Fallback: first provider if model not matched
-    if providers:
-        p = providers[0]
-        api_type = p.get("api_type", "openai_compatible")
-        if api_type == "anthropic":
-            from ziva_runtime.adapters.anthropic.provider import AnthropicChatAdapter
-            return AnthropicChatAdapter(api_key=p.get("api_key"), base_url=p.get("base_url"))
-        return OpenAIChatAdapter(base_url=p.get("base_url") or None, api_key=p.get("api_key") or None)
+    model_name = config.get("model", {}).get("name", "")
+    max_tokens = int(config.get("model", {}).get("max_tokens", 16384))
+    adapter = _build_adapter(provider_cfg, model_name=model_name, max_tokens=max_tokens)
+    _ADAPTER_REGISTRY[key] = adapter
+    return adapter
 
-    return OpenAIChatAdapter()
+
+def _reset_adapter_registry() -> None:
+    """Test helper — clears the adapter cache to avoid cross-test pollution."""
+    _ADAPTER_REGISTRY.clear()
 
 
 def _detect_timezone() -> str:
@@ -339,6 +389,25 @@ class Runtime:
     _background_agents: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     _project_id: str | None = None
     _ask_user_callbacks: list = field(default_factory=list)
+    _agent_concurrency: Optional[asyncio.Semaphore] = field(default=None)
+    _agent_max_history: int = 50
+
+    def __post_init__(self) -> None:
+        if self._agent_concurrency is None:
+            max_conc = int(self.config.get("spawn", {}).get("max_concurrency", 20))
+            self._agent_concurrency = asyncio.Semaphore(max_conc)
+        self._agent_max_history = int(self.config.get("spawn", {}).get("max_history", 50))
+
+    def _prune_background_agents(self) -> None:
+        """Keep only the most recent _agent_max_history finished agents."""
+        finished = [
+            (aid, a) for aid, a in self._background_agents.items()
+            if a.get("status") in ("completed", "failed", "cancelled")
+        ]
+        finished.sort(key=lambda x: x[1].get("finished_at", 0))
+        excess = len(finished) - self._agent_max_history
+        for aid, _ in finished[:max(0, excess)]:
+            self._background_agents.pop(aid, None)
 
     @property
     def project_id(self) -> str:
@@ -366,6 +435,48 @@ class Runtime:
         if session and session.project_id:
             return session.project_id
         return self.project_id
+
+    def build_skill_index(self) -> list[dict]:
+        """Scan skill directories on demand and return a compact index.
+
+        Called by the /skills API endpoint. Re-scans every request so newly
+        installed skills appear without a restart, and machines without these
+        particular skills just see an empty list — no stale baked-in index
+        persisted to the config file.
+        """
+        index: list[dict] = []
+        for sp in self.config.get("skill", {}).get("extra_paths", []):
+            p = Path(sp).expanduser().resolve()
+            if not p.exists():
+                continue
+            for skill_file in p.rglob("SKILL.md"):
+                try:
+                    raw = skill_file.read_text(encoding="utf-8").strip()
+                except OSError:
+                    continue
+                if not raw:
+                    continue
+                name = skill_file.parent.name
+                desc = ""
+                if raw.startswith("---"):
+                    end = raw.find("---", 3)
+                    if end > 0:
+                        fm = raw[3:end]
+                        for line in fm.splitlines():
+                            if line.startswith("description:"):
+                                desc = line.split(":", 1)[1].strip().strip('"').strip("'")
+                                break
+                        if not desc:
+                            for line in fm.splitlines():
+                                if line.startswith("name:"):
+                                    name = line.split(":", 1)[1].strip().strip('"').strip("'")
+                index.append({
+                    "name": name,
+                    "description": desc[:200] if desc else "",
+                    "path": str(skill_file),
+                    "category": _categorize_skill(name, desc),
+                })
+        return index
 
     def _read_last_usage(self, session_id: str) -> Dict[str, int] | None:
         """Read the most recent API-reported prompt_tokens from session metadata on disk.
@@ -469,40 +580,10 @@ class Runtime:
         # canonical skills like agent-browser work out of the box).
         # Users can add or remove roots via `~/.ziva/config.yaml`.
         extra_skill_paths = config.get("skill", {}).get("extra_paths", [])
-        skill_index = []  # Only name + description + path for progressive loading
         for sp in extra_skill_paths:
             p = Path(sp).expanduser().resolve()
             if p.exists():
-                # Try loading as plugin dir first
                 load_plugins([p], registry, config)
-                # Build compact skill index from SKILL.md frontmatter
-                for skill_file in p.rglob("SKILL.md"):
-                    raw = skill_file.read_text(encoding="utf-8").strip()
-                    if not raw:
-                        continue
-                    name = skill_file.parent.name
-                    desc = ""
-                    # Extract description from YAML frontmatter
-                    if raw.startswith("---"):
-                        end = raw.find("---", 3)
-                        if end > 0:
-                            fm = raw[3:end]
-                            for line in fm.splitlines():
-                                if line.startswith("description:"):
-                                    desc = line.split(":", 1)[1].strip().strip('"').strip("'")
-                                    break
-                            if not desc:
-                                for line in fm.splitlines():
-                                    if line.startswith("name:"):
-                                        name = line.split(":", 1)[1].strip().strip('"').strip("'")
-                    skill_index.append({
-                        "name": name,
-                        "description": desc[:200] if desc else "",
-                        "path": str(skill_file),
-                        "category": _categorize_skill(name, desc),
-                    })
-
-        config["_skill_index"] = skill_index
 
         adapter = model_adapter or _create_adapter(config)
         runtime = cls(
@@ -844,7 +925,7 @@ class Runtime:
             env_context = self._build_environment_context()
             parts = [p for p in [base_prompt, instructions] if p]
             parts.append(env_context)
-            skill_index = self.config.get("_skill_index", [])
+            skill_index = self.build_skill_index()
             if skill_index:
                 skill_lines = ["# Available Skills (use `read_skill` tool to load full details)", ""]
                 for s in skill_index:
@@ -856,14 +937,20 @@ class Runtime:
             effective_prompt = "\n\n".join(parts)
 
             thinking_config = None
-            if model_cfg.get("thinking_mode") and model_cfg.get("thinking_mode") != "disabled":
+            if (
+                model_cfg.get("thinking_mode")
+                and model_cfg.get("thinking_mode") != "disabled"
+                and self._current_model_capabilities().get("thinking", False)
+            ):
                 thinking_config = {
                     "type": "enabled",
                     "budget_tokens": int(model_cfg.get("thinking_budget_tokens", 4000)),
-                    "mode": model_cfg.get("thinking_mode", "medium")
+                    "mode": model_cfg.get("thinking_mode", "medium"),
+                    "max_tokens": int(model_cfg.get("max_tokens", 16384)),
                 }
 
             full_content = ""
+            full_reasoning_content = ""
             final_tool_calls: List[ToolCallItem] = []
             final_usage: Dict[str, int] | None = None
             final_finish_reason: str | None = None
@@ -883,6 +970,15 @@ class Runtime:
                     yield _flag(event)
                     await self._emit(session_id, event)
                     return
+                if delta.reasoning_content:
+                    full_reasoning_content += delta.reasoning_content
+                    event = {
+                        "type": "reasoning_delta",
+                        "content": delta.reasoning_content,
+                        "round": round_idx,
+                    }
+                    yield _flag(event)
+                    await self._emit(session_id, event)
                 if delta.content:
                     full_content += delta.content
                     event = {"type": "delta", "content": delta.content, "round": round_idx}
@@ -926,6 +1022,8 @@ class Runtime:
                 self.update_session_usage(session_id, final_usage)
                 # Persist final assistant message
                 assistant_msg = ChatMessage(role="assistant", content=full_content)
+                if full_reasoning_content:
+                    assistant_msg.reasoning_content = full_reasoning_content
                 if final_reasoning_signature:
                     assistant_msg.reasoning_signature = final_reasoning_signature
                 self._get_session(session_id).history.append(assistant_msg)
@@ -933,6 +1031,8 @@ class Runtime:
                 return
 
             assistant_msg = ChatMessage(role="assistant", content=full_content, tool_calls=final_tool_calls)
+            if full_reasoning_content:
+                assistant_msg.reasoning_content = full_reasoning_content
             if final_reasoning_signature:
                 assistant_msg.reasoning_signature = final_reasoning_signature
             working.append(assistant_msg)
@@ -1050,20 +1150,26 @@ class Runtime:
 
     async def _connect_mcp_if_needed(self, session_id: str) -> None:
         session = self._get_session(session_id)
-        if session.mcp_connected:
+        # CONNECTED is terminal — skip.
+        # FAILED is intentionally NOT skipped so the next turn retries.
+        # NO_CONFIG is also retried: the user may have switched to a workspace
+        # that now has MCP configured, or added MCP servers after the session
+        # was created. In that case the tools are visible globally but the
+        # session would otherwise permanently reject the call.
+        if session.mcp_status == MCPConnectStatus.CONNECTED:
             return
-        if session.mcp_connecting:
+        if session.mcp_status == MCPConnectStatus.CONNECTING:
             await session.mcp_connected_event.wait()
             return
 
-        session.mcp_connecting = True
+        session.mcp_status = MCPConnectStatus.CONNECTING
         session.mcp_connected_event.clear()
         try:
             from ziva_runtime.adapters.mcp.client import MCPClient, parse_mcp_config
 
             mcp_configs = parse_mcp_config(self.config)
             if not mcp_configs:
-                session.mcp_connected = True
+                session.mcp_status = MCPConnectStatus.NO_CONFIG
                 return
 
             try:
@@ -1087,12 +1193,20 @@ class Runtime:
                             },
                         )
                 session.mcp_client = client
-                session.mcp_connected = True
+                session.mcp_status = MCPConnectStatus.CONNECTED
             except Exception as e:
+                # connect_all normally swallows per-server errors, so this
+                # branch only fires for catastrophic failures (e.g. the
+                # agents.mcp import blowing up). Mark FAILED, not CONNECTED,
+                # so the next turn retries instead of permanently skipping.
                 logger.error("MCP initialization failed: %s", e)
-                session.mcp_connected = True
+                session.mcp_status = MCPConnectStatus.FAILED
         finally:
-            session.mcp_connecting = False
+            if session.mcp_status == MCPConnectStatus.CONNECTING:
+                # We never got past the try block — treat as FAILED so the
+                # next turn retries. Avoids the "stuck in CONNECTING" case
+                # if e.g. parse_mcp_config itself raised.
+                session.mcp_status = MCPConnectStatus.FAILED
             session.mcp_connected_event.set()
 
     def _build_tools_param(self, ctx: RuntimeContext | None = None) -> list[dict]:
@@ -1315,15 +1429,27 @@ class Runtime:
         out[-1] = ChatMessage(role=out[-1].role, content=rendered)
         return out
 
+    def _current_model_capabilities(self) -> dict:
+        """Return merged provider+model capabilities for the active model."""
+        model_cfg = self.config.get("model", {})
+        model_name = model_cfg.get("name", "")
+        for p in self.config.get("providers") or []:
+            for m in p.get("models") or []:
+                if m.get("name") == model_name:
+                    caps = dict(p.get("capabilities") or {})
+                    caps.update(m.get("capabilities") or {})
+                    return caps
+        return {}
+
     def _current_model_supports_image(self) -> bool:
         """True if the active model can consume `image_url` blocks.
 
         Reads the current model name from ``self.config["model"]["name"]``
-        and looks it up in the ``providers[*].models[*]`` list. Returns
-        the model's ``supports_image`` field. Defaults to True when the
-        model entry is missing (assume vision-capable — the conservative
-        choice for unknown models, and matches the old behavior before
-        we exposed the flag in settings).
+        and looks it up in the ``providers[*].models[*]`` list. Reads
+        ``capabilities.vision`` (provider-level is the fallback when the
+        model entry omits it). Defaults to True when the model entry is
+        missing entirely (assume vision-capable — the conservative choice
+        for unknown models).
 
         This drives the image-URL → data-URL vs → text-reference
         decision in ``_resolve_image_paths``. Vision models get the
@@ -1337,9 +1463,11 @@ class Runtime:
             return True
         providers = self.config.get("providers") or []
         for p in providers:
+            prov_vision = bool((p.get("capabilities") or {}).get("vision", True))
             for m in p.get("models") or []:
                 if m.get("name") == model_name:
-                    return bool(m.get("supports_image", True))
+                    m_caps = m.get("capabilities") or {}
+                    return bool(m_caps.get("vision", prov_vision))
         # Model not found in any provider entry — default to True so
         # the user gets a useful error from the provider (e.g.
         # "model doesn't support image") rather than us silently
@@ -1349,37 +1477,13 @@ class Runtime:
     def _is_retryable_provider_error(self, exc: Exception) -> bool:
         """True if a provider error is worth a same-input retry.
 
-        We only retry errors that are likely transient or where the
-        provider's own classifier flipped a coin. Concretely:
-
-        * Kimi / MiniMax 1027 (``output new_sensitive``) — content
-          policy fires on the model's own draft. A retry can land on
-          a different draft the classifier accepts. Cheap to retry,
-          no side effects (we haven't persisted the bad output).
-        * Kimi / MiniMax 1026 (``input sensitive``) — classifier
-          flagged a prompt. Usually deterministic, but the
-          classifier is fuzzy so a retry sometimes passes.
-        * HTTP 429 / 5xx — rate limit / server hiccup.
-
-        Everything else (auth, bad request, network unreachable,
-        timeouts that already exhausted internal retries) is left
-        alone — retrying would just burn time and tokens.
+        Delegates to adapters.retry._is_retryable so the turn-level
+        stream_reset loop and the connection-level retry wrapper use
+        the same criteria. Kept as a method for backwards-compat with
+        the chat_streaming caller.
         """
-        msg = str(exc) or ""
-        if "1027" in msg or "new_sensitive" in msg:
-            return True
-        if "1026" in msg or "input_sensitive" in msg:
-            return True
-        # Some providers (LiteLLM proxy, OpenAI-compatible) embed
-        # the HTTP status in the exception message; check both.
-        lower = msg.lower()
-        if "rate limit" in lower or " 429" in lower or "429 " in lower:
-            return True
-        if " 5xx" in lower or "internal server error" in lower or "bad gateway" in lower:
-            return True
-        if "unknown error" in lower or " 999" in lower or "999 " in lower:
-            return True
-        return False
+        from ziva_runtime.adapters.retry import _is_retryable
+        return _is_retryable(exc)
 
     def _build_environment_context(self) -> str:
         timezone = _detect_timezone()
@@ -1585,4 +1689,4 @@ class Runtime:
                     await session.mcp_client.cleanup()
                 except Exception:
                     pass
-                session.mcp_connected = False
+                session.mcp_status = MCPConnectStatus.DISCONNECTED

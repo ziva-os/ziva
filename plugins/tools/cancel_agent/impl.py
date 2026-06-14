@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict
 
 from ziva_runtime.shared_types import RuntimeContext, ToolResult
@@ -46,10 +47,24 @@ class CancelAgentTool:
                 metadata={"agent_id": agent_id, "status": agent["status"]},
             )
 
-        # Mark as cancelled
+        # Flag first so the inner loop can break at the next checkpoint
+        # even if task.cancel() can't tear down a stuck SDK call.
         agent["status"] = "cancelled"
 
-        # Emit cancellation event
+        # Actually interrupt the asyncio task. CancelledError is a
+        # BaseException subclass (Python 3.8+), so the `except Exception`
+        # block in spawn_agent._run won't swallow it — the dedicated
+        # `except asyncio.CancelledError` branch handles it.
+        task = agent.get("task")
+        if task and not task.done():
+            task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+
+        # Emit cancellation event. The inner task may already have
+        # emitted one on CancelledError; clients deduplicate by agent_id.
         if runtime.event_bus:
             await runtime.event_bus.publish(agent["session_id"], {
                 "type": "subagent_end",

@@ -6,6 +6,42 @@ from typing import Any, Dict
 from ziva_runtime.shared_types import RuntimeContext, ToolResult
 
 
+def _build_skill_index(config: Dict[str, Any]) -> list[dict]:
+    """Scan skill directories on demand.
+
+    Mirrors Runtime.build_skill_index so tools do not depend on a baked-in
+    `_skill_index` config key.
+    """
+    index: list[dict] = []
+    for sp in config.get("skill", {}).get("extra_paths", []):
+        p = Path(sp).expanduser().resolve()
+        if not p.exists():
+            continue
+        for skill_file in p.rglob("SKILL.md"):
+            try:
+                raw = skill_file.read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if not raw:
+                continue
+            name = skill_file.parent.name
+            desc = ""
+            if raw.startswith("---"):
+                end = raw.find("---", 3)
+                if end > 0:
+                    fm = raw[3:end]
+                    for line in fm.splitlines():
+                        if line.startswith("description:"):
+                            desc = line.split(":", 1)[1].strip().strip('"').strip("'")
+                            break
+                    if not desc:
+                        for line in fm.splitlines():
+                            if line.startswith("name:"):
+                                name = line.split(":", 1)[1].strip().strip('"').strip("'")
+            index.append({"name": name, "description": desc, "path": str(skill_file)})
+    return index
+
+
 class ReadSkillTool:
     """Load the full content of a skill by name."""
 
@@ -34,7 +70,7 @@ class ReadSkillTool:
         if not skill_name:
             return ToolResult(text="Error: missing_name\nname is required", error=True)
 
-        skill_index = ctx.config.get("_skill_index", [])
+        skill_index = _build_skill_index(ctx.config)
         for skill in skill_index:
             if skill["name"] == skill_name:
                 path = Path(skill["path"])

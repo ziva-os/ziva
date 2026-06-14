@@ -7,10 +7,15 @@ import yaml
 
 
 DEFAULT_CONFIG: Dict[str, Any] = {
-    "model": {"name": "gpt-4.1"},
+    "model": {
+        "name": "gpt-4.1",
+        "max_tokens": 16384,
+        "thinking_mode": "disabled",
+        "thinking_budget_tokens": 4000,
+    },
     "providers": [{"name": "OpenAI", "api_type": "openai_compatible", "api_key": "", "base_url": "", "models": [{"name": "gpt-4.1"}]}],
     "prompt": {"profile": "default", "variables": {}},
-    "tool": {"allow": [], "deny": [], "max_rounds": 3},
+    "tool": {"allow": [], "deny": [], "max_rounds": 0},
     "skill": {
         "enabled": [],
         "extra_paths": ["~/.ziva/skills", "~/.agents/skills"],
@@ -22,6 +27,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "sandbox": {"mode": "off", "writable_dirs": [], "blocked_commands": []},
     "mcp": {"enabled": False, "servers": [], "extra_skill_paths": []},
     "stt": {"model": "mlx-community/whisper-small-mlx"},
+    "spawn": {"max_concurrency": 20, "max_history": 50},
 }
 
 
@@ -62,6 +68,20 @@ def validate_config(config: Dict[str, Any]) -> None:
         raise ValueError("model must be an object")
     if not isinstance(model.get("name"), str) or not model.get("name"):
         raise ValueError("model.name must be a non-empty string")
+    if "max_tokens" in model and (not isinstance(model["max_tokens"], int) or model["max_tokens"] <= 0):
+        raise ValueError("model.max_tokens must be a positive integer")
+    if model.get("thinking_mode", "disabled") not in ("disabled", "low", "medium", "high"):
+        raise ValueError("model.thinking_mode must be one of: disabled, low, medium, high")
+    if "thinking_budget_tokens" in model and (not isinstance(model["thinking_budget_tokens"], int) or model["thinking_budget_tokens"] <= 0):
+        raise ValueError("model.thinking_budget_tokens must be a positive integer")
+    if model.get("thinking_mode", "disabled") != "disabled":
+        budget = int(model.get("thinking_budget_tokens", 4000))
+        max_t = int(model.get("max_tokens", 16384))
+        if budget >= max_t:
+            raise ValueError(
+                f"model.thinking_budget_tokens ({budget}) must be < model.max_tokens ({max_t}) "
+                f"(Anthropic requires budget_tokens < max_tokens when thinking is enabled)"
+            )
 
     providers = config.get("providers")
     if providers is not None:
@@ -75,6 +95,17 @@ def validate_config(config: Dict[str, Any]) -> None:
             _expect_type(p, "base_url", str, f"providers[{i}]")
             if "models" in p and not isinstance(p["models"], list):
                 raise ValueError(f"providers[{i}].models must be a list")
+            if "capabilities" in p:
+                if not isinstance(p["capabilities"], dict):
+                    raise ValueError(f"providers[{i}].capabilities must be an object")
+                for k in p["capabilities"]:
+                    if k not in ("thinking", "vision", "tools"):
+                        raise ValueError(f"providers[{i}].capabilities has unknown key '{k}'")
+            for m in p.get("models", []) or []:
+                if not isinstance(m, dict):
+                    raise ValueError(f"providers[{i}].models[] must be an object")
+                if "capabilities" in m and not isinstance(m["capabilities"], dict):
+                    raise ValueError(f"providers[{i}].models[].capabilities must be an object")
 
     prompt = config.get("prompt", {})
     if not isinstance(prompt, dict):
@@ -125,6 +156,15 @@ def validate_config(config: Dict[str, Any]) -> None:
     _expect_type(sandbox, "mode", str, "sandbox")
     _expect_type(sandbox, "writable_dirs", list, "sandbox")
     _expect_type(sandbox, "blocked_commands", list, "sandbox")
+
+    spawn = config.get("spawn", {})
+    if spawn:
+        if not isinstance(spawn, dict):
+            raise ValueError("spawn must be an object")
+        if "max_concurrency" in spawn and (not isinstance(spawn["max_concurrency"], int) or spawn["max_concurrency"] <= 0):
+            raise ValueError("spawn.max_concurrency must be a positive integer")
+        if "max_history" in spawn and (not isinstance(spawn["max_history"], int) or spawn["max_history"] <= 0):
+            raise ValueError("spawn.max_history must be a positive integer")
 
 
 def load_effective_config(

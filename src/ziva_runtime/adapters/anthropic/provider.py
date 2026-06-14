@@ -4,11 +4,15 @@ import json
 import os
 from typing import Any, AsyncIterator, Iterable
 
+from ziva_runtime.adapters.retry import call_with_retry
 from ziva_runtime.shared_types import ChatMessage, ChatResult, StreamDelta, ToolCallItem
 
 
 def _build_anthropic_messages(
-    messages: Iterable[ChatMessage], system_prompt: str | None = None, *, thinking_enabled: bool = False
+    messages: Iterable[ChatMessage],
+    system_prompt: str | None = None,
+    *,
+    thinking_enabled: bool = False,
 ) -> tuple[str | None, list[dict]]:
     """Convert ziva messages to Anthropic API format.
 
@@ -20,11 +24,9 @@ def _build_anthropic_messages(
 
     for m in messages:
         role = m.role
-        # Anthropic doesn't have system role messages; skip (handled by top-level system)
         if role == "system":
             continue
 
-        # tool role → user message with tool_result content block
         if role == "tool":
             content: list[dict] = [
                 {
@@ -38,49 +40,33 @@ def _build_anthropic_messages(
 
         msg: dict[str, Any] = {"role": role}
 
-        # assistant with tool_calls or extended thinking
         if role == "assistant":
             parts: list[dict] = []
-            
-            # Extract thinking blocks if extended thinking signature is present OR if we have thinking tags
-            import re
-            content_str = m.content if isinstance(m.content, str) else str(m.content)
-            thinking_matches = re.findall(r'(?i)<think[^>]*>([\s\S]*?)</think[^>]*>', content_str) if isinstance(m.content, str) else []
-            
-            if thinking_matches or (hasattr(m, "reasoning_signature") and m.reasoning_signature):
-                main_text = re.sub(r'(?i)<think[^>]*>[\s\S]*?</think[^>]*>', '', content_str).strip() if isinstance(m.content, str) else content_str
-                thinking_text = "\n\n---\n\n".join([t.strip() for t in thinking_matches]) if thinking_matches else ""
-                
+            reasoning_content = getattr(m, "reasoning_content", None)
+            reasoning_signature = getattr(m, "reasoning_signature", None)
+
+            # Send a thinking block back only when we have a real signature.
+            # A fake/placeholder signature triggers Anthropic API rejections on
+            # multi-turn thinking; better to drop the block and let the model
+            # re-reason than to hard-fail the request.
+            if reasoning_content and reasoning_signature:
                 parts.append({
                     "type": "thinking",
-                    "thinking": thinking_text,
-                    "signature": getattr(m, "reasoning_signature", None) or "signature",
+                    "thinking": reasoning_content,
+                    "signature": reasoning_signature,
                 })
-                if main_text:
-                    parts.append({"type": "text", "text": main_text})
-            else:
-                # Only inject a synthetic thinking block when extended thinking
-                # is actually enabled for this request. Without it, the API
-                # rejects the message for having a thinking block without
-                # thinking.type="enabled" in the parameters.
-                if thinking_enabled and m.tool_calls:
-                    parts.append({
-                        "type": "thinking",
-                        "thinking": " ",
-                        "signature": "signature",
-                    })
-                if m.content:
-                    if isinstance(m.content, list):
-                        # Multi-part content for assistant is unlikely but possible
-                        for block in m.content:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                parts.append({"type": "text", "text": block.get("text", "")})
-                            else:
-                                parts.append({"type": "text", "text": str(block)})
-                    else:
-                        text = str(m.content)
-                        if text:
-                            parts.append({"type": "text", "text": text})
+
+            if m.content:
+                if isinstance(m.content, list):
+                    for block in m.content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            parts.append({"type": "text", "text": block.get("text", "")})
+                        else:
+                            parts.append({"type": "text", "text": str(block)})
+                else:
+                    text = str(m.content)
+                    if text:
+                        parts.append({"type": "text", "text": text})
 
             if m.tool_calls:
                 for tc in m.tool_calls:
@@ -98,9 +84,7 @@ def _build_anthropic_messages(
             api_messages.append(msg)
             continue
 
-        # regular user (assistant is handled above)
         if isinstance(m.content, list):
-            # Multi-part content (e.g. image_url blocks)
             parts = []
             for block in m.content:
                 if isinstance(block, dict):
@@ -112,7 +96,6 @@ def _build_anthropic_messages(
                             url_str = url.get("url", "")
                         else:
                             url_str = str(url)
-                        # Convert data URL to Anthropic base64 format
                         if url_str.startswith("data:"):
                             header, data = url_str.split(",", 1)
                             media_type = header.split(";")[0].split(":")[1]
@@ -134,7 +117,6 @@ def _build_anthropic_messages(
 
 
 def _convert_tools_to_anthropic(tools: list[dict] | None) -> list[dict] | None:
-    """Convert OpenAI-style tool definitions to Anthropic format."""
     if not tools:
         return None
     anthropic_tools = []
@@ -151,11 +133,31 @@ def _convert_tools_to_anthropic(tools: list[dict] | None) -> list[dict] | None:
 class AnthropicChatAdapter:
     """Adapter using anthropic SDK with native tool calling."""
 
-    def __init__(self, api_key: str | None = None, base_url: str | None = None):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        default_max_tokens: int = 16384,
+        capabilities: dict | None = None,
+    ):
         from anthropic import AsyncAnthropic
         self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+        # Allow the adapter to be constructed even when no key is configured
+        # (e.g. during startup). The actual request will fail with 401 if a
+        # real key is never supplied, matching opencode's lazy-fail behavior.
+        if not self._api_key:
+            self._api_key = "dummy"
         self._base_url = base_url
-        self._client = AsyncAnthropic(api_key=self._api_key, base_url=self._base_url)
+        self._default_max_tokens = default_max_tokens
+        self._capabilities = capabilities or {}
+        self._client = AsyncAnthropic(
+            api_key=self._api_key, base_url=self._base_url, timeout=120.0
+        )
+
+    def _resolve_max_tokens(self, thinking_config: dict[str, Any] | None) -> int:
+        if thinking_config and thinking_config.get("max_tokens"):
+            return int(thinking_config["max_tokens"])
+        return self._default_max_tokens
 
     async def chat(
         self,
@@ -168,7 +170,11 @@ class AnthropicChatAdapter:
         system, api_messages = _build_anthropic_messages(messages, system_prompt, thinking_enabled=bool(thinking_config))
         anthropic_tools = _convert_tools_to_anthropic(tools)
 
-        kwargs: dict[str, Any] = {"model": model, "messages": api_messages, "max_tokens": 16384}
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": api_messages,
+            "max_tokens": self._resolve_max_tokens(thinking_config),
+        }
         if system:
             kwargs["system"] = system
         if anthropic_tools:
@@ -176,12 +182,13 @@ class AnthropicChatAdapter:
         if thinking_config:
             kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_config.get("budget_tokens", 4000)}
 
-        resp = await self._client.messages.create(**kwargs)
+        resp = await call_with_retry(self._client.messages.create, **kwargs)
 
         content = ""
+        reasoning_content = ""
         for b in resp.content:
             if getattr(b, "type", None) == "thinking":
-                content += f"<think>\n{getattr(b, 'thinking', '')}\n</think>\n"
+                reasoning_content += getattr(b, "thinking", "")
             elif getattr(b, "type", None) == "text":
                 content += getattr(b, "text", "")
 
@@ -208,6 +215,7 @@ class AnthropicChatAdapter:
             usage=usage_dict,
             finish_reason=resp.stop_reason or "stop",
             tool_calls=tool_calls,
+            reasoning_signature=getattr(resp, "signature", None),
         )
 
     async def chat_stream(
@@ -221,7 +229,11 @@ class AnthropicChatAdapter:
         system, api_messages = _build_anthropic_messages(messages, system_prompt, thinking_enabled=bool(thinking_config))
         anthropic_tools = _convert_tools_to_anthropic(tools)
 
-        kwargs: dict[str, Any] = {"model": model, "messages": api_messages, "max_tokens": 16384}
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": api_messages,
+            "max_tokens": self._resolve_max_tokens(thinking_config),
+        }
         if system:
             kwargs["system"] = system
         if anthropic_tools:
@@ -229,9 +241,13 @@ class AnthropicChatAdapter:
         if thinking_config:
             kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_config.get("budget_tokens", 4000)}
 
-        async with self._client.messages.stream(**kwargs) as stream:
+        # Wrap only the connection setup (__aenter__) with retry. Once the
+        # stream starts yielding, errors propagate — the runtime's
+        # turn-level retry loop handles mid-stream failures via stream_reset.
+        stream_ctx = self._client.messages.stream(**kwargs)
+        stream = await call_with_retry(stream_ctx.__aenter__)
+        try:
             tool_calls_acc: dict[int, dict] = {}
-            thinking_blocks = set()
 
             async for event in stream:
                 if event.type == "content_block_start":
@@ -243,25 +259,23 @@ class AnthropicChatAdapter:
                             "arguments": "",
                         }
                     elif btype == "thinking":
-                        thinking_blocks.add(event.index)
                         sig = getattr(event.content_block, "signature", None)
-                        yield StreamDelta(content="<think>\n", finish_reason=None, tool_calls=[], usage=None, reasoning_signature=sig)
+                        yield StreamDelta(
+                            content="",
+                            reasoning_content="",
+                            reasoning_signature=sig,
+                        )
 
                 elif event.type == "content_block_delta":
                     dtype = getattr(event.delta, "type", None)
                     if dtype == "text_delta" and hasattr(event.delta, "text"):
-                        yield StreamDelta(content=event.delta.text, finish_reason=None, tool_calls=[], usage=None)
+                        yield StreamDelta(content=event.delta.text)
                     elif dtype == "thinking_delta" and hasattr(event.delta, "thinking"):
-                        yield StreamDelta(content=event.delta.thinking, finish_reason=None, tool_calls=[], usage=None)
+                        yield StreamDelta(content="", reasoning_content=event.delta.thinking)
                     elif dtype == "input_json_delta" and hasattr(event.delta, "partial_json"):
                         idx = getattr(event, "index", -1)
                         if idx in tool_calls_acc:
                             tool_calls_acc[idx]["arguments"] += event.delta.partial_json
-
-                elif event.type == "content_block_stop":
-                    idx = getattr(event, "index", -1)
-                    if idx in thinking_blocks:
-                        yield StreamDelta(content="\n</think>\n", finish_reason=None, tool_calls=[], usage=None)
 
                 elif event.type == "message_delta":
                     finish_reason = event.delta.stop_reason if hasattr(event.delta, "stop_reason") else None
@@ -308,3 +322,5 @@ class AnthropicChatAdapter:
                                     "prompt_tokens": input_tokens,
                                 },
                             )
+        finally:
+            await stream_ctx.__aexit__(None, None, None)
