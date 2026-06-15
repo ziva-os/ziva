@@ -91,6 +91,7 @@ const store = new Store<AppState>({
   activeRightTabId: null,
   theme: (document.documentElement.getAttribute("data-theme") as "dark" | "light") || "dark",
   autoScroll: true,
+  splitSessions: [],
 });
 
 // ---- Per-session state helpers ----
@@ -864,6 +865,7 @@ function init() {
           </button>
           <div class="toolbar-title" id="toolbarTitle"></div>
           <div class="toolbar-actions">
+            <button class="toolbar-split-close" id="btnCloseSplit" title="Close split view" style="display:none">Exit split</button>
             <button class="toolbar-right-toggle" id="btnOpenRightPanel" title="Toggle panel" aria-label="Toggle panel">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
             </button>
@@ -871,7 +873,9 @@ function init() {
         </div>
         <div class="empty-state" id="emptyState">
         </div>
-        <div class="messages" id="messages" style="display:none"></div>
+        <div class="split-container" id="splitContainer">
+          <div class="messages split-pane" id="messages" style="display:none"></div>
+        </div>
         <div class="ziva-composer-wrapper" id="composerWrapper">
           <div class="ziva-composer">
             <div class="pending-bar" id="pendingBar" hidden>
@@ -1394,6 +1398,18 @@ function cancelInFlightUploads(keepSid: string) {
   }
 }
 
+// Abort the in-flight upload that produced a specific preview thumbnail.
+// Called when the user clicks the X on a pending image so the completion
+// callback doesn't re-add a revoked/broken thumbnail after cancellation.
+function abortImageUpload(thumbUrl: string) {
+  const idx = inFlightUploads.findIndex(u => u.thumbUrl === thumbUrl);
+  if (idx === -1) return;
+  const entry = inFlightUploads[idx];
+  entry.controller.abort();
+  URL.revokeObjectURL(entry.thumbUrl);
+  inFlightUploads.splice(idx, 1);
+}
+
 function renderImagePreviews() {
   const container = $("imagePreviews") as HTMLElement;
   if (pendingImages.length === 0) {
@@ -1412,10 +1428,83 @@ function renderImagePreviews() {
     (btn as HTMLElement).onclick = () => {
       const idx = parseInt((btn as HTMLElement).dataset.idx || "0");
       const removed = pendingImages.splice(idx, 1)[0];
-      if (removed?.thumbUrl) URL.revokeObjectURL(removed.thumbUrl);
+      if (removed?.thumbUrl) {
+        // Abort any in-flight upload that produced this preview so the
+        // completion callback doesn't re-add a revoked/broken thumbnail.
+        abortImageUpload(removed.thumbUrl);
+        URL.revokeObjectURL(removed.thumbUrl);
+      }
       renderImagePreviews();
     };
   });
+}
+
+// ---- Split-screen sessions ----
+// Show multiple sessions side-by-side. The active session always renders
+// live in #messages; secondary sessions get their own pane that reloads
+// from history when background turns finish.
+function isSplitActive(): boolean {
+  return store.get().splitSessions.length > 0;
+}
+
+function addToSplit(sid: string) {
+  const { splitSessions, activeSid } = store.get();
+  if (sid === activeSid) return;
+  if (splitSessions.includes(sid)) return;
+  store.set({ splitSessions: [...splitSessions, sid] });
+  renderSplitPanes();
+}
+
+function removeFromSplit(sid: string) {
+  const next = store.get().splitSessions.filter(s => s !== sid);
+  store.set({ splitSessions: next });
+  renderSplitPanes();
+}
+
+function clearSplit() {
+  store.set({ splitSessions: [] });
+  renderSplitPanes();
+}
+
+function refreshSplitPane(sid: string) {
+  const pane = document.querySelector(`.split-pane-secondary[data-sid="${sid}"] .pane-messages`) as HTMLElement | null;
+  if (!pane) return;
+  loadHistoryInto(sid, pane);
+}
+
+async function renderSplitPanes() {
+  const container = $("splitContainer");
+  const closeBtn = $("btnCloseSplit") as HTMLButtonElement;
+  const { splitSessions, sessions } = store.get();
+  container.querySelectorAll(".split-pane-secondary").forEach(el => el.remove());
+  if (splitSessions.length === 0) {
+    container.classList.remove("split");
+    $("messages").classList.remove("split-pane-active");
+    if (closeBtn) closeBtn.style.display = "none";
+    return;
+  }
+  container.classList.add("split");
+  $("messages").classList.add("split-pane-active");
+  if (closeBtn) {
+    closeBtn.style.display = "inline-flex";
+    closeBtn.onclick = () => clearSplit();
+  }
+  for (const sid of splitSessions) {
+    const s = sessions.find(x => x.id === sid);
+    const pane = document.createElement("div");
+    pane.className = "split-pane-secondary";
+    pane.dataset.sid = sid;
+    pane.innerHTML = `
+      <div class="split-pane-header">
+        <span class="split-pane-title">${esc(s?.preview || sid)}</span>
+        <button class="split-pane-close" data-sid="${sid}" title="Close pane">×</button>
+      </div>
+      <div class="pane-messages"></div>
+    `;
+    pane.querySelector(".split-pane-close")!.addEventListener("click", () => removeFromSplit(sid));
+    container.appendChild(pane);
+    await loadHistoryInto(sid, pane.querySelector(".pane-messages") as HTMLElement);
+  }
 }
 
 // ---- Skills panel + viewer modal ----
@@ -1909,6 +1998,7 @@ function _doRenderSessions() {
 
   for (const group of groups) {
     const isActive = group.workspace === activeWs;
+    const hasRunning = group.sessions.some(s => store.get().runningSessions[s.id] || s.status === "running");
     const projectDiv = document.createElement("div");
     projectDiv.className = "session-project-group" + (isActive ? " active-project" : "");
     const trimmedBadge = group.trimmed
@@ -1919,6 +2009,7 @@ function _doRenderSessions() {
         <summary class="project-summary" title="${esc(group.workspace)}">
           <span class="project-chevron">▸</span>
           <span class="project-name">${esc(group.label)}</span>
+          ${hasRunning ? '<span class="project-running-dot" title="Running session"></span>' : ""}
           ${isActive ? '<span class="project-active-dot" title="Current project"></span>' : ""}
           <span class="project-count">${group.totalCount}</span>
           ${trimmedBadge}
@@ -1944,10 +2035,12 @@ function _doRenderSessions() {
           <span class="session-chevron">›</span>
           <span class="session-name">${esc(s.preview || s.id)}</span>
           <span class="session-time">${timeStr}</span>
+          ${!selectMode ? `<span class="split-btn" data-sid="${s.id}" title="Split view">⧉</span>` : ""}
           ${!selectMode ? `<span class="del-btn" data-sid="${s.id}">&times;</span>` : ""}`;
         div.onclick = (e) => {
           if ((e.target as HTMLElement).classList.contains("del-btn")) return;
           if ((e.target as HTMLElement).classList.contains("session-checkbox")) return;
+          if ((e.target as HTMLElement).classList.contains("split-btn")) return;
           // Cross-project click: switch the active workspace first so
           // subsequent /sessions/{sid}/... calls hit the right project.
           if (s.workspace && s.workspace !== activeWs) {
@@ -1956,6 +2049,18 @@ function _doRenderSessions() {
             switchSession(s.id);
           }
         };
+        const splitBtn = div.querySelector(".split-btn");
+        if (splitBtn) {
+          (splitBtn as HTMLElement).onclick = (e) => {
+            e.stopPropagation();
+            const sid_ = (e.currentTarget as HTMLElement).dataset.sid!;
+            if (store.get().splitSessions.includes(sid_)) {
+              removeFromSplit(sid_);
+            } else {
+              addToSplit(sid_);
+            }
+          };
+        }
         const nameEl = div.querySelector(".session-name") as HTMLElement;
         nameEl.addEventListener("dblclick", (e) => {
           e.stopPropagation();
@@ -2102,6 +2207,12 @@ async function switchSession(sid: string, opts: { skipGitRefresh?: boolean } = {
     savePromptDraft(oldSid);
   }
   store.set({ activeSid: sid, questionPending: false });
+  // If the newly active session was shown as a secondary split pane,
+  // remove it from the split list — it's now in the main #messages area.
+  const splitSessions = store.get().splitSessions.filter(s => s !== sid);
+  if (splitSessions.length !== store.get().splitSessions.length) {
+    store.set({ splitSessions });
+  }
   // Cancel any in-flight image uploads that belong to the old session
   // so they don't complete after activeSid has already changed and push
   // their results into the wrong session's pendingImages.
@@ -2111,6 +2222,7 @@ async function switchSession(sid: string, opts: { skipGitRefresh?: boolean } = {
   resetStreamingState();
   renderPendingBar();
   await loadHistory(sid);
+  renderSplitPanes();
   // Skip when the caller already refreshed the branch for the new
   // workspace (e.g. openProjectInSidebar switching both workspace
   // and session in one go).
@@ -2195,7 +2307,8 @@ async function deleteSession(sid: string, workspace?: string) {
     return;
   }
   const sessions = store.get().sessions.filter(s => s.id !== sid);
-  store.set({ sessions });
+  const splitSessions = store.get().splitSessions.filter(s => s !== sid);
+  store.set({ sessions, splitSessions });
   if (store.get().activeSid === sid) {
     store.set({ activeSid: null });
     $("messages").innerHTML = "";
@@ -2211,13 +2324,23 @@ async function deleteSession(sid: string, workspace?: string) {
   delete nextImages[sid];
   store.set({ promptDrafts: nextDrafts, pendingSessionImages: nextImages });
   renderSessions();
+  renderSplitPanes();
 }
 
 async function loadHistory(sid: string) {
-  // Always load the full history (include_dropped=true) so the collapse bar
-  // can count how many pre-compact messages were dropped. The filtered view
-  // (post-/compact) returns only the summary message, which is what we want
-  // to render at the top of the chat.
+  showEmptyState(true);
+  $("messages").innerHTML = "";
+  currentAssistantEl = null;
+  currentTextParts = { thinking: "", main: "" };
+  pendingTools.forEach(c => c.remove());
+  pendingTools.clear();
+  updateContextProgress(0, 0);
+
+  const ok = await loadHistoryInto(sid, $("messages"));
+  if (ok) scrollBottom();
+}
+
+async function loadHistoryInto(sid: string, target: HTMLElement): Promise<boolean> {
   let filteredData: any, fullData: any;
   try {
     [filteredData, fullData] = await Promise.all([
@@ -2225,51 +2348,33 @@ async function loadHistory(sid: string) {
       api.getMessages(sid, { includeDropped: true }),
     ]);
   } catch {
-    // Session not yet persisted (lazy creation) — treat as empty.
-    showEmptyState(true);
-    $("messages").innerHTML = "";
-    currentAssistantEl = null;
-    currentTextParts = { thinking: "", main: "" };
-    updateContextProgress(0, 0);
-    return;
+    target.innerHTML = "";
+    return false;
   }
   const msgs = filteredData.messages || [];
   const fullMsgs = fullData.messages || [];
-  const hasContent = msgs.length > 0;
-  showEmptyState(!hasContent);
+  target.innerHTML = "";
 
-  // Clear existing messages before rebuilding
-  $("messages").innerHTML = "";
-  currentAssistantEl = null;
-  currentTextParts = { thinking: "", main: "" };
-  pendingTools.forEach(c => c.remove());
-  pendingTools.clear();
-
-  // Restore context ring from persisted usage
-  if (filteredData.last_usage?.prompt_tokens !== undefined) {
-    const contextWindow = store.get().config.contextWindow || 200000;
-    const pct = Math.min(filteredData.last_usage.prompt_tokens / contextWindow, 1);
-    updateContextProgress(pct, filteredData.last_usage.prompt_tokens);
-  } else {
-    updateContextProgress(0, 0);
-  }
-  
-  // Sync model dropdown only if the session has an explicit persisted model.
-  // New sessions save their creation-time model; older sessions without one
-  // are left as-is so switching between them doesn't clobber the UI.
-  const sel = $("modelSelect") as HTMLSelectElement;
-  if (sel && filteredData.model_name) {
-    if (Array.from(sel.options).some(o => o.value === filteredData.model_name)) {
-      if (sel.value !== filteredData.model_name) {
-        sel.value = filteredData.model_name;
-        // Don't dispatch change — we only want to sync the UI, not overwrite global config
+  // For the active session's main container, also sync chrome state
+  // (empty-state, context ring, model dropdown) that doesn't exist per-pane.
+  if (target === $("messages")) {
+    const hasContent = msgs.length > 0;
+    showEmptyState(!hasContent);
+    if (filteredData.last_usage?.prompt_tokens !== undefined) {
+      const contextWindow = store.get().config.contextWindow || 200000;
+      const pct = Math.min(filteredData.last_usage.prompt_tokens / contextWindow, 1);
+      updateContextProgress(pct, filteredData.last_usage.prompt_tokens);
+    }
+    const sel = $("modelSelect") as HTMLSelectElement;
+    if (sel && filteredData.model_name) {
+      if (Array.from(sel.options).some(o => o.value === filteredData.model_name)) {
+        if (sel.value !== filteredData.model_name) {
+          sel.value = filteredData.model_name;
+        }
       }
     }
   }
 
-  // Chronological layout: [msg1, ..., summary1, msgN, ..., summary2, ...]
-  // Each summary's folded range = messages between it and the previous summary
-  // (or start of list).  Show collapse bars for the last 2 compacts.
   const summaryIndices: number[] = [];
   for (let i = 0; i < fullMsgs.length; i++) {
     if ((fullMsgs[i] as any)._compaction_summary) summaryIndices.push(i);
@@ -2279,11 +2384,11 @@ async function loadHistory(sid: string) {
     const prevSummary = summaryIndices[summaryIndices.indexOf(si) - 1];
     const start = prevSummary !== undefined ? prevSummary + 1 : 0;
     const count = si - start;
-    if (count > 0) appendCompactBoundary(sid, count, start, si);
+    if (count > 0) appendCompactBoundary(sid, count, start, si, target);
   }
 
-  renderMessages($("messages"), msgs);
-  scrollBottom();
+  renderMessages(target, msgs);
+  return true;
 }
 
 // Render a list of messages into a target container using the same DOM
@@ -2426,6 +2531,7 @@ function appendCompactBoundary(
   droppedCount: number,
   start: number,
   end: number,
+  target: HTMLElement = $("messages"),
 ): void {
   const wrapper = document.createElement("div");
   wrapper.className = "compact-boundary";
@@ -2456,7 +2562,7 @@ function appendCompactBoundary(
   });
 
   wrapper.appendChild(bar);
-  $("messages").appendChild(wrapper);
+  target.appendChild(wrapper);
 }
 
 // Turn an `image_url.url` value into something the browser can load.
@@ -3076,10 +3182,16 @@ function scrollBottom() {
 function routeSSEEvent(ev: api.Event) {
   const sid = (ev as any).session_id as string | undefined;
   if (!sid) return;
-  const { activeSid } = store.get();
+  const { activeSid, splitSessions } = store.get();
   if (sid === activeSid) {
     handleEvent(ev, true);
   } else {
+    if (splitSessions.includes(sid)) {
+      const t = ev.type as string;
+      if (t === "turn_start" || t === "turn_end" || t === "turn_failed" || t === "turn_cancelled") {
+        refreshSplitPane(sid);
+      }
+    }
     syncBackgroundSession(sid, ev);
   }
 }
@@ -3142,6 +3254,9 @@ async function refreshSessionPreview(sid: string) {
     s.preview = preview;
     store.set({ sessions: [...sessions] });
     renderSessions();
+    // Sync any split-pane header that is showing this session.
+    const paneTitle = document.querySelector(`.split-pane-secondary[data-sid="${sid}"] .split-pane-title`) as HTMLElement | null;
+    if (paneTitle) paneTitle.textContent = preview;
   } catch { /* ignore — preview is best-effort */ }
 }
 
@@ -4277,6 +4392,23 @@ async function openProjectInSidebar(
     }
     return;
   }
+  // If the current active session is empty (no messages sent yet), delete
+  // it before switching workspaces so we don't leave a stray "Empty session"
+  // behind in the old project.
+  const { activeSid, sessions } = store.get();
+  if (activeSid) {
+    try {
+      const msgData = await api.getMessages(activeSid);
+      if ((msgData.messages || []).length === 0) {
+        await api.deleteSession(activeSid);
+        store.set({ sessions: sessions.filter(s => s.id !== activeSid) });
+      }
+    } catch {
+      // Session not persisted yet — just drop it from local state.
+      store.set({ sessions: sessions.filter(s => s.id !== activeSid) });
+    }
+  }
+
   try {
     await api.switchWorkspace(workspace);
   } catch (err: any) {
@@ -4303,8 +4435,10 @@ async function openProjectInSidebar(
 
   // Reset the active session — the old activeSid belongs to the previous
   // project, and re-rendering with a stale active highlight would be wrong.
-  store.set({ activeSid: null });
+  // Also clear any split-screen panes since they reference the old workspace.
+  store.set({ activeSid: null, splitSessions: [] });
   $("messages").innerHTML = "";
+  renderSplitPanes();
   showEmptyState(true);
 
   await refreshSessions();

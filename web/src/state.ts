@@ -63,6 +63,8 @@ export interface AppState {
   activeRightTabId: string | null;
   theme: "dark" | "light";
   autoScroll: boolean;
+  // Secondary session IDs shown in side-by-side panes alongside the active session.
+  splitSessions: string[];
 }
 
 type Listener = () => void;

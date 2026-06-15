@@ -277,6 +277,16 @@
   flex-shrink: 0;
   box-shadow: 0 0 0 2px var(--accent-light);
 }
+.project-running-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: #22c55e;
+  flex-shrink: 0;
+  animation: pulse-running 1.5s ease-in-out infinite;
+}
+@keyframes pulse-running {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(1.2); }
+}
 .project-count {
   font-size: 11px; color: var(--muted);
   background: var(--surface-alt);
@@ -888,6 +898,46 @@ webview.browser-frame {
 
 /* ============ Messages ============ */
 .messages { flex: 1; overflow-y: auto; padding: 16px 0; scroll-behavior: smooth; }
+
+/* Split-screen layout: active session (#messages) plus any secondary panes */
+.split-container { flex: 1; display: flex; flex-direction: row; overflow: hidden; }
+.split-container .split-pane { flex: 1; min-width: 0; }
+.split-container.split .messages { border-right: 1px solid var(--line); }
+.split-pane-secondary {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--line);
+}
+.split-pane-secondary:last-child { border-right: none; }
+.split-pane-header {
+  flex-shrink: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--surface);
+  color: var(--ink);
+}
+.split-pane-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.split-pane-close {
+  background: transparent; border: none; color: var(--muted); cursor: pointer;
+  font-size: 16px; line-height: 1; padding: 0 4px; margin-left: 8px;
+}
+.split-pane-close:hover { color: var(--red); }
+.pane-messages { flex: 1; overflow-y: auto; padding: 16px 0; scroll-behavior: smooth; }
+
+/* Split button on session items */
+.session-item .split-btn {
+  display: none; margin-left: auto; margin-right: 4px; color: var(--muted); cursor: pointer;
+  font-size: 13px; padding: 2px 4px; border-radius: 4px;
+}
+.session-item:hover .split-btn { display: inline-block; }
+.session-item .split-btn:hover { background: var(--surface-hover); color: var(--ink); }
+.session-item .split-btn.active { color: var(--accent); }
 
 .msg { margin-bottom: 4px; max-width: 100%; }
 .msg-inner { padding: 6px 0; font-size: 15px; line-height: 1.75; word-break: break-word; max-width: var(--content-max-w); margin: 0 auto; }

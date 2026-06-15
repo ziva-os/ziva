@@ -28,6 +28,27 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "mcp": {"enabled": False, "servers": [], "extra_skill_paths": []},
     "stt": {"model": "mlx-community/whisper-small-mlx"},
     "spawn": {"max_concurrency": 20, "max_history": 50},
+    "agents": {
+        "explore": {
+            "description": "Explore the codebase to find relevant files, patterns, and context for a task.",
+            "instructions": (
+                "You are an explore agent. Your job is to investigate the codebase and report "
+                "relevant files, functions, and patterns. Use search and file-reading tools. "
+                "Do not write code or make changes. Be concise and structured."
+            ),
+            "tools": ["read_file", "search_files", "list_directory", "glob_files"],
+            "background": True,
+        },
+        "plan": {
+            "description": "Create a step-by-step plan for implementing a task.",
+            "instructions": (
+                "You are a planning agent. Analyze the request and the codebase, then produce a "
+                "clear, actionable plan. Break the work into small steps. Do not implement the changes."
+            ),
+            "tools": ["read_file", "list_directory", "glob_files"],
+            "background": False,
+        },
+    },
 }
 
 
@@ -165,6 +186,20 @@ def validate_config(config: Dict[str, Any]) -> None:
             raise ValueError("spawn.max_concurrency must be a positive integer")
         if "max_history" in spawn and (not isinstance(spawn["max_history"], int) or spawn["max_history"] <= 0):
             raise ValueError("spawn.max_history must be a positive integer")
+
+    agents = config.get("agents", {})
+    if not isinstance(agents, dict):
+        raise ValueError("agents must be an object")
+    for name, definition in agents.items():
+        if not isinstance(definition, dict):
+            raise ValueError(f"agents.{name} must be an object")
+        _expect_type(definition, "description", str, f"agents.{name}")
+        _expect_type(definition, "instructions", str, f"agents.{name}")
+        _expect_type(definition, "tools", list, f"agents.{name}")
+        if "tools" in definition and not all(isinstance(t, str) for t in definition["tools"]):
+            raise ValueError(f"agents.{name}.tools must be a list of strings")
+        if "background" in definition and not isinstance(definition["background"], bool):
+            raise ValueError(f"agents.{name}.background must be a boolean")
 
 
 def load_effective_config(

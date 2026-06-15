@@ -21,27 +21,33 @@ class SpawnAgentTool:
                 "Use this for delegating focused work (e.g., searching, coding, analyzing) "
                 "to keep the main context clean. "
                 "When background=true, the agent runs asynchronously and this returns immediately "
-                "with an agent_id; the result will be available via the subagent_completed event."
+                "with an agent_id; the result will be available via the subagent_completed event. "
+                "You can reference a predefined agent from the config with the 'agent' parameter; "
+                "predefined agents provide default instructions, tool whitelist, and background mode."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
+                    "agent": {
+                        "type": "string",
+                        "description": "Name of a predefined agent from config (e.g. 'explore', 'plan'). If provided, its instructions, tools, and background defaults are used.",
+                    },
                     "task": {
                         "type": "string",
                         "description": "Clear, specific description of what the sub-agent should accomplish",
                     },
                     "instructions": {
                         "type": "string",
-                        "description": "Optional extra instructions for the sub-agent (constraints, focus areas, style)",
+                        "description": "Optional extra instructions for the sub-agent (constraints, focus areas, style). Overrides the predefined agent's instructions when agent is set.",
                     },
                     "tools": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional whitelist of tool names the sub-agent can use. If omitted, all tools except spawn_agent are available.",
+                        "description": "Optional whitelist of tool names the sub-agent can use. Overrides the predefined agent's tools when agent is set. If omitted and no agent is set, all tools except spawn_agent are available.",
                     },
                     "background": {
                         "type": "boolean",
-                        "description": "If true, run the sub-agent in the background and return immediately with an agent_id. Results are delivered via events.",
+                        "description": "If true, run the sub-agent in the background and return immediately with an agent_id. Overrides the predefined agent's background default when agent is set.",
                     },
                 },
                 "required": ["task"],
@@ -61,9 +67,30 @@ class SpawnAgentTool:
         if not task:
             return ToolResult(text="Error: missing_task\ntask is required", error=True)
 
+        # Resolve predefined agent definition from config, allowing call-time overrides.
+        config = getattr(runtime, "config", {}) or {}
+        agents = config.get("agents", {})
+        agent_name = input_data.get("agent", "").strip()
+        agent_def = agents.get(agent_name) if agent_name else None
+        if agent_name and agent_def is None:
+            available = ", ".join(agents.keys()) if agents else "none"
+            return ToolResult(
+                text=f"Error: unknown_agent\nUnknown agent '{agent_name}'. Available: {available}",
+                error=True,
+            )
+
         instructions = input_data.get("instructions", "").strip()
+        if not instructions and agent_def:
+            instructions = agent_def.get("instructions", "").strip()
+
         tool_whitelist = input_data.get("tools")
-        background = input_data.get("background", False)
+        if tool_whitelist is None and agent_def:
+            tool_whitelist = agent_def.get("tools")
+
+        background = input_data.get("background")
+        if background is None and agent_def:
+            background = bool(agent_def.get("background", False))
+        background = bool(background)
 
         # Build child agent messages
         child_messages: list[ChatMessage] = []
