@@ -1856,6 +1856,13 @@ async function renderSplitPanes() {
       console.error("renderSplitPanes: secondary pane creation failed for", sid, e?.message || e, e?.stack);
     }
   }
+
+  // Reconcile the full-screen composer host too. Every path that changes
+  // activeSid / splitSessions goes through renderSplitPanes, so doing it
+  // here guarantees #composerHost is cleared (no stale composer bound to a
+  // previous session) when there's no active session, and mounted when
+  // there is — covering workspace switch + session delete, not just switch.
+  renderComposers();
 }
 
 
@@ -2826,6 +2833,21 @@ function renderMessages(target: HTMLElement, msgs: any[]): void {
           thinkDiv.className = "thinking-card-inline";
           thinkDiv.innerHTML = `<details class="thinking-card"><summary>Thinking</summary><div class="thinking-card-content">${esc(thinking)}</div></details>`;
           target.appendChild(thinkDiv);
+        }
+        // Intermediate assistant turns (the ones that issue tool_calls)
+        // ALSO carry a short prose lead-in — "让我先看一下当前文件的实际状态。"
+        // — that the live streaming path renders below the thinking card.
+        // Without this, reloading history would silently drop that text,
+        // so the chat reads as "Thinking → tool card" with no transition.
+        // extractThinking already stripped 脑中...脑尾 for the streaming path;
+        // apply the same here so reloads match what the user saw live.
+        const { main: inlineMain } = extractThinking(typeof m.content === "string" ? m.content : "");
+        if (inlineMain && inlineMain.trim()) {
+          const proseDiv = document.createElement("div");
+          proseDiv.className = "msg assistant assistant-inline-prose";
+          proseDiv.innerHTML = `<div class="msg-inner"><div class="md">${renderMarkdown(inlineMain)}</div></div>`;
+          target.appendChild(proseDiv);
+          highlightCode(proseDiv);
         }
       } else {
         appendAssistantMsg(m.content, target, reasoning);
@@ -4022,38 +4044,10 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
       updateSendStopButton();
       refreshPlan();
       if ($("rightPanel").classList.contains("show")) refreshActiveReviewTabs();
-      // Codex-style: flush this session's queued prompt now that the
-      // turn has closed. Look up by the active sid (the SSE stream is
-      // per-session, so we never flush another session's queue here).
-      const pending = getActivePending();
-      const { pendingMessages } = store.get();
-      const pendingRetries = activeSid ? (pendingMessages[activeSid]?.retries ?? 0) : 0;
-      const flushImages = activeSid ? queuedImages(activeSid) : [];
-      if (pending != null || flushImages.length > 0) {
-        // Defer the actual send + queue clear by 30ms so the user has
-        // a moment to see the queue bar disappear. We can't just
-        // synchronously flip the queue empty and call sendMessage —
-        // the catch block in sendMessage restores `text` into the
-        // prompt textarea on any createTurn failure, which would
-        // duplicate the optimistic appendUserMsg and leave the
-        // queued text in the input box. sendFromQueue takes the
-        // content as parameters (no prompt mutation) and re-queues
-        // on failure instead of restoring to the prompt.
-        //
-        // Race: if the user switches sessions inside the 30ms
-        // window, we leave the queue intact so they can come back
-        // and retry. Otherwise sendFromQueue would deliver the
-        // content to whatever session is activeSid by then.
-        const flushSid = activeSid!;
-        const flushRetries = pendingRetries;
-        setTimeout(() => {
-          if (store.get().activeSid !== flushSid) return;
-          setActivePending(null);
-          if (flushImages.length > 0) clearQueuedImages(flushSid);
-          renderPendingBar();
-          sendFromQueue(pending || "", flushImages, flushRetries);
-        }, 30);
-      }
+      // Codex-style: flush this session's queued prompt now that the turn
+      // has closed. flushComposerQueue is per-sid, so it always lands in
+      // the right session regardless of what's currently active.
+      flushComposerQueue(sid, 30);
     }
   } else if (t === "round_complete") {
     currentAssistantEl = null;
@@ -4067,13 +4061,9 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     const activeSid = store.get().activeSid;
     if (activeSid) setCompactToastState("loading", "Compacting context...", activeSid);
   } else if (t === "context_compacted") {
-    const activeSid = store.get().activeSid;
-    if (activeSid) {
-      setCompactToastState("success", "Context compacted", activeSid);
-      // Reload history to render the new collapse bar
-      loadHistory(activeSid);
-      setTimeout(() => hideCompactToast(), 3000);
-    }
+    // Auto-compact finished (or the server's echo of a manual /compact).
+    // Use the SAME completion path as /compact — one reload + toast.
+    if (sid) applyCompactionComplete(sid, "Context compacted");
   } else if (t === "doom_loop_detected") {
     removeTyping();
   } else if (t === "turn_error") {
@@ -4124,6 +4114,13 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
           appendError("Turn failed");
         }
       }
+      // Flush this session's queued prompt now that the turn has closed
+      // (cancel / fail). This is the reliable flush path for stop: the
+      // server has confirmed the old turn is gone, so the queued createTurn
+      // won't race a still-running turn. cancelComposerTurn also flushes
+      // (immediate, 200ms) for responsiveness; flushComposerQueue clears
+      // the queue first, so a second call here is a safe no-op.
+      flushComposerQueue(sid, 30);
       // else: the user already replaced this turn via cancel→
       // sendFromQueue. A fresh turn_start has bumped runningSessions
       // back to true; don't tear that down.
@@ -4185,6 +4182,24 @@ function clearPendingMessage() { clearComposerPending(store.get().activeSid || "
 // shared #messages container (global composer); otherwise it reloads the
 // given pane's messages element directly. The context ring update is
 // routed to the right pane via updateContextProgress(sid).
+// Shared compaction-completion handler: reload history (to render the new
+// fold/summary) + show the success toast. Called by BOTH the manual
+// /compact flow (runCompactFlow) and the auto-compact SSE event
+// (context_compacted) — one code path, no duplication. A per-sid debounce
+// guards against a double reload when a manual /compact also fires the
+// server's context_compacted event.
+const _compactAppliedAt: Record<string, number> = {};
+function applyCompactionComplete(sid: string, successMsg: string): void {
+  const now = Date.now();
+  if (_compactAppliedAt[sid] && now - _compactAppliedAt[sid] < 1500) return;
+  _compactAppliedAt[sid] = now;
+  const messagesEl = sessionMessagesEl(sid) || $("messages");
+  loadHistoryInto(sid, messagesEl);
+  refreshSessionPreview(sid);
+  setCompactToastState("success", successMsg, sid);
+  setTimeout(() => hideCompactToast(), 3000);
+}
+
 async function runCompactFlow(sid: string, isPrune: boolean, messagesEl: HTMLElement | null): Promise<void> {
   const loadingMsg = isPrune ? "Pruning tool outputs..." : "Compacting context...";
   const successMsg = isPrune ? "Tool outputs pruned" : "Context compacted successfully";
@@ -4205,21 +4220,22 @@ async function runCompactFlow(sid: string, isPrune: boolean, messagesEl: HTMLEle
       const pct = Math.min(result.last_usage.prompt_tokens / contextWindow, 1);
       updateContextProgress(pct, result.last_usage.prompt_tokens, sid);
     }
-    if (messagesEl) {
-      await loadHistoryInto(sid, messagesEl);
-    } else {
-      await loadHistory(sid);
-    }
-    refreshSessionPreview(sid);
 
-    if (!isPrune && (result as any).noop) {
-      setCompactToastState("success", "Nothing to compact — context is already minimal", sid);
-    } else {
+    if (isPrune) {
+      // Prune has no auto-compact equivalent — reload + toast here.
+      if (messagesEl) await loadHistoryInto(sid, messagesEl); else await loadHistory(sid);
+      refreshSessionPreview(sid);
       setCompactToastState("success", successMsg, sid);
+      setTimeout(() => hideCompactToast(), 3000);
+    } else {
+      // Compact: share the completion path with auto-compact's
+      // context_compacted event (single source of truth for the reload
+      // + success toast). The debounce absorbs the server's echo.
+      const noop = !!(result as any).noop;
+      applyCompactionComplete(sid, noop ? "Nothing to compact — context is already minimal" : successMsg);
     }
   } catch (e: any) {
     setCompactToastState("error", (isPrune ? "Prune failed: " : "Compaction failed: ") + (e?.message || e), sid);
-  } finally {
     setTimeout(() => hideCompactToast(), 3000);
   }
 }
@@ -4523,10 +4539,19 @@ function flushComposerQueue(sid: string, delayMs: number) {
 }
 
 function cancelComposerTurn(sid: string) {
+  if (!sid) return;
   api.cancelTurn(sid).catch(() => { /* ignore */ });
   setSessionRunning(sid, false);
   setComposerRunning(sid, false);
   renderSessions();
+  // Flush the queued message for THIS session (Codex-style). The per-sid
+  // flushComposerQueue reads `pendingMessages[sid]` directly, so this
+  // works regardless of whether `sid` is currently activeSid. The 200ms
+  // delay mirrors the legacy cancelTurn path: gives the server's
+  // `except asyncio.CancelledError` block time to finish its finally
+  // before a fresh createTurn lands — otherwise the new turn races the
+  // old finally's `s.turn_task = None` and ends up untracked.
+  flushComposerQueue(sid, 200);
 }
 
 function clearComposerPending(sid: string) {
@@ -5020,6 +5045,16 @@ async function openProjectInSidebar(
   await refreshGitBranch();
   if (opts.thenSwitchTo) {
     await switchSession(opts.thenSwitchTo, { skipGitRefresh: true });
+  } else {
+    // Ensure there's an active session + composer in the new workspace
+    // (matches load-time behavior). Without this an empty workspace would
+    // have no input box after #composerHost was cleared above.
+    const s = store.get();
+    if (s.sessions.length > 0) {
+      await switchSession(s.sessions[0].id, { skipGitRefresh: true });
+    } else {
+      await createSession();
+    }
   }
 }
 

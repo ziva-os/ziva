@@ -520,6 +520,15 @@ class Runtime:
                 for tc in m.tool_calls
             ],
         }
+        # Preserve thinking + reasoning so reloads can show the same thinking
+        # card the user saw during streaming. Without these, auto-compact would
+        # silently strip reasoning from the post-compact tail and the UI's
+        # `renderMessages` would never get the data to populate the thinking
+        # cards. Matches the manual `/compact` path in `_apply_post_compact`.
+        if getattr(m, "reasoning_content", None):
+            record["reasoning_content"] = m.reasoning_content
+        if getattr(m, "reasoning_signature", None):
+            record["reasoning_signature"] = m.reasoning_signature
         if getattr(m, "_compaction_summary", False):
             record["_compaction_summary"] = True
         if getattr(m, "_hidden", False):

@@ -15,7 +15,9 @@ class CaptureAdapter:
 
 
 def test_instructions_injected_into_prompt(tmp_path):
-    (tmp_path / "AGENTS.md").write_text("Always use type hints")
+    agents = tmp_path / ".ziva" / "AGENTS.md"
+    agents.parent.mkdir(parents=True, exist_ok=True)
+    agents.write_text("Always use type hints")
     adapter = CaptureAdapter()
     rt = Runtime.create(workspace_root=tmp_path)
     asyncio.run(rt.chat([ChatMessage(role="user", content="hello")], session_id="s1"))
