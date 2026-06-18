@@ -20,7 +20,7 @@ class FakeAdapter:
 def _run_repl_commands(commands, approval="full-auto"):
     """Run a sequence of REPL commands and capture output."""
     root = Path(__file__).resolve().parents[1]
-    rt = Runtime.create(workspace_root=root, model_adapter=FakeAdapter())
+    rt = Runtime.create(workspace_root=root)
 
     captured = io.StringIO()
     original = sys.stdout
@@ -115,7 +115,7 @@ def test_run_with_events_streams_output():
 
     async def _go():
         root = Path(__file__).resolve().parents[1]
-        rt = Runtime.create(workspace_root=root, model_adapter=FakeAdapter(["streamed output"]))
+        rt = Runtime.create(workspace_root=root)
         await _run_with_events(rt, [ChatMessage(role="user", content="hi")], session_id="s1")
 
     try:
@@ -131,7 +131,7 @@ def test_repl_quit():
 
     async def _go():
         root = Path(__file__).resolve().parents[1]
-        rt = Runtime.create(workspace_root=root, model_adapter=FakeAdapter(["response"]))
+        rt = Runtime.create(workspace_root=root)
 
         inputs = iter(["/quit"])
         import builtins

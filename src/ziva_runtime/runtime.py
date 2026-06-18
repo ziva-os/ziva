@@ -382,7 +382,6 @@ AUTO_COMPACT_KEEP_LAST_ASSISTANT_TURNS = 5
 class Runtime:
     config: Dict[str, Any]
     registry: CapabilityRegistry
-    model_adapter: ModelAdapter
     event_bus: EventBus
     workspace_root: Path
     _sessions: Dict[str, SessionState] = field(default_factory=dict)
@@ -426,7 +425,25 @@ class Runtime:
 
     def _get_session(self, session_id: str) -> SessionState:
         if session_id not in self._sessions:
-            self._sessions[session_id] = SessionState(project_id=self._project_id)
+            sess = SessionState(project_id=self._project_id)
+            # Pull the session's saved model_name from disk so the first
+            # turn after app restart — or the first turn after the user
+            # picks a model in the dropdown before sending the first
+            # message — uses the right adapter. The frontend writes
+            # `model_name` via PATCH /sessions/{sid}; the in-memory state
+            # here mirrors that on first access.
+            try:
+                meta = FileStorage.get_session(
+                    self._resolve_project_id(session_id), session_id
+                ) or {}
+                saved = meta.get("model_name")
+                if isinstance(saved, str) and saved:
+                    sess.model_name = saved
+            except Exception:
+                # Disk read is best-effort; fall through with model_name=None
+                # so chat() falls back to the runtime config.
+                pass
+            self._sessions[session_id] = sess
         return self._sessions[session_id]
 
     def _resolve_project_id(self, session_id: str) -> str:
@@ -563,11 +580,9 @@ class Runtime:
         *,
         workspace_root: Path,
         global_config_path: Path | None = None,
-        workspace_config_path: Path | None = None,
         session_override: Dict[str, Any] | None = None,
-        model_adapter: ModelAdapter | None = None,
     ) -> "Runtime":
-        config = load_effective_config(global_config_path, workspace_config_path, session_override)
+        config = load_effective_config(global_config_path, session_override)
         registry = CapabilityRegistry()
 
         # Workspace plugins
@@ -585,11 +600,9 @@ class Runtime:
             if p.exists():
                 load_plugins([p], registry, config)
 
-        adapter = model_adapter or _create_adapter(config)
         runtime = cls(
             config=config,
             registry=registry,
-            model_adapter=adapter,
             event_bus=EventBus(),
             workspace_root=workspace_root,
         )
@@ -619,11 +632,19 @@ class Runtime:
                 if loaded:
                     session.history.extend(loaded)
                 else:
-                    # Create new session
-                    FileStorage.create_session(self._resolve_project_id(sid), {
-                        "id": sid,
-                        "time": {"created": int(time.time() * 1000), "updated": int(time.time() * 1000)},
-                    })
+                    # Create the session on disk only if it doesn't already
+                    # exist. The session may have been created earlier via
+                    # POST /sessions and then updated via PATCH /sessions
+                    # (e.g. to set model_name); we must not overwrite that
+                    # metadata just because no messages have been written
+                    # yet. FileStorage.create_session does a full-file
+                    # write_json, so calling it on an existing session
+                    # would clobber model_name / name / etc.
+                    if FileStorage.get_session(self._resolve_project_id(sid), sid) is None:
+                        FileStorage.create_session(self._resolve_project_id(sid), {
+                            "id": sid,
+                            "time": {"created": int(time.time() * 1000), "updated": int(time.time() * 1000)},
+                        })
 
         # Append new user messages to session history
         session.history.extend(new_messages)
@@ -641,6 +662,25 @@ class Runtime:
         if skill_output:
             rendered_messages.append(ChatMessage(role="system", content=f"Skill output: {skill_output}"))
 
+        # Build the per-turn model config first, so the image-resolution
+        # branch below sees the SAME model that will actually be used to
+        # call the API. session.model_name (if set) overrides the runtime
+        # config's model.name; the rest of the runtime config (max_tokens,
+        # thinking_mode, providers) is unchanged.
+        #
+        # The merge is shallow on the `model:` block — max_tokens /
+        # thinking_mode stay runtime-level. Building this here (rather
+        # than after _resolve_image_paths) is what lets a per-session
+        # model switch from a vision-capable model to a non-vision one
+        # correctly turn historical images into text references, and
+        # vice versa.
+        model_cfg = dict(self.config.get("model", {}))
+        if session.model_name:
+            model_cfg["name"] = session.model_name
+        turn_config = dict(self.config)
+        turn_config["model"] = model_cfg
+        turn_adapter = _create_adapter(turn_config)
+
         # Resolve any `image_url` blocks whose url is a local file path
         # (e.g. a user-attached screenshot dropped to ~/.ziva/.../clip-123.png).
         # Vision-capable models get a base64 data URL; non-vision models
@@ -648,21 +688,13 @@ class Runtime:
         # on a blob the model can't interpret). The original
         # `rendered_messages` history keeps the path form either way so
         # reloads stay cheap; only the per-turn copy sent to the
-        # provider is rewritten.
+        # provider is rewritten. The capability lookup is parameterized
+        # on the per-turn model name, NOT self._current_model_supports_image,
+        # so it follows session.model_name.
         rendered_messages = _resolve_image_paths(
             rendered_messages,
-            model_supports_image=self._current_model_supports_image(),
+            model_supports_image=self._model_supports_image(model_cfg["name"]),
         )
-
-        # Snapshot the model config and adapter at turn start so that a
-        # mid-turn global model switch doesn't invalidate the in-flight turn.
-        # The turn keeps using the snapshot model + adapter for its entire
-        # duration; the next turn will pick up the new global config.
-        model_cfg = dict(self.config.get("model", {}))
-        turn_adapter = _create_adapter(self.config)
-        # Cache on the session for other callers (e.g. compact_session) that
-        # need the session's adapter without re-creating it.
-        session.model_adapter = turn_adapter
 
         # Run unified streaming loop; events are emitted to event bus automatically
         final_content = ""
@@ -741,10 +773,13 @@ class Runtime:
                 if loaded:
                     session.history.extend(loaded)
                 else:
-                    FileStorage.create_session(self._resolve_project_id(sid), {
-                        "id": sid,
-                        "time": {"created": int(time.time() * 1000), "updated": int(time.time() * 1000)},
-                    })
+                    # Don't clobber an existing session file with an empty
+                    # record — see the matching comment in chat().
+                    if FileStorage.get_session(self._resolve_project_id(sid), sid) is None:
+                        FileStorage.create_session(self._resolve_project_id(sid), {
+                            "id": sid,
+                            "time": {"created": int(time.time() * 1000), "updated": int(time.time() * 1000)},
+                        })
                 # Safety net for sessions whose JSONL ends with an orphaned
                 # assistant+tool_calls message. Covers:
                 #  - Cancels that fired before _sanitize_orphaned_tool_calls
@@ -776,9 +811,15 @@ class Runtime:
 
         last_exc: Exception | None = None
         # Snapshot model config and adapter at turn start so a mid-turn
-        # global model switch doesn't invalidate this turn.
+        # model change (global or per-session) doesn't invalidate this
+        # turn. Same merge as in chat(): session.model_name, if set,
+        # overrides the runtime config's model.name.
         model_cfg = dict(self.config.get("model", {}))
-        turn_adapter = _create_adapter(self.config)
+        if session.model_name:
+            model_cfg["name"] = session.model_name
+        turn_config = dict(self.config)
+        turn_config["model"] = model_cfg
+        turn_adapter = _create_adapter(turn_config)
         try:
             for attempt in (1, 2):
                 try:
@@ -937,10 +978,18 @@ class Runtime:
             effective_prompt = "\n\n".join(parts)
 
             thinking_config = None
+            # Capability lookup is parameterized on this turn's model
+            # name (from the snapshotted model_cfg), NOT the runtime
+            # config's model — a session pinned to a non-thinking model
+            # via updateSession must not get a thinking block even if
+            # the runtime default has thinking_mode: high.
+            thinking_capable = self._capabilities_for_model_name(
+                model_cfg.get("name", "")
+            ).get("thinking", False)
             if (
                 model_cfg.get("thinking_mode")
                 and model_cfg.get("thinking_mode") != "disabled"
-                and self._current_model_capabilities().get("thinking", False)
+                and thinking_capable
             ):
                 thinking_config = {
                     "type": "enabled",
@@ -1429,10 +1478,20 @@ class Runtime:
         out[-1] = ChatMessage(role=out[-1].role, content=rendered)
         return out
 
-    def _current_model_capabilities(self) -> dict:
-        """Return merged provider+model capabilities for the active model."""
-        model_cfg = self.config.get("model", {})
-        model_name = model_cfg.get("name", "")
+    def _capabilities_for_model_name(self, model_name: str) -> dict:
+        """Return merged provider+model capabilities for `model_name`.
+
+        Looks `model_name` up in ``self.config["providers"][*].models[*]`` and
+        merges the model entry's capabilities on top of the provider's.
+        Returns ``{}`` if the model isn't found anywhere — callers must
+        handle the unknown case (e.g. defaulting thinking to False,
+        vision to True).
+
+        Used by per-turn code paths that need the capabilities of the
+        model that will *actually* be used for this turn, which may
+        differ from the runtime config's model when a session has
+        pinned its own via updateSession.
+        """
         for p in self.config.get("providers") or []:
             for m in p.get("models") or []:
                 if m.get("name") == model_name:
@@ -1441,26 +1500,46 @@ class Runtime:
                     return caps
         return {}
 
-    def _current_model_supports_image(self) -> bool:
-        """True if the active model can consume `image_url` blocks.
+    def _model_supports_image(self, model_name: str) -> bool:
+        """True if `model_name` can consume `image_url` blocks.
 
-        Reads the current model name from ``self.config["model"]["name"]``
-        and looks it up in the ``providers[*].models[*]`` list. Reads
-        ``capabilities.vision`` (provider-level is the fallback when the
-        model entry omits it). Defaults to True when the model entry is
-        missing entirely (assume vision-capable — the conservative choice
-        for unknown models).
+        Reads ``capabilities.vision`` (model-level wins; provider-level
+        is the fallback). Defaults to True when the model isn't found
+        anywhere — the conservative choice for unknown models, so we
+        don't silently drop image attachments.
 
         This drives the image-URL → data-URL vs → text-reference
         decision in ``_resolve_image_paths``. Vision models get the
-        raw pixels; non-vision models get a path string the model can
-        hand to specialized tools (OCR, read_file, etc.) or surface
-        back to the user.
+        base64 data URL so the API can decode raw pixels; non-vision
+        models get a path string the model can read with the
+        filesystem tool. Both branches preserve the original
+        ``rendered_messages`` so re-renders stay cheap.
         """
-        model_cfg = self.config.get("model", {})
-        model_name = model_cfg.get("name", "")
-        if not model_name:
-            return True
+        for p in self.config.get("providers") or []:
+            for m in p.get("models") or []:
+                if m.get("name") == model_name:
+                    m_caps = m.get("capabilities") or {}
+                    if "vision" in m_caps:
+                        return bool(m_caps["vision"])
+                    prov_vision = bool((p.get("capabilities") or {}).get("vision", True))
+                    return bool(m_caps.get("vision", prov_vision))
+        return True
+
+    # Backward-compat aliases — read the runtime config's model, NOT the
+    # per-session one. Kept for environment_info() in the /status surface
+    # and any external callers that want the global "what's the default
+    # model" answer rather than the per-turn one. Per-turn code paths
+    # (chat, chat_streaming, _run_model_tool_loop) must use the new
+    # parameterized helpers above.
+    def _current_model_capabilities(self) -> dict:
+        return self._capabilities_for_model_name(
+            self.config.get("model", {}).get("name", "")
+        )
+
+    def _current_model_supports_image(self) -> bool:
+        return self._model_supports_image(
+            self.config.get("model", {}).get("name", "")
+        )
         providers = self.config.get("providers") or []
         for p in providers:
             prov_vision = bool((p.get("capabilities") or {}).get("vision", True))

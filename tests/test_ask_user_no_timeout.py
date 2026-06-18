@@ -28,7 +28,6 @@ from ziva_runtime.shared_types import (
     ToolResult,
 )
 
-
 class FakeAskUserTool:
     """A stand-in ask_user tool that blocks on a per-call future.
 
@@ -62,7 +61,6 @@ class FakeAskUserTool:
             )
         return ToolResult(text=str(raw), metadata={"raw": raw})
 
-
 def _build_runtime(adapter=None, default_timeout: int = 1) -> Runtime:
     """Construct a Runtime that uses our FakeAskUserTool.
 
@@ -73,7 +71,7 @@ def _build_runtime(adapter=None, default_timeout: int = 1) -> Runtime:
     root = Path(__file__).resolve().parents[1]
     rt = Runtime.create(
         workspace_root=root,
-        model_adapter=adapter,
+
         session_override={
             "tool": {
                 "allow": [],
@@ -98,7 +96,6 @@ def _build_runtime(adapter=None, default_timeout: int = 1) -> Runtime:
         },
     )
     return rt
-
 
 def test_ask_user_outlives_default_timeout():
     """A 3s ask_user wait must survive a 1s default executor timeout."""
@@ -141,7 +138,6 @@ def test_ask_user_outlives_default_timeout():
         assert "User answered: yes" in result.text
 
     asyncio.run(_run())
-
 
 def test_non_whitelisted_tool_still_respects_timeout():
     """Sanity check: ordinary tools ARE still subject to the timeout.

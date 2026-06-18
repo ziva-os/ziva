@@ -28,7 +28,7 @@ def test_session_not_killed_on_model_switch():
     async def _run():
         root = Path(__file__).resolve().parents[1]
         adapter = SlowAdapter("test")
-        rt = Runtime.create(workspace_root=root, model_adapter=adapter)
+        rt = Runtime.create(workspace_root=root)
         api = DesktopAPIServer(rt)
         server = TestServer(api.app)
         client = TestClient(server)

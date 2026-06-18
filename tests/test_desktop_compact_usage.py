@@ -10,7 +10,6 @@ from ziva_runtime.shared_types import ChatResult
 from ziva_runtime.storage.file_storage import FileStorage
 from ziva_runtime.transports.desktop_api.server import DesktopAPIServer
 
-
 class StubAdapter:
     """Stubbed adapter that returns a short summary regardless of input."""
 
@@ -23,13 +22,12 @@ class StubAdapter:
             finish_reason="stop",
         )
 
-
 def test_compact_refreshes_last_usage():
     async def _run():
         root = Path(__file__).resolve().parents[1]
         rt = Runtime.create(
             workspace_root=root,
-            model_adapter=StubAdapter(),
+
             session_override={"memory": {"context_window_tokens": 1000}},
         )
         api = DesktopAPIServer(rt)

@@ -16,7 +16,7 @@ class FakeAdapter:
 def test_desktop_session_turn_and_index():
     async def _run():
         root = Path(__file__).resolve().parents[1]
-        rt = Runtime.create(workspace_root=root, model_adapter=FakeAdapter())
+        rt = Runtime.create(workspace_root=root)
         api = DesktopAPIServer(rt)
         server = TestServer(api.app)
         client = TestClient(server)

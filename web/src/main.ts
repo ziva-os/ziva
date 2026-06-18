@@ -75,7 +75,6 @@ const store = new Store<AppState>({
   // and queue bar.
   runningSessions: {},
   pendingMessages: {},
-  pendingSessionImages: {},
   promptDrafts: {},
   compactingSessions: {},
   questionPending: false,
@@ -100,38 +99,126 @@ const store = new Store<AppState>({
 // (e.g. when a question card is answered in a non-active session —
 // handled in the SSE event path).
 function isActiveRunning(): boolean {
-  const { activeSid, runningSessions } = store.get();
-  return !!activeSid && !!runningSessions[activeSid];
+  return isSessionRunning(store.get().activeSid || "");
 }
 
 function getActivePending(): string | null {
-  const { activeSid, pendingMessages } = store.get();
-  if (!activeSid) return null;
-  const entry = pendingMessages[activeSid];
-  return entry ? entry.text : null;
+  return getSessionPending(store.get().activeSid || "");
 }
 
 function setActivePending(text: string | null, retries: number = 0) {
-  const { activeSid, pendingMessages } = store.get();
-  if (!activeSid) return;
-  const next = { ...pendingMessages };
-  if (text == null) delete next[activeSid];
-  else next[activeSid] = { text, retries };
-  store.set({ pendingMessages: next });
+  setSessionPending(store.get().activeSid || "", text, retries);
 }
 
 function setActiveRunning(running: boolean) {
-  const { activeSid, runningSessions } = store.get();
-  if (!activeSid) return;
-  const next = { ...runningSessions, [activeSid]: running };
-  if (!running) delete next[activeSid];
+  setSessionRunning(store.get().activeSid || "", running);
+  // Keep the global send/stop button in sync.
+  updateSendStopButton();
+}
+
+// Per-session state helpers (sid-keyed; not "active" only).
+// Other sessions' values are kept in the map but only matter for
+// background turns (e.g. when a question card is answered in a
+// non-active session — handled in the SSE event path).
+function setSessionRunning(sid: string, running: boolean) {
+  if (!sid) return;
+  const { runningSessions } = store.get();
+  const next = { ...runningSessions };
+  if (running) next[sid] = true;
+  else delete next[sid];
   store.set({ runningSessions: next });
+}
+
+function isSessionRunning(sid: string): boolean {
+  if (!sid) return false;
+  return !!store.get().runningSessions[sid];
+}
+
+function getSessionPending(sid: string): string | null {
+  if (!sid) return null;
+  const entry = store.get().pendingMessages[sid];
+  return entry ? entry.text : null;
+}
+
+function setSessionPending(sid: string, text: string | null, retries: number = 0) {
+  if (!sid) return;
+  const { pendingMessages } = store.get();
+  const next = { ...pendingMessages };
+  if (text == null) delete next[sid];
+  else {
+    // Preserve any queued images already stashed on this entry.
+    const prev = pendingMessages[sid];
+    next[sid] = { text, retries, images: prev?.images };
+  }
+  store.set({ pendingMessages: next });
 }
 
 const sse = new SSEPool();
 const pendingTools = new Map<string, HTMLElement>();
 let currentAssistantEl: HTMLElement | null = null;
 let currentTextParts: { thinking: string; main: string } = { thinking: "", main: "" };
+
+// Global voice-input state. Bound to `#btnMic` in the (single, global)
+// composer. The MediaRecorder is a single resource — only one
+// recording at a time.
+let mediaRecorder: MediaRecorder | null = null;
+let audioChunks: Blob[] = [];
+let isRecording = false;
+
+// --- Per-session image attachments (single source of truth) ---
+// Live (in-composer, editable) attachments ride on the prompt draft;
+// queued-message attachments (frozen, waiting to flush on turn_end)
+// ride on the pending message. Both are per-sid in the store. This
+// replaces the former `pendingImages` module array (an active-session
+// mirror) and the `pendingSessionImages` map, so a split-pane composer
+// can attach/send images for its own session with no active/background
+// special-casing.
+function draftImages(sid: string): PendingAttachment[] {
+  if (!sid) return [];
+  return store.get().promptDrafts[sid]?.images || [];
+}
+function setDraftImages(sid: string, images: PendingAttachment[]): void {
+  if (!sid) return;
+  const { promptDrafts } = store.get();
+  const prev = promptDrafts[sid] || { text: "", images: [] as PendingAttachment[] };
+  store.set({ promptDrafts: { ...promptDrafts, [sid]: { text: prev.text || "", images } } });
+}
+function draftText(sid: string): string {
+  if (!sid) return "";
+  return store.get().promptDrafts[sid]?.text || "";
+}
+function setDraftText(sid: string, text: string): void {
+  if (!sid) return;
+  const { promptDrafts } = store.get();
+  const prev = promptDrafts[sid] || { text: "", images: [] as PendingAttachment[] };
+  store.set({ promptDrafts: { ...promptDrafts, [sid]: { text, images: prev.images || [] } } });
+}
+function queuedImages(sid: string): PendingAttachment[] {
+  if (!sid) return [];
+  return store.get().pendingMessages[sid]?.images || [];
+}
+function setQueuedImages(sid: string, images: PendingAttachment[]): void {
+  if (!sid) return;
+  const { pendingMessages } = store.get();
+  const prev = pendingMessages[sid] || { text: "", retries: 0 };
+  store.set({ pendingMessages: { ...pendingMessages, [sid]: { text: prev.text ?? "", retries: prev.retries ?? 0, images } } });
+}
+function clearQueuedImages(sid: string): void {
+  if (!sid) return;
+  const { pendingMessages } = store.get();
+  const prev = pendingMessages[sid];
+  if (!prev) return;
+  const next = { ...pendingMessages };
+  // Drop only the images field, keep text/retries.
+  const { images: _drop, ...rest } = prev;
+  next[sid] = rest as { text: string; retries: number };
+  store.set({ pendingMessages: next });
+}
+
+// Maximum number of times a queued (Codex-style) message will be
+// re-tried after a failed createTurn before we give up and surface
+// a permanent error to the user.
+const MAX_QUEUE_RETRIES = 3;
 
 // ---- Empty State ----
 function showEmptyState(show: boolean) {
@@ -865,56 +952,31 @@ function init() {
           </button>
           <div class="toolbar-title" id="toolbarTitle"></div>
           <div class="toolbar-actions">
-            <button class="toolbar-split-close" id="btnCloseSplit" title="Close split view" style="display:none">Exit split</button>
             <button class="toolbar-right-toggle" id="btnOpenRightPanel" title="Toggle panel" aria-label="Toggle panel">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
             </button>
           </div>
         </div>
-        <div class="empty-state" id="emptyState">
-        </div>
+        <div class="empty-state" id="emptyState"></div>
         <div class="split-container" id="splitContainer">
-          <div class="messages split-pane" id="messages" style="display:none"></div>
-        </div>
-        <div class="ziva-composer-wrapper" id="composerWrapper">
-          <div class="ziva-composer">
-            <div class="pending-bar" id="pendingBar" hidden>
-              <span class="pending-bar-label">排队中</span>
-              <span class="pending-bar-text" id="pendingBarText"></span>
-              <button class="pending-bar-clear" id="pendingBarClear" title="取消排队" type="button">×</button>
-            </div>
-            <div class="image-previews" id="imagePreviews" style="display:none"></div>
-            <input type="file" id="imageFileInput" accept="image/*" multiple style="display:none" />
-            <textarea id="prompt" placeholder="Ask anything, @ to mention, / for workflows" rows="1"></textarea>
-            <div class="slash-menu" id="slashMenu" style="display:none"></div>
-            <div class="composer-toolbar">
-              <div class="toolbar-left">
-                <button class="composer-action-btn" id="btnAttach" title="Attach image">+</button>
-                <select id="approvalSelect" title="Mode">
-                  <option value="suggest">Fast</option>
-                  <option value="auto-edit">Auto Edit</option>
-                  <option value="full-auto">Full Auto</option>
-                </select>
-                <select id="modelSelect" title="Model"></select>
-              </div>
-              <div class="toolbar-right">
-                <span class="char-count" id="charCount"></span>
-                <div class="context-ring" id="contextRing" title="Context usage">
-                  <svg viewBox="0 0 24 24" width="28" height="28">
-                    <circle cx="12" cy="12" r="11" fill="none" stroke="var(--line)" stroke-width="2.5" />
-                    <circle cx="12" cy="12" r="11" fill="none" stroke="var(--accent)" stroke-width="2.5"
-                      stroke-dasharray="69.12" stroke-dashoffset="69.12" stroke-linecap="round"
-                      transform="rotate(-90 12 12)" id="contextArc" />
-                  </svg>
-                  <span class="context-pct" id="contextPct"></span>
-                </div>
-                <button id="btnMic" class="composer-action-btn mic-btn" title="Voice input">
-                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+          <div class="split-pane split-pane-active" id="activePaneContainer">
+            <div class="split-pane-header" id="activePaneHeader" style="display:none">
+              <span class="split-pane-title" id="activePaneTitle"></span>
+              <span class="split-pane-actions">
+                <button class="split-pane-enter" id="activePaneEnter" title="Fullscreen" type="button">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
                 </button>
-                <button id="btnSend" class="send-btn" title="Send">→</button>
-              </div>
+                <button class="split-pane-close" id="activePaneClose" title="Close pane" type="button">×</button>
+              </span>
+            </div>
+            <div class="pane-messages" id="messages"></div>
+            <div class="pane-composer" id="activePaneComposer" data-sid="" style="display:none">
+              <div id="activePaneComposerInner"></div>
             </div>
           </div>
+        </div>
+        <div class="ziva-composer-wrapper" id="composerWrapper">
+          <div class="pane-composer" id="composerHost"></div>
           <div class="ziva-status-bar" id="statusBar">
             <div class="status-item" id="contextWorkspace" title="Switch workspace">
               <span class="status-icon"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-1.22-1.8A2 2 0 0 0 7.53 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg></span>
@@ -948,50 +1010,226 @@ function init() {
   });
 }
 
+// ---- Slash Commands ----
+const SLASH_COMMANDS = [
+  { name: "/compact", description: "Compact context window" },
+  { name: "/prune", description: "Prune tool outputs" },
+  { name: "/automation", description: "Create a scheduled automation" },
+];
+
+let slashMenuIndex = -1;
+// The sid of the composer whose slash menu is currently open (only one at
+// a time — the focused composer). Used by the unified sid-aware slash fns.
+let slashMenuSid = "";
+
+// Legacy slash-menu aliases — delegate to the sid-aware versions for the
+// active session. Deleted once all callers move to the *For fns (Step 8).
+function showSlashMenu(text: string) { showSlashMenuFor(store.get().activeSid || "", text); }
+function hideSlashMenu() { hideSlashMenuFor(store.get().activeSid || ""); }
+function isSlashMenuVisible() {
+  const menu = composerSlashEl(store.get().activeSid || "");
+  return !!menu && menu.style.display === "block";
+}
+function moveSlashSelection(dir: number) { moveSlashSelectionFor(store.get().activeSid || "", dir); }
+function selectSlashCommand() { selectSlashCommandFor(store.get().activeSid || ""); }
+function insertSlashCommand(cmd: string) { insertSlashCommandFor(store.get().activeSid || "", cmd); }
+
 // ---- Event Bindings ----
-function bindEvents() {
-  const promptEl = $("prompt");
-  promptEl.addEventListener("input", () => {
-    const ta = promptEl as HTMLTextAreaElement;
-    ta.style.height = "auto";
-    ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
-    const chars = ta.value.length;
-    const tokens = Math.round(chars / 4);
-    $("charCount").textContent = chars > 0 ? `${chars}` : "";
-    const text = ta.value;
-    if (text.startsWith("/")) {
-      showSlashMenu(text);
-    } else {
-      hideSlashMenu();
-    }
-  });
-  promptEl.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      if (isSlashMenuVisible()) {
-        e.preventDefault();
-        selectSlashCommand();
-        return;
+// Per-composer voice input. Reuses the single global MediaRecorder (only
+// one recording at a time) and inserts the transcription into THIS
+// composer's textarea.
+async function startComposerMic(sid: string, btn: HTMLButtonElement) {
+  if (!sid) return;
+  if (isRecording) { mediaRecorder?.stop(); return; }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+      ? "audio/webm;codecs=opus"
+      : MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "";
+    mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    audioChunks = [];
+    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
+    mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop());
+      isRecording = false;
+      btn.classList.remove("recording");
+      btn.title = "Voice input";
+      const blob = new Blob(audioChunks, { type: mediaRecorder?.mimeType || "audio/webm" });
+      try {
+        btn.title = "Transcribing…";
+        const formData = new FormData();
+        formData.append("audio", blob, "recording.webm");
+        const res = await fetch("/api/stt", { method: "POST", body: formData });
+        const data = await res.json();
+        if (data.text) {
+          const ta = composerTextarea(sid);
+          if (ta) {
+            ta.value = ta.value ? ta.value + "\n" + data.text : data.text;
+            ta.dispatchEvent(new Event("input"));
+            ta.focus();
+          }
+        }
+      } catch (err: any) {
+        console.error("STT failed:", err);
+      } finally {
+        btn.title = "Voice input";
       }
-      e.preventDefault();
-      if (isActiveRunning()) { queuePromptMessage(); } else { sendMessage(); }
+    };
+    mediaRecorder.start();
+    isRecording = true;
+    btn.classList.add("recording");
+    btn.title = "Stop recording";
+  } catch (err: any) {
+    console.error("Mic failed:", err);
+  }
+}
+
+// ONE delegated listener on document routes every composer's events by
+// `data-sid`. This single handler serves the full-screen composer and
+// every split pane — no per-element handlers, no #splitContainer delegation.
+function bindComposerEvents() {
+  document.addEventListener("click", (e) => {
+    const target = e.target as HTMLElement;
+    const sendBtn = target.closest(".pane-send") as HTMLButtonElement | null;
+    if (sendBtn) {
+      const sid = sendBtn.dataset.sid || "";
+      if (sendBtn.classList.contains("stop-btn")) cancelComposerTurn(sid);
+      else sendComposerMessage(sid);
+      return;
     }
-    if (e.key === "Escape") {
-      hideSlashMenu();
-      if (isActiveRunning()) { cancelTurn(); }
+    if (target.closest(".pane-btn-attach")) {
+      const sid = (target.closest("[data-sid]") as HTMLElement | null)?.dataset.sid || "";
+      const input = composerFileInput(sid);
+      if (input) input.click();
+      return;
     }
-    if (e.key === "ArrowDown" && isSlashMenuVisible()) { e.preventDefault(); moveSlashSelection(1); }
-    if (e.key === "ArrowUp" && isSlashMenuVisible()) { e.preventDefault(); moveSlashSelection(-1); }
+    const micBtn = target.closest(".pane-btn-mic") as HTMLButtonElement | null;
+    if (micBtn) {
+      const sid = (target.closest("[data-sid]") as HTMLElement | null)?.dataset.sid || "";
+      startComposerMic(sid, micBtn);
+      return;
+    }
+    const slashItem = target.closest(".slash-item") as HTMLElement | null;
+    if (slashItem) {
+      const sid = (slashItem.closest("[data-sid]") as HTMLElement | null)?.dataset.sid || slashMenuSid;
+      if (sid) selectSlashCommandFor(sid);
+      return;
+    }
+    if (target.closest(".pending-bar-clear")) {
+      const sid = (target.closest("[data-sid]") as HTMLElement | null)?.dataset.sid || "";
+      clearComposerPending(sid);
+      return;
+    }
+    if (target.closest(".pending-bar-text")) {
+      const sid = (target.closest("[data-sid]") as HTMLElement | null)?.dataset.sid || "";
+      editComposerPending(sid);
+      return;
+    }
   });
 
-  $("btnSend").onclick = () => {
-    if (isActiveRunning()) { cancelTurn(); } else { sendMessage(); }
-  };
-  // Pending-message bar: clicking the text brings the queued content
-  // back into the prompt for editing; the × button drops it.
-  const pendingBarText = $("pendingBarText");
-  const pendingBarClear = $("pendingBarClear");
-  if (pendingBarText) pendingBarText.onclick = editPendingMessage;
-  if (pendingBarClear) pendingBarClear.onclick = clearPendingMessage;
+  document.addEventListener("keydown", (e) => {
+    const target = e.target as HTMLElement;
+    if (!target.classList.contains("pane-prompt")) return;
+    const sid = (target as HTMLTextAreaElement).dataset.sid || "";
+    const menu = composerSlashEl(sid);
+    const menuOpen = !!menu && menu.style.display === "block";
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (menuOpen) { selectSlashCommandFor(sid); return; }
+      if (isSessionRunning(sid)) queueComposerMessage(sid); else sendComposerMessage(sid);
+      return;
+    }
+    if (e.key === "Escape") {
+      if (menuOpen) { hideSlashMenuFor(sid); return; }
+      if (isSessionRunning(sid)) cancelComposerTurn(sid);
+      return;
+    }
+    if (menuOpen && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      e.preventDefault();
+      moveSlashSelectionFor(sid, e.key === "ArrowDown" ? 1 : -1);
+    }
+  });
+
+  document.addEventListener("input", (e) => {
+    const target = e.target as HTMLElement;
+    if (!target.classList.contains("pane-prompt")) return;
+    const textarea = target as HTMLTextAreaElement;
+    const sid = textarea.dataset.sid || "";
+    textarea.style.height = "auto";
+    textarea.style.height = Math.min(textarea.scrollHeight, 160) + "px";
+    if (sid) setDraftText(sid, textarea.value);
+    const cc = composerCharCount(sid);
+    if (cc) cc.textContent = textarea.value.length > 0 ? String(textarea.value.length) : "";
+    if (textarea.value.startsWith("/")) showSlashMenuFor(sid, textarea.value);
+    else hideSlashMenuFor(sid);
+  });
+
+  document.addEventListener("change", async (e) => {
+    const target = e.target as HTMLElement;
+    if (target.classList.contains("pane-model")) {
+      const sid = (target as HTMLSelectElement).dataset.sid || "";
+      const model = (target as HTMLSelectElement).value;
+      if (sid) {
+        try { await api.updateSession(sid, { model_name: model }); } catch { /* ignore */ }
+        const { sessions } = store.get();
+        const s = sessions.find(x => x.id === sid);
+        if (s) (s as any).model_name = model;
+      }
+      return;
+    }
+    if (target.classList.contains("pane-approval")) {
+      const sid = (target as HTMLSelectElement).dataset.sid || "";
+      const policy = (target as HTMLSelectElement).value;
+      if (sid) {
+        try { await api.updateSession(sid, { approval_policy: policy }); } catch { /* ignore */ }
+        const { sessions } = store.get();
+        const s = sessions.find(x => x.id === sid);
+        if (s) (s as any).approval_policy = policy;
+      }
+      return;
+    }
+    if (target.classList.contains("pane-image-input")) {
+      const files = (target as HTMLInputElement).files;
+      const sid = (target as HTMLInputElement).dataset.sid || "";
+      if (files) for (const f of Array.from(files)) await addImageFile(f, sid);
+      (target as HTMLInputElement).value = "";
+    }
+  });
+
+  document.addEventListener("paste", (e) => {
+    const target = e.target as HTMLElement;
+    if (!target.classList.contains("pane-prompt")) return;
+    const sid = (target as HTMLTextAreaElement).dataset.sid || "";
+    const files = (e as ClipboardEvent).clipboardData?.files;
+    if (!files || files.length === 0) return;
+    for (const f of Array.from(files)) {
+      if (f.type.startsWith("image/")) { e.preventDefault(); addImageFile(f, sid); }
+    }
+  });
+
+  document.addEventListener("dragover", (e) => {
+    const target = e.target as HTMLElement;
+    if (target.classList.contains("pane-prompt")) e.preventDefault();
+  });
+
+  document.addEventListener("drop", (e) => {
+    const target = e.target as HTMLElement;
+    if (!target.classList.contains("pane-prompt")) return;
+    e.preventDefault();
+    const sid = (target as HTMLTextAreaElement).dataset.sid || "";
+    const files = (e as DragEvent).dataTransfer?.files;
+    if (files) for (const f of Array.from(files)) { if (f.type.startsWith("image/")) addImageFile(f, sid); }
+  });
+}
+
+function bindEvents() {
+  // ---- Composer ----
+  // One delegated listener (bound once) routes every composer's events by
+  // data-sid — full-screen and every split pane share it. No per-element
+  // handlers, no element IDs inside the composer.
+  bindComposerEvents();
+
+  // ---- Sidebar / modals / theme / keyboard ----
   $("btnNewSession").onclick = () => createSession();
   $("btnOpenRightPanel").onclick = toggleRightPanel;
   initResizablePanel();
@@ -1053,22 +1291,6 @@ function bindEvents() {
     }
   };
 
-  $("modelSelect").onchange = async () => {
-    const model = ($("modelSelect") as HTMLSelectElement).value;
-    await api.updateConfig({ model: { name: model } });
-    store.set({ config: { ...store.get().config, model } });
-    const { activeSid } = store.get();
-    if (activeSid) {
-      try { await api.updateSession(activeSid, { model_name: model }); } catch { /* ignore */ }
-    }
-  };
-
-  $("approvalSelect").onchange = async () => {
-    const policy = ($("approvalSelect") as HTMLSelectElement).value;
-    await api.updateConfig({ approval: { policy } });
-    store.set({ config: { ...store.get().config, approval: policy } });
-  };
-
   // Sidebar collapse/expand — driven by toggling `.sidebar-collapsed` on
   // the layout container. The CSS hides the sidebar's contents and
   // reveals the small `.sidebar-open-btn` floating at the sidebar's old
@@ -1122,106 +1344,12 @@ function bindEvents() {
     store.set({ autoScroll: el.scrollTop + el.clientHeight >= el.scrollHeight - 50 });
   });
 
-  // Image upload: attach button, paste, drag-and-drop
-  $("btnAttach").onclick = () => ($("imageFileInput") as HTMLInputElement).click();
-
-  // ── Voice input (microphone) ───────────────────────────────
-  const btnMic = $("btnMic") as HTMLButtonElement | null;
-  let mediaRecorder: MediaRecorder | null = null;
-  let audioChunks: Blob[] = [];
-  let isRecording = false;
-
-  if (btnMic) {
-    btnMic.onclick = async () => {
-      if (isRecording) {
-        mediaRecorder?.stop();
-        return;
-      }
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        // Prefer webm/opus, fallback to whatever is available
-        const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-          ? "audio/webm;codecs=opus"
-          : MediaRecorder.isTypeSupported("audio/webm")
-            ? "audio/webm"
-            : "";
-        mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-        audioChunks = [];
-
-        mediaRecorder.ondataavailable = (e) => {
-          if (e.data.size > 0) audioChunks.push(e.data);
-        };
-
-        mediaRecorder.onstop = async () => {
-          stream.getTracks().forEach((t) => t.stop());
-          isRecording = false;
-          btnMic.classList.remove("recording");
-          btnMic.title = "Voice input";
-
-          const blob = new Blob(audioChunks, { type: mediaRecorder?.mimeType || "audio/webm" });
-          try {
-            btnMic.title = "Transcribing…";
-            const formData = new FormData();
-            formData.append("audio", blob, "recording.webm");
-            const res = await fetch("/api/stt", { method: "POST", body: formData });
-            const data = await res.json();
-            if (data.text) {
-              const ta = $("prompt") as HTMLTextAreaElement;
-              ta.value = ta.value ? ta.value + "\n" + data.text : data.text;
-              ta.dispatchEvent(new Event("input"));
-              ta.focus();
-            }
-          } catch (err: any) {
-            console.error("STT failed:", err);
-          } finally {
-            btnMic.title = "Voice input";
-          }
-        };
-
-        mediaRecorder.start();
-        isRecording = true;
-        btnMic.classList.add("recording");
-        btnMic.title = "Stop recording";
-      } catch (err: any) {
-        console.error("Microphone access denied:", err);
-      }
-    };
-  }
-  ($("imageFileInput") as HTMLInputElement).onchange = (e) => {
-    const files = (e.target as HTMLInputElement).files;
-    if (files) for (const f of files) addImageFile(f);
-    (e.target as HTMLInputElement).value = "";
-  };
-  promptEl.addEventListener("paste", (e) => {
-    // `e.clipboardData.files` is more reliable than `items` + `getAsFile()`:
-    // - Mac screenshots sometimes expose the image as a File but not as an
-    //   `image/*` DataTransferItem (the type may be `public.png` / `dyn.ah62d4...`)
-    // - `item.getAsFile()` can return null even when an item is present
-    // Using `files` covers both the "explicit File" path and the "decoded
-    // image" path uniformly. We still check f.type because files can also
-    // contain plain text rendered as a file on some Linux distros.
-    const files = e.clipboardData?.files;
-    if (!files || files.length === 0) return;
-    const imgs: File[] = [];
-    for (const f of Array.from(files)) {
-      if (f.type.startsWith("image/")) imgs.push(f);
-    }
-    if (imgs.length === 0) return;
-    e.preventDefault();
-    for (const f of imgs) addImageFile(f);
-  });
-  promptEl.addEventListener("dragover", (e) => { e.preventDefault(); });
-  promptEl.addEventListener("drop", (e) => {
-    e.preventDefault();
-    const files = e.dataTransfer?.files;
-    if (files) for (const f of files) { if (f.type.startsWith("image/")) addImageFile(f); }
-  });
-
   const savedTheme = localStorage.getItem("ziva-theme") as "dark" | "light" | null;
   if (savedTheme) {
     store.set({ theme: savedTheme });
     document.documentElement.setAttribute("data-theme", savedTheme);
   }
+  // Mic is handled per-composer by bindComposerEvents (startComposerMic).
 }
 
 // ---- Image Attachments ----
@@ -1237,14 +1365,11 @@ function bindEvents() {
 // don't have to re-read multi-MB blobs from disk.
 //
 // The local `thumbUrl` is a blob URL just for the in-input preview;
-// it's never sent to the server.
-let pendingImages: Array<{
-  path: string;
-  mime: string;
-  size: number;
-  name: string;
-  thumbUrl: string;
-}> = [];
+// it's never sent to the server. Image attachments are stored
+// per-session in `store.pendingSessionImages[sid]`; the `pendingImages`
+// array is the *active* session's mirror copy, kept in sync on every
+// read/write so the global composer can show previews while the
+// store remains the source of truth.
 
 // Track in-flight image uploads so they can be cancelled when the user
 // switches sessions. Each entry ties a fetch to the session it was
@@ -1254,135 +1379,6 @@ const inFlightUploads: Array<{
   controller: AbortController;
   thumbUrl: string;
 }> = [];
-
-// Release blob: URLs that the UI no longer needs. Each paste gives
-// us a fresh `URL.createObjectURL(file)` whose underlying bytes the
-// browser keeps around until either revokeObjectURL or the document
-// goes away. We only revoke when *no* live reference remains — a
-// per-session stash in `store.pendingSessionImages` is a legitimate
-// holder (the user might switch back and expect to see previews).
-function disposePendingImageThumbs(arr: Array<{ thumbUrl?: string }>) {
-  if (!arr || arr.length === 0) return;
-  const { pendingSessionImages, promptDrafts } = store.get();
-  const live = new Set<string>();
-  for (const sid in pendingSessionImages) {
-    for (const a of pendingSessionImages[sid] || []) {
-      if (a?.thumbUrl) live.add(a.thumbUrl);
-    }
-  }
-  for (const sid in promptDrafts) {
-    for (const a of promptDrafts[sid]?.images || []) {
-      if (a?.thumbUrl) live.add(a.thumbUrl);
-    }
-  }
-  for (const a of arr) {
-    if (a?.thumbUrl && !live.has(a.thumbUrl)) {
-      URL.revokeObjectURL(a.thumbUrl);
-    }
-  }
-}
-
-async function addImageFile(file: File) {
-  // If there's no active session (e.g. the user just switched workspace
-  // and openProjectInSidebar cleared activeSid), create one so the
-  // attachment has somewhere to land. Mirrors sendMessage's fallback at
-  // /main.ts around the send loop. The session UUID is generated
-  // client-side and the server lazy-creates it on the attachment POST
-  // (see upload_attachment in desktop_api/server.py) — same flow as
-  // sendMessage's "send into a never-persisted session" path.
-  if (!store.get().activeSid) {
-    try {
-      await createSession();
-    } catch (e: any) {
-      appendError(`Cannot attach image: failed to create session (${e?.message || "unknown"})`);
-      return;
-    }
-    if (!store.get().activeSid) {
-      appendError("Cannot attach image: failed to create a session");
-      return;
-    }
-  }
-
-  // Generate a local blob URL for the in-input preview *first*
-  // (synchronous, can't fail), then kick off the upload so the user
-  // sees the thumbnail immediately even on slow links.
-  const thumbUrl = URL.createObjectURL(file);
-
-  // Capture the session id *before* the async fetch so we can detect if
-  // the user switches sessions while the upload is in flight.
-  const uploadSid = store.get().activeSid;
-  if (!uploadSid) {
-    URL.revokeObjectURL(thumbUrl);
-    appendError("Cannot attach image: no active session");
-    return;
-  }
-
-  const controller = new AbortController();
-  const uploadEntry = { sid: uploadSid, controller, thumbUrl };
-  inFlightUploads.push(uploadEntry);
-
-  const finish = (result: { path: string; mime: string; size: number } | null, err?: string) => {
-    // Remove from in-flight tracker regardless of outcome.
-    const idx = inFlightUploads.indexOf(uploadEntry);
-    if (idx !== -1) inFlightUploads.splice(idx, 1);
-
-    if (!result) {
-      URL.revokeObjectURL(thumbUrl);
-      console.error("image upload failed", err);
-      appendError(`Failed to attach ${file.name}: ${err || "upload failed"}`);
-      return;
-    }
-
-    const image = { ...result, name: file.name, thumbUrl };
-    const currentSid = store.get().activeSid;
-
-    if (currentSid === uploadSid) {
-      // Still on the same session — push to the live pendingImages array.
-      pendingImages.push(image);
-      renderImagePreviews();
-    } else {
-      // Session switched while the upload was in flight. Route the
-      // result to the originating session's pendingSessionImages in
-      // the store so the image is available when the user switches back.
-      const { pendingSessionImages } = store.get();
-      const existing = pendingSessionImages[uploadSid] || [];
-      store.set({
-        pendingSessionImages: {
-          ...pendingSessionImages,
-          [uploadSid]: [...existing, image],
-        },
-      });
-      // The thumbUrl is now owned by the store; don't revoke it here.
-    }
-  };
-
-  const fd = new FormData();
-  fd.append("file", file, file.name);
-  fetch(`/sessions/${uploadSid}/attachments`, {
-    method: "POST",
-    body: fd,
-    signal: controller.signal,
-  })
-    .then(async (r) => {
-      if (!r.ok) {
-        const detail = await r.text().catch(() => r.statusText);
-        finish(null, detail || `HTTP ${r.status}`);
-        return;
-      }
-      const j = await r.json();
-      finish({ path: j.path, mime: j.mime, size: j.size });
-    })
-    .catch((e) => {
-      if ((e as DOMException).name === "AbortError") {
-        // Upload was cancelled by a session switch. Silently discard;
-        // the thumbUrl is revoked in cancelInFlightUploads.
-        const idx = inFlightUploads.indexOf(uploadEntry);
-        if (idx !== -1) inFlightUploads.splice(idx, 1);
-        return;
-      }
-      finish(null, String(e));
-    });
-}
 
 // Cancel all in-flight image uploads for sessions other than the newly
 // active one. Called from switchSession to prevent stale uploads from
@@ -1410,33 +1406,112 @@ function abortImageUpload(thumbUrl: string) {
   inFlightUploads.splice(idx, 1);
 }
 
-function renderImagePreviews() {
-  const container = $("imagePreviews") as HTMLElement;
-  if (pendingImages.length === 0) {
-    container.style.display = "none";
-    container.innerHTML = "";
-    return;
+// Free any blob URLs in `arr` whose thumbUrl is NOT still referenced by
+// any session's draft or queued images. Called when dropping a set of
+// previews (clearPendingMessage, sendFromQueue success, etc.) to avoid
+// leaking blob URLs — but only the ones truly no longer reachable from
+// the store. If another session still holds the thumb, leave it alone.
+function disposePendingImageThumbs(arr: Array<{ thumbUrl?: string }>) {
+  if (!arr || arr.length === 0) return;
+  const { promptDrafts, pendingMessages } = store.get();
+  const live = new Set<string>();
+  for (const sid in promptDrafts) {
+    for (const a of promptDrafts[sid]?.images || []) {
+      if (a?.thumbUrl) live.add(a.thumbUrl);
+    }
   }
-  container.style.display = "flex";
-  container.innerHTML = pendingImages.map((img, i) =>
-    `<div class="image-preview-item">
-      <img src="${img.thumbUrl}" alt="${esc(img.name)}" />
-      <button class="image-preview-remove" data-idx="${i}" title="Remove">×</button>
-    </div>`
-  ).join("");
-  container.querySelectorAll(".image-preview-remove").forEach(btn => {
-    (btn as HTMLElement).onclick = () => {
-      const idx = parseInt((btn as HTMLElement).dataset.idx || "0");
-      const removed = pendingImages.splice(idx, 1)[0];
-      if (removed?.thumbUrl) {
-        // Abort any in-flight upload that produced this preview so the
-        // completion callback doesn't re-add a revoked/broken thumbnail.
-        abortImageUpload(removed.thumbUrl);
-        URL.revokeObjectURL(removed.thumbUrl);
+  for (const sid in pendingMessages) {
+    for (const a of pendingMessages[sid]?.images || []) {
+      if (a?.thumbUrl) live.add(a.thumbUrl);
+    }
+  }
+  for (const a of arr) {
+    if (a?.thumbUrl && !live.has(a.thumbUrl)) {
+      URL.revokeObjectURL(a.thumbUrl);
+    }
+  }
+}
+
+async function addImageFile(file: File, sid?: string) {
+  // Resolve the target session: the explicit `sid` (split-pane composer)
+  // or the active session. Create one if none exists so the attachment
+  // has somewhere to land — same lazy-create flow as the send path.
+  let uploadSid = sid || store.get().activeSid;
+  if (!uploadSid) {
+    try {
+      await createSession();
+    } catch (e: any) {
+      appendError(`Cannot attach image: failed to create session (${e?.message || "unknown"})`);
+      return;
+    }
+    uploadSid = sid || store.get().activeSid;
+    if (!uploadSid) {
+      appendError("Cannot attach image: failed to create a session");
+      return;
+    }
+  }
+
+  // Generate a local blob URL for the in-input preview *first*
+  // (synchronous, can't fail), then kick off the upload so the user
+  // sees the thumbnail immediately even on slow links.
+  const thumbUrl = URL.createObjectURL(file);
+
+  const controller = new AbortController();
+  const uploadEntry = { sid: uploadSid, controller, thumbUrl };
+  inFlightUploads.push(uploadEntry);
+
+  const finish = (result: { path: string; mime: string; size: number } | null, err?: string) => {
+    // Remove from in-flight tracker regardless of outcome.
+    const idx = inFlightUploads.indexOf(uploadEntry);
+    if (idx !== -1) inFlightUploads.splice(idx, 1);
+
+    if (!result) {
+      URL.revokeObjectURL(thumbUrl);
+      console.error("image upload failed", err);
+      appendError(`Failed to attach ${file.name}: ${err || "upload failed"}`);
+      return;
+    }
+
+    // The image belongs to uploadSid's composer regardless of whether
+    // the user has since switched sessions — it is a live draft
+    // attachment for that session, restored from the draft on return.
+    const image = { ...result, name: file.name, thumbUrl };
+    setDraftImages(uploadSid, [...draftImages(uploadSid), image]);
+    if (store.get().activeSid === uploadSid) renderImagePreviews();
+  };
+
+  const fd = new FormData();
+  fd.append("file", file, file.name);
+  fetch(`/sessions/${uploadSid}/attachments`, {
+    method: "POST",
+    body: fd,
+    signal: controller.signal,
+  })
+    .then(async (r) => {
+      if (!r.ok) {
+        const detail = await r.text().catch(() => r.statusText);
+        finish(null, detail || `HTTP ${r.status}`);
+        return;
       }
-      renderImagePreviews();
-    };
-  });
+      const j = await r.json();
+      finish({ path: j.path, mime: j.mime, size: j.size });
+    })
+    .catch((e) => {
+      if ((e as DOMException).name === "AbortError") {
+        // Upload was cancelled (e.g. session switch). Silently discard;
+        // the thumbUrl is revoked in cancelInFlightUploads.
+        const idx = inFlightUploads.indexOf(uploadEntry);
+        if (idx !== -1) inFlightUploads.splice(idx, 1);
+        return;
+      }
+      finish(null, String(e));
+    });
+}
+
+// Legacy alias — delegates to the per-session canonical renderer. Deleted
+// once all callers move to renderComposerPreviews(sid) (Step 8).
+function renderImagePreviews() {
+  renderComposerPreviews(store.get().activeSid || "");
 }
 
 // ---- Split-screen sessions ----
@@ -1452,7 +1527,10 @@ function addToSplit(sid: string) {
   if (sid === activeSid) return;
   if (splitSessions.includes(sid)) return;
   store.set({ splitSessions: [...splitSessions, sid] });
-  renderSplitPanes();
+  renderSplitPanes().catch((e) => {
+    console.error("addToSplit: renderSplitPanes REJECTED:", e);
+    if (e instanceof Error) console.error("  stack:", e.stack);
+  });
 }
 
 function removeFromSplit(sid: string) {
@@ -1472,40 +1550,314 @@ function refreshSplitPane(sid: string) {
   loadHistoryInto(sid, pane);
 }
 
+// Per-pane composer inner HTML. Same structure as the global #composerWrapper
+// (pending bar, image previews, hidden file input, textarea, toolbar with
+// +/mode/model/context/mic/send) so each split pane can operate
+// independently: own attachments, own model+approval, own draft.
+// ---------------------------------------------------------------------------
+// Unified composer. ONE template + ONE sid-parameterized selector layer,
+// shared by the full-screen composer and every split-pane composer. A
+// session is just a (messages container + composer) pair addressed by
+// `sid`; there is no active/background distinction in the code — only in
+// layout (full-screen = one session in the wide area; split = N sessions
+// side by side). This replaces the former parallel "global IDs" and
+// "pane-* classes" implementations.
+// ---------------------------------------------------------------------------
+
+// The single composer template. Every interactive element carries
+// `data-sid` so one delegated listener can route events to the right
+// session, and several composers can coexist in split mode. It reuses the
+// established `.pane-*` classes so the same CSS styles full-screen and
+// pane composers identically. Ring geometry is unified to r=11 / 69.12.
+function composerTemplate(sid: string): string {
+  return `
+    <div class="pending-bar pane-pending" data-sid="${esc(sid)}" hidden>
+      <span class="pending-bar-label">排队中</span>
+      <span class="pending-bar-text"></span>
+      <button class="pending-bar-clear" title="取消排队" type="button">×</button>
+    </div>
+    <div class="image-previews pane-previews" data-sid="${esc(sid)}" style="display:none"></div>
+    <input type="file" class="pane-image-input" data-sid="${esc(sid)}" accept="image/*" multiple style="display:none" />
+    <textarea class="pane-prompt" data-sid="${esc(sid)}" placeholder="Ask anything, @ to mention, / for workflows" rows="1"></textarea>
+    <div class="slash-menu pane-slash" data-sid="${esc(sid)}" style="display:none"></div>
+    <div class="composer-toolbar">
+      <div class="toolbar-left">
+        <button class="composer-action-btn pane-btn-attach" data-sid="${esc(sid)}" title="Attach image">+</button>
+        <select class="pane-approval" data-sid="${esc(sid)}" title="Mode">
+          <option value="suggest">Fast</option>
+          <option value="auto-edit">Auto Edit</option>
+          <option value="full-auto">Full Auto</option>
+        </select>
+        <select class="pane-model" data-sid="${esc(sid)}" title="Model"></select>
+      </div>
+      <div class="toolbar-right">
+        <span class="char-count pane-charcount" data-sid="${esc(sid)}"></span>
+        <div class="context-ring" title="Context usage">
+          <svg viewBox="0 0 24 24" width="28" height="28">
+            <circle cx="12" cy="12" r="11" fill="none" stroke="var(--line)" stroke-width="2.5" />
+            <circle cx="12" cy="12" r="11" fill="none" stroke="var(--accent)" stroke-width="2.5"
+              stroke-dasharray="69.12" stroke-dashoffset="69.12" stroke-linecap="round"
+              transform="rotate(-90 12 12)" class="pane-context-arc" data-sid="${esc(sid)}" />
+          </svg>
+          <span class="context-pct pane-context-pct" data-sid="${esc(sid)}"></span>
+        </div>
+        <button class="composer-action-btn mic-btn pane-btn-mic" data-sid="${esc(sid)}" title="Voice input">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+        </button>
+        <button class="pane-send" data-sid="${esc(sid)}" title="Send">→</button>
+      </div>
+    </div>
+  `;
+}
+
+// Resolve a session's messages container with ONE uniform selector. The
+// active session's container (#activePaneContainer, tagged with its sid in
+// renderSplitPanes) holds #messages — itself a .pane-messages — so this
+// matches the full-screen session and every split pane identically.
+function sessionMessagesEl(sid: string): HTMLElement | null {
+  if (!sid) return null;
+  return document.querySelector(`.split-pane[data-sid="${sid}"] .pane-messages`) as HTMLElement | null;
+}
+
+// Sid-keyed composer selectors (all reuse the `.pane-*` classes emitted by
+// composerTemplate). The unified behavior layer uses these exclusively so
+// it never references element IDs and never assumes "active".
+function composerTextarea(sid: string): HTMLTextAreaElement | null {
+  return document.querySelector(`.pane-prompt[data-sid="${sid}"]`) as HTMLTextAreaElement | null;
+}
+function composerSendBtn(sid: string): HTMLButtonElement | null {
+  return document.querySelector(`.pane-send[data-sid="${sid}"]`) as HTMLButtonElement | null;
+}
+function composerAttachBtn(sid: string): HTMLButtonElement | null {
+  return document.querySelector(`.pane-btn-attach[data-sid="${sid}"]`) as HTMLButtonElement | null;
+}
+function composerFileInput(sid: string): HTMLInputElement | null {
+  return document.querySelector(`.pane-image-input[data-sid="${sid}"]`) as HTMLInputElement | null;
+}
+function composerModelSelect(sid: string): HTMLSelectElement | null {
+  return document.querySelector(`.pane-model[data-sid="${sid}"]`) as HTMLSelectElement | null;
+}
+function composerApprovalSelect(sid: string): HTMLSelectElement | null {
+  return document.querySelector(`.pane-approval[data-sid="${sid}"]`) as HTMLSelectElement | null;
+}
+function composerPreviewsEl(sid: string): HTMLElement | null {
+  return document.querySelector(`.pane-previews[data-sid="${sid}"]`) as HTMLElement | null;
+}
+function composerPendingEl(sid: string): HTMLElement | null {
+  return document.querySelector(`.pane-pending[data-sid="${sid}"]`) as HTMLElement | null;
+}
+function composerSlashEl(sid: string): HTMLElement | null {
+  return document.querySelector(`.pane-slash[data-sid="${sid}"]`) as HTMLElement | null;
+}
+function composerCharCount(sid: string): HTMLElement | null {
+  return document.querySelector(`.pane-charcount[data-sid="${sid}"]`) as HTMLElement | null;
+}
+function composerContextArc(sid: string): SVGCircleElement | null {
+  return document.querySelector(`.pane-context-arc[data-sid="${sid}"]`) as SVGCircleElement | null;
+}
+function composerContextPct(sid: string): HTMLElement | null {
+  return document.querySelector(`.pane-context-pct[data-sid="${sid}"]`) as HTMLElement | null;
+}
+function composerMicBtn(sid: string): HTMLButtonElement | null {
+  return document.querySelector(`.pane-btn-mic[data-sid="${sid}"]`) as HTMLButtonElement | null;
+}
+
 async function renderSplitPanes() {
   const container = $("splitContainer");
-  const closeBtn = $("btnCloseSplit") as HTMLButtonElement;
-  const { splitSessions, sessions } = store.get();
-  container.querySelectorAll(".split-pane-secondary").forEach(el => el.remove());
-  if (splitSessions.length === 0) {
-    container.classList.remove("split");
-    $("messages").classList.remove("split-pane-active");
-    if (closeBtn) closeBtn.style.display = "none";
-    return;
+  const { splitSessions, sessions, activeSid } = store.get();
+  const isMulti = splitSessions.length > 0;
+  container.classList.toggle("multi", isMulti);
+  container.classList.toggle("has-many", splitSessions.length >= 3);
+  // The shared #composerWrapper + status bar are hidden in split mode
+  // (see .ziva-center.multi CSS); each pane gets its own composer.
+  document.querySelector(".ziva-center")?.classList.toggle("multi", isMulti);
+
+  // Tag the active session's container with its sid so the unified
+  // sessionMessagesEl(sid) selector resolves #messages (the active
+  // session's .pane-messages) the same way it resolves any secondary
+  // pane — no active/background special-casing elsewhere.
+  const activeContainer = $("activePaneContainer");
+  if (activeContainer) activeContainer.dataset.sid = activeSid || "";
+
+  // Tear down any stale secondary panes that are no longer in splitSessions.
+  Array.from(container.querySelectorAll<HTMLElement>(".split-pane-secondary")).forEach((el) => {
+    const sid = el.dataset.sid;
+    if (sid && !splitSessions.includes(sid)) {
+      el.remove();
+    }
+  });
+
+  // ── Active pane: header visibility, title, fullscreen / close buttons ──
+  // The active session is always rendered into #messages (the original
+  // global messages container). The header above #messages shows only
+  // when there are secondary panes (single-pane mode = no header).
+  const activeHeader = $("activePaneHeader") as HTMLElement;
+  if (activeHeader) activeHeader.style.display = isMulti ? "flex" : "none";
+  const activeTitle = $("activePaneTitle") as HTMLElement;
+  const activePane = $("activePane") as HTMLElement;
+  const activeS = sessions.find((x) => x.id === activeSid);
+  if (activeTitle) activeTitle.textContent = activeS?.preview || activeSid || "";
+  if (activePane) activePane.dataset.sid = activeSid || "";
+  // The reconciliation loop skips the active session, so a just-created
+  // or freshly-compacted active session can still be showing the id stub.
+  // Trigger a one-shot preview refresh if needed (it'll re-render itself).
+  if (activeSid && activeS && (!activeS.preview || ID_STUB_RE.test(activeS.preview))) {
+    refreshSessionPreview(activeSid);
   }
-  container.classList.add("split");
-  $("messages").classList.add("split-pane-active");
-  if (closeBtn) {
-    closeBtn.style.display = "inline-flex";
-    closeBtn.onclick = () => clearSplit();
+
+  // Active pane's per-pane composer: show in split mode, hide in single-pane
+  // (single-pane uses the shared #composerWrapper at the bottom).
+  const activePaneComposer = $("activePaneComposer") as HTMLElement;
+  const activeComposerInner = $("activePaneComposerInner") as HTMLElement;
+  if (isMulti && activeSid) {
+    if (activePaneComposer) {
+      activePaneComposer.style.display = "flex";
+      activePaneComposer.dataset.sid = activeSid;
+    }
+    if (activeComposerInner) {
+      mountComposer(activeSid, activeComposerInner);
+    }
+  } else {
+    if (activePaneComposer) activePaneComposer.style.display = "none";
+    // Fullscreen: the active pane composer is unused (#composerHost takes
+    // over). Clear any stale composer so it can't shadow #composerHost.
+    if (activeComposerInner && activeComposerInner.dataset.sid) {
+      activeComposerInner.replaceChildren();
+      activeComposerInner.dataset.sid = "";
+    }
   }
+  setComposerRunning(activeSid || "", !!store.get().runningSessions[activeSid || ""]);
+
+  // Wire up the active pane header buttons (↗ fullscreen, × close).
+  // Always wired (not just on first render) so the handlers survive
+  // any innerHTML rewrites of the messages container.
+  const activeEnter = $("activePaneEnter") as HTMLButtonElement | null;
+  const activeClose = $("activePaneClose") as HTMLButtonElement | null;
+  if (activeEnter) {
+    activeEnter.onclick = () => {
+      // Save the active pane's draft before exiting split mode, so the
+      // user's unsent text isn't lost when the per-pane composer is
+      // replaced by the shared global one.
+      if (activeSid) {
+        // The per-keystroke input handler already keeps promptDrafts in
+        // sync, so the draft is current; no explicit save needed here.
+      }
+      // Fullscreen: drop all secondary sessions.
+      store.set({ splitSessions: [] });
+      renderSplitPanes();
+      // Mount/hydrate the full-screen composer for the active session so
+      // the user sees their saved draft.
+      if (activeSid) renderComposers();
+    };
+  }
+  if (activeClose) {
+    activeClose.onclick = () => {
+      // "Close" the active pane: if there are secondary sessions,
+      // promote the first one to be the new active session and drop
+      // it from the split list. If there are no secondary sessions,
+      // the close button is hidden anyway (single-pane fullscreen).
+      const { splitSessions: ss } = store.get();
+      if (ss.length > 0) {
+        const promote = ss[0];
+        const remaining = ss.slice(1);
+        store.set({ splitSessions: remaining, activeSid: promote });
+        renderSessions();
+        renderSplitPanes();
+        // Re-load history into the active pane for the new active session
+        const newActive = store.get().activeSid;
+        if (newActive) loadHistoryInto(newActive, $("messages"));
+      }
+    };
+  }
+
+  // ── Render secondary panes ──
+  // Secondary panes are READ-ONLY: a header (↗ + ×) + the session's
+  // history, with NO composer. Live SSE events for the active session
+  // flow into #messages; secondary sessions are refreshed from history
+  // when their turns start/end (via refreshSplitPane).
   for (const sid of splitSessions) {
-    const s = sessions.find(x => x.id === sid);
+    try {
+    if (container.querySelector(`.split-pane-secondary[data-sid="${sid}"]`)) continue; // already mounted
+    const s = sessions.find((x) => x.id === sid);
     const pane = document.createElement("div");
-    pane.className = "split-pane-secondary";
+    pane.className = "split-pane split-pane-secondary";
     pane.dataset.sid = sid;
+    // If we don't have a real preview yet (id stub), kick off a refresh
+    // in the background — it'll re-render once the user message arrives.
+    if (s && (!s.preview || ID_STUB_RE.test(s.preview))) {
+      refreshSessionPreview(sid);
+    }
     pane.innerHTML = `
       <div class="split-pane-header">
         <span class="split-pane-title">${esc(s?.preview || sid)}</span>
-        <button class="split-pane-close" data-sid="${sid}" title="Close pane">×</button>
+        <span class="split-pane-actions">
+          <button class="split-pane-enter" title="Fullscreen" type="button">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+          </button>
+          <button class="split-pane-close" title="Close pane" type="button">×</button>
+        </span>
       </div>
       <div class="pane-messages"></div>
+      <div class="pane-composer" data-sid="${sid}"></div>
     `;
-    pane.querySelector(".split-pane-close")!.addEventListener("click", () => removeFromSplit(sid));
+    // ↗ button: fullscreen — make this pane the only one.
+    const enterBtn = pane.querySelector(".split-pane-enter") as HTMLButtonElement;
+    enterBtn.onclick = () => {
+      // Promote this secondary session to be the new active, drop all
+      // other secondary sessions (and the old active stays in the sidebar).
+      const { activeSid: curActive } = store.get();
+      const newSplit = store.get().splitSessions.filter((s2) => s2 !== sid);
+      // Move the old active into the split (so the user keeps both sessions
+      // accessible), and make this pane the active.
+      if (curActive && curActive !== sid) {
+        newSplit.push(curActive);
+      }
+      store.set({ activeSid: sid, splitSessions: newSplit });
+      renderSessions();
+      renderSplitPanes();
+      // Reload history for the newly-active session
+      loadHistoryInto(sid, $("messages"));
+    };
+    // × button: remove this pane from the split.
+    const closeBtnEl = pane.querySelector(".split-pane-close") as HTMLButtonElement;
+    closeBtnEl.onclick = () => {
+      const { splitSessions: cur, activeSid: curActive } = store.get();
+      const remaining = cur.filter((s2) => s2 !== sid);
+      // If we just removed the only secondary and active was it, fall
+      // back to the most-recent remaining secondary (if any) as the new
+      // active. Otherwise the user would lose the only open session.
+      if (curActive === sid && remaining.length > 0) {
+        store.set({ splitSessions: remaining.slice(1), activeSid: remaining[0] });
+        renderSessions();
+        renderSplitPanes();
+        loadHistoryInto(remaining[0], $("messages"));
+      } else if (curActive === sid && remaining.length === 0) {
+        // No more sessions visible — keep active as the removed one
+        // (the sidebar still has it); just exit split mode.
+        store.set({ splitSessions: [] });
+        renderSplitPanes();
+      } else {
+        store.set({ splitSessions: remaining });
+        renderSplitPanes();
+      }
+    };
     container.appendChild(pane);
-    await loadHistoryInto(sid, pane.querySelector(".pane-messages") as HTMLElement);
+    // Load the secondary session's history (read-only — live events are
+    // routed via SSE only to the active session's pane).
+    try {
+      await loadHistoryInto(sid, pane.querySelector(".pane-messages") as HTMLElement);
+    } catch (e: any) {
+      console.error("renderSplitPanes: loadHistoryInto failed for", sid, e?.message || e, e?.stack);
+    }
+    // Mount the unified composer for this pane (hydrates model/approval/
+    // draft/running state). Same template + behavior as the full-screen one.
+    mountComposer(sid, pane.querySelector(".pane-composer") as HTMLElement);
+    } catch (e: any) {
+      console.error("renderSplitPanes: secondary pane creation failed for", sid, e?.message || e, e?.stack);
+    }
   }
 }
+
 
 // ---- Skills panel + viewer modal ----
 // The sidebar has a "Skills" button that toggles a panel listing the
@@ -1810,17 +2162,16 @@ async function refreshConfig() {
     const cfg = await api.getConfig();
     const modelDetails = (cfg.model as any).models || (cfg.model.available || []).map((m: string) => ({ name: m, supports_image: true }));
     store.set({ config: { ...store.get().config, model: cfg.model.current, models: cfg.model.available, modelDetails, approval: cfg.approval.current } });
-    const sel = $("modelSelect") as HTMLSelectElement;
-    sel.innerHTML = cfg.model.available.map((m: string) => `<option value="${esc(m)}" ${m === cfg.model.current ? "selected" : ""}>${esc(m)}</option>`).join("");
-    ($("approvalSelect") as HTMLSelectElement).value = cfg.approval.current;
+    // Mount/hydrate the full-screen composer with the freshly-loaded model
+    // list + current selection. (Pane composers are hydrated by renderSplitPanes.)
+    renderComposers();
     updateImageSupport();
   } catch { /* server not running */ }
 }
 
 function updateImageSupport() {
-  // Always show the attach button — model capability check is done server-side
-  const attachBtn = $("btnAttach") as HTMLElement | null;
-  if (attachBtn) attachBtn.style.display = "";
+  // The attach button is always present in composerTemplate; model vision
+  // capability is checked server-side. Nothing to toggle here anymore.
 }
 
 // ---- Sessions ----
@@ -1869,7 +2220,12 @@ async function refreshSessions() {
     try {
       const msgData = await api.getMessages(s.id);
       const msgs = msgData.messages || [];
-      const userMsg = msgs.find(m => m.role === "user");
+      let userMsg = msgs.find(m => m.role === "user");
+      // If compacted, filtered view may have no user messages — check full history
+      if (!userMsg) {
+        const fullData = await api.getMessages(s.id, { includeDropped: true });
+        userMsg = (fullData.messages || []).find(m => m.role === "user");
+      }
       s.preview = userMsg ? previewText(userMsg.content) : "Empty session";
       const turns = await api.getTurns(s.id);
       s.turnCount = turns.length;
@@ -2009,7 +2365,6 @@ function _doRenderSessions() {
         <summary class="project-summary" title="${esc(group.workspace)}">
           <span class="project-chevron">▸</span>
           <span class="project-name">${esc(group.label)}</span>
-          ${hasRunning ? '<span class="project-running-dot" title="Running session"></span>' : ""}
           ${isActive ? '<span class="project-active-dot" title="Current project"></span>' : ""}
           <span class="project-count">${group.totalCount}</span>
           ${trimmedBadge}
@@ -2030,9 +2385,11 @@ function _doRenderSessions() {
         div.className = "session-item" + (s.id === activeSid ? " active" : "");
         const timeStr = formatRelativeTime(s.time?.updated || s.time?.created);
         const inActiveWs = (s.workspace || activeWs) === activeWs;
+        const isRunning = !!(store.get().runningSessions[s.id] || s.status === "running");
         div.innerHTML = `
           ${selectMode && inActiveWs ? `<input type="checkbox" class="session-checkbox" data-sid="${s.id}" data-workspace="${esc(s.workspace || activeWs)}" checked />` : ""}
           <span class="session-chevron">›</span>
+          ${isRunning ? '<span class="session-running-dot" title="Running"></span>' : ""}
           <span class="session-name">${esc(s.preview || s.id)}</span>
           <span class="session-time">${timeStr}</span>
           ${!selectMode ? `<span class="split-btn" data-sid="${s.id}" title="Split view">⧉</span>` : ""}
@@ -2146,47 +2503,20 @@ async function createSession() {
 // Background sessions don't get a textarea, so this only matters for
 // the active sid; for any other sid the draft is just dormant state
 // that gets re-saved verbatim the next time the user visits it.
+// Legacy draft helpers — the unified input handler keeps promptDrafts in
+// sync per keystroke, and hydrateComposer restores on mount. These remain
+// as thin bridges for existing callers (deleted in Step 8).
 function savePromptDraft(sid: string | null) {
   if (!sid) return;
-  const promptEl = $("prompt") as HTMLTextAreaElement;
-  const draft = {
-    text: promptEl.value,
-    images: [...pendingImages],
-  };
-  // Skip the write if the draft is empty AND we don't already have a
-  // stored entry — keeps the map from filling up with {} for every
-  // session the user clicks once and types nothing in.
-  if (!draft.text && draft.images.length === 0 && !store.get().promptDrafts[sid]) {
-    return;
-  }
-  store.set({
-    promptDrafts: { ...store.get().promptDrafts, [sid]: draft },
-  });
+  const ta = composerTextarea(sid);
+  const text = ta ? ta.value : draftText(sid);
+  const images = draftImages(sid);
+  if (!text && images.length === 0 && !store.get().promptDrafts[sid]) return;
+  store.set({ promptDrafts: { ...store.get().promptDrafts, [sid]: { text, images } } });
 }
 
 function loadPromptDraft(sid: string | null) {
-  const promptEl = $("prompt") as HTMLTextAreaElement;
-  const draft = sid ? store.get().promptDrafts[sid] : null;
-  promptEl.value = draft?.text || "";
-  // The drafts[*].images array keeps references to the *new* session's
-  // thumbs (when restoring), so they stay live automatically. Any
-  // thumbs currently in `pendingImages` that are *not* in any draft
-  // stash are now orphans and can be released.
-  disposePendingImageThumbs(pendingImages);
-  pendingImages = draft ? [...draft.images] : [];
-  renderImagePreviews();
-  // Mirror the side effects that the input handler normally drives:
-  // char count, autosize, slash menu. Doing them here so a freshly
-  // restored draft looks identical to one the user just typed.
-  const chars = promptEl.value.length;
-  $("charCount").textContent = chars > 0 ? `${chars}` : "";
-  promptEl.style.height = "auto";
-  promptEl.style.height = Math.min(promptEl.scrollHeight, 160) + "px";
-  if (promptEl.value.startsWith("/")) {
-    showSlashMenu(promptEl.value);
-  } else {
-    hideSlashMenu();
-  }
+  if (sid) hydrateComposer(sid);
 }
 
 async function switchSession(sid: string, opts: { skipGitRefresh?: boolean } = {}) {
@@ -2198,7 +2528,8 @@ async function switchSession(sid: string, opts: { skipGitRefresh?: boolean } = {
   // get reset.
   const oldSid = store.get().activeSid;
   if (oldSid && oldSid !== sid) {
-    const sel = $("modelSelect") as HTMLSelectElement;
+    // Persist whatever model the leaving session had selected in its composer.
+    const sel = composerModelSelect(oldSid);
     if (sel && sel.value) {
       try { await api.updateSession(oldSid, { model_name: sel.value }); } catch { /* ignore */ }
     }
@@ -2223,6 +2554,9 @@ async function switchSession(sid: string, opts: { skipGitRefresh?: boolean } = {
   renderPendingBar();
   await loadHistory(sid);
   renderSplitPanes();
+  // Mount/hydrate the full-screen composer for the newly active session
+  // (no-op in split mode; pane composers are hydrated in renderSplitPanes).
+  renderComposers();
   // Skip when the caller already refreshed the branch for the new
   // workspace (e.g. openProjectInSidebar switching both workspace
   // and session in one go).
@@ -2316,13 +2650,15 @@ async function deleteSession(sid: string, workspace?: string) {
     updateContextProgress(0, 0);
   }
   // Drop the deleted session's draft + queued images so we don't keep
-  // dead keys around. Other sessions' drafts are untouched.
-  const { promptDrafts, pendingSessionImages } = store.get();
+  // dead keys around (and release their blob URLs). Other sessions are
+  // untouched.
+  disposePendingImageThumbs([...draftImages(sid), ...queuedImages(sid)]);
+  const { promptDrafts, pendingMessages } = store.get();
   const nextDrafts = { ...promptDrafts };
   delete nextDrafts[sid];
-  const nextImages = { ...pendingSessionImages };
-  delete nextImages[sid];
-  store.set({ promptDrafts: nextDrafts, pendingSessionImages: nextImages });
+  const nextPending = { ...pendingMessages };
+  delete nextPending[sid];
+  store.set({ promptDrafts: nextDrafts, pendingMessages: nextPending });
   renderSessions();
   renderSplitPanes();
 }
@@ -2341,35 +2677,52 @@ async function loadHistory(sid: string) {
 }
 
 async function loadHistoryInto(sid: string, target: HTMLElement): Promise<boolean> {
-  let filteredData: any, fullData: any;
+  // Single fetch with the full history. The filtered endpoint only
+  // returns the latest summary + post-summary messages (via _llm_context
+  // on the server), but the UI needs ALL summaries to be visible —
+  // otherwise a 2nd compaction hides every previous summary from the
+  // chat. We build the UI view client-side from fullMsgs below so
+  // every summary is preserved.
+  let fullData: any;
   try {
-    [filteredData, fullData] = await Promise.all([
-      api.getMessages(sid),
-      api.getMessages(sid, { includeDropped: true }),
-    ]);
+    fullData = await api.getMessages(sid, { includeDropped: true });
   } catch {
     target.innerHTML = "";
     return false;
   }
-  const msgs = filteredData.messages || [];
   const fullMsgs = fullData.messages || [];
   target.innerHTML = "";
+
+  // Cache the session's last token usage on the session object so
+  // hydrateComposer can restore the context ring when the composer mounts.
+  // (loadHistoryInto can run before the composer is mounted — e.g. on
+  // switchSession — so updating the ring here directly would target a
+  // not-yet-existing element and the ring would stay empty.)
+  if (fullData.last_usage) {
+    const { sessions } = store.get();
+    const si = sessions.findIndex(x => x.id === sid);
+    if (si !== -1) {
+      const next = [...sessions];
+      (next[si] as any).lastUsage = fullData.last_usage;
+      store.set({ sessions: next });
+    }
+  }
 
   // For the active session's main container, also sync chrome state
   // (empty-state, context ring, model dropdown) that doesn't exist per-pane.
   if (target === $("messages")) {
-    const hasContent = msgs.length > 0;
-    showEmptyState(!hasContent);
-    if (filteredData.last_usage?.prompt_tokens !== undefined) {
+    showEmptyState(fullMsgs.length === 0);
+    if (fullData.last_usage?.prompt_tokens !== undefined) {
       const contextWindow = store.get().config.contextWindow || 200000;
-      const pct = Math.min(filteredData.last_usage.prompt_tokens / contextWindow, 1);
-      updateContextProgress(pct, filteredData.last_usage.prompt_tokens);
+      const pct = Math.min(fullData.last_usage.prompt_tokens / contextWindow, 1);
+      updateContextProgress(pct, fullData.last_usage.prompt_tokens, sid);
     }
-    const sel = $("modelSelect") as HTMLSelectElement;
-    if (sel && filteredData.model_name) {
-      if (Array.from(sel.options).some(o => o.value === filteredData.model_name)) {
-        if (sel.value !== filteredData.model_name) {
-          sel.value = filteredData.model_name;
+    // Sync the active composer's model dropdown to the loaded session.
+    const modelSel = composerModelSelect(sid);
+    if (modelSel && fullData.model_name) {
+      if (Array.from(modelSel.options).some((o) => o.value === fullData.model_name)) {
+        if (modelSel.value !== fullData.model_name) {
+          modelSel.value = fullData.model_name;
         }
       }
     }
@@ -2379,15 +2732,44 @@ async function loadHistoryInto(sid: string, target: HTMLElement): Promise<boolea
   for (let i = 0; i < fullMsgs.length; i++) {
     if ((fullMsgs[i] as any)._compaction_summary) summaryIndices.push(i);
   }
-  const recent = summaryIndices.slice(-2);
-  for (const si of recent) {
-    const prevSummary = summaryIndices[summaryIndices.indexOf(si) - 1];
-    const start = prevSummary !== undefined ? prevSummary + 1 : 0;
-    const count = si - start;
-    if (count > 0) appendCompactBoundary(sid, count, start, si, target);
+  // Render the COMPLETE history. The server's filtered endpoint hides
+  // everything before the last summary, but the UI must show every
+  // previous summary, every model's thinking/content/tool calls, and
+  // every user message in between — not just the last summary + tail.
+  // Summary messages render as regular assistant turns (their `content`
+  // is the summary text), so `renderMessages(fullMsgs)` preserves
+  // everything the user asked for.
+  // Interleave compaction boundaries with the messages in a single pass.
+  //
+  // Each summary at index `s` folds the range [prev, s) — the messages
+  // that were compacted INTO that summary. Walking every summary in order
+  // and folding [prev, s) means earlier summaries end up folded inside
+  // the box that fed the next summary (compaction is chained: summary N+1
+  // was produced from summary N + the messages after it). Only the LAST
+  // summary stays expanded, as the head of the remaining tail, because it
+  // is the live context the model is working from.
+  //
+  // On-disk example after two compacts:
+  //   [u1,a1,...,a3, S1, u4,a4,...,a7, S2, u8,...]
+  // renders as:
+  //   ▸ 之前 6 条消息已压缩为摘要   (covers [u1..a3]  → S1)
+  //   ▸ 之前 9 条消息已压缩为摘要   (covers [S1,u4..a7] → S2)
+  //     S2, u8, ...                  (expanded tail)
+  //
+  // Each boundary lazily renders its slice via renderMessages on expand,
+  // so thinking + content + tool cards inside a fold look identical to
+  // the live chat (just visually scaled down by the wrapper's CSS).
+  let prev = 0;
+  for (const si of summaryIndices) {
+    const count = si - prev;
+    if (count > 0) appendCompactBoundary(sid, count, prev, si, target);
+    prev = si;
   }
-
-  renderMessages(target, msgs);
+  // Expanded tail: everything after the last folded summary (or the whole
+  // history when there were no summaries).
+  if (prev < fullMsgs.length) {
+    renderMessages(target, fullMsgs.slice(prev));
+  }
   return true;
 }
 
@@ -2709,16 +3091,16 @@ function renderAssistantContent(el: HTMLElement) {
   el.innerHTML = html;
 }
 
-function appendTyping() {
-  if ($("messages").querySelector(".typing-indicator")) return;
+function appendTyping(target: HTMLElement = $("messages")) {
+  if (target.querySelector(".typing-indicator")) return;
   const el = document.createElement("div");
   el.className = "typing-indicator";
   el.innerHTML = '<div class="typing-dots"><span></span><span></span><span></span></div> Thinking...';
-  $("messages").appendChild(el);
+  target.appendChild(el);
 }
 
-function removeTyping() {
-  const el = $("messages").querySelector(".typing-indicator");
+function removeTyping(target: HTMLElement = $("messages")) {
+  const el = target.querySelector(".typing-indicator");
   if (el) el.remove();
 }
 
@@ -2807,9 +3189,15 @@ function appendToolCard(
       const resultText = String((output as any).result);
       body += `<div class="section-label">Output</div>`;
       body += `<div class="section-content"><pre>${esc(resultText)}</pre></div>`;
-    } else if (typeof output === "object" && output !== null && ((output as any).type === "image" || (output as any).image_url || (output as any).url)) {
-      // Tool returned an image — render it inline
-      const imgUrl = (output as any).image_url || (output as any).url || "";
+    } else if (typeof output === "object" && output !== null && ((output as any).type === "image" || (output as any).image_url)) {
+      // Tool returned an image — render it inline. Only explicit image
+      // signals count (`type === "image"` set by the runtime when a tool
+      // returns images, or an `image_url` field). We must NOT treat a
+      // metadata `url` as an image: web_fetch legitimately carries
+      // `{ url: <page>, format: "markdown", _text: <content> }`, and
+      // rendering the page URL as <img> produced a broken-image icon
+      // instead of the fetched markdown (which lives in `_text`).
+      const imgUrl = (output as any).image_url || "";
       if (imgUrl) {
         body += `<div class="section-label">Output</div>`;
         body += `<div class="section-content tool-output-image"><img src="${esc(imgUrl)}" alt="tool output" loading="lazy" /></div>`;
@@ -3107,11 +3495,11 @@ function appendQuestionCard(question: string, rawOptions: unknown[], multiSelect
  * away), we append the card to the end so the user still sees that
  * the question was answered.
  */
-function appendError(msg: string) {
+function appendError(msg: string, target: HTMLElement = $("messages")) {
   const div = document.createElement("div");
   div.className = "error-card";
   div.textContent = "Error: " + msg;
-  $("messages").appendChild(div);
+  target.appendChild(div);
   currentAssistantEl = null;
 }
 
@@ -3168,8 +3556,14 @@ function hideCompactToast(): void {
   if (toast) toast.classList.add("hidden");
 }
 
-function scrollBottom() {
-  if (store.get().autoScroll) $("messages").scrollTop = $("messages").scrollHeight;
+function scrollBottom(target: HTMLElement = $("messages")) {
+  if (store.get().autoScroll) { target.scrollTop = target.scrollHeight; }
+}
+
+// Scroll a session's own messages container to the bottom.
+function scrollSessionBottom(sid: string) {
+  const el = sessionMessagesEl(sid);
+  if (el) scrollBottom(el);
 }
 
 // ---- SSE Event Handling ----
@@ -3191,6 +3585,17 @@ function routeSSEEvent(ev: api.Event) {
       if (t === "turn_start" || t === "turn_end" || t === "turn_failed" || t === "turn_cancelled") {
         refreshSplitPane(sid);
       }
+      // Update this pane's context ring from usage events. Without this
+      // routing, a background pane's token ring never moved — usage_update
+      // / round_complete were only handled for the active session.
+      if (t === "usage_update" || t === "round_complete") {
+        const usage = (ev as any).usage as { prompt_tokens?: number } | undefined;
+        if (usage?.prompt_tokens !== undefined) {
+          const contextWindow = store.get().config.contextWindow || 200000;
+          const pct = Math.min(usage.prompt_tokens / contextWindow, 1);
+          updateContextProgress(pct, usage.prompt_tokens, sid);
+        }
+      }
     }
     syncBackgroundSession(sid, ev);
   }
@@ -3207,6 +3612,9 @@ function syncBackgroundSession(sid: string, ev: api.Event) {
     const next = { ...runningSessions, [sid]: true };
     store.set({ sessions: [...sessions], runningSessions: next });
     renderSessions();
+    // Reflect in the per-pane send/stop button (matters when the session
+    // is visible in a split pane, not just the active one).
+    setComposerRunning(sid, true);
     // The server's `turn_start` event doesn't carry the user message
     // body, so we can't update the sidebar title from the event
     // payload. Fetch the session's first user message and use it as
@@ -3234,6 +3642,18 @@ function syncBackgroundSession(sid: string, ev: api.Event) {
     delete next[sid];
     store.set({ sessions: [...sessions], runningSessions: next });
     renderSessions();
+    // Reflect the just-finished turn in the per-pane send/stop button
+    // (matters when the session is visible in a split pane, not just active).
+    setComposerRunning(sid, false);
+    // If the session is shown in a non-active split pane, the live SSE
+    // stream only updates #messages, so the secondary pane's optimistic
+    // copy plus the streamed assistant turn are stale. Re-fetch the
+    // pane from the server to pick up the finalised assistant message.
+    const { activeSid: curActive, splitSessions: curSplit } = store.get();
+    if (sid !== curActive && curSplit.includes(sid)) {
+      const paneMessages = sessionMessagesEl(sid);
+      if (paneMessages) loadHistoryInto(sid, paneMessages);
+    }
   }
 }
 
@@ -3575,7 +3995,7 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     // container and re-rendered from scratch on every turn — a jarring
     // "flash" of the full conversation. We only refresh lightweight
     // sidebar / context surfaces that don't drive the chat display.
-    const { activeSid, sessions, runningSessions, pendingSessionImages } = store.get();
+    const { activeSid, sessions, runningSessions } = store.get();
 
     if (sid) {
       const active = sessions.find(s => s.id === sid);
@@ -3608,8 +4028,8 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
       const pending = getActivePending();
       const { pendingMessages } = store.get();
       const pendingRetries = activeSid ? (pendingMessages[activeSid]?.retries ?? 0) : 0;
-      const queuedImages = activeSid ? (pendingSessionImages[activeSid] || []) : [];
-      if (pending != null || queuedImages.length > 0) {
+      const flushImages = activeSid ? queuedImages(activeSid) : [];
+      if (pending != null || flushImages.length > 0) {
         // Defer the actual send + queue clear by 30ms so the user has
         // a moment to see the queue bar disappear. We can't just
         // synchronously flip the queue empty and call sendMessage —
@@ -3629,14 +4049,9 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
         setTimeout(() => {
           if (store.get().activeSid !== flushSid) return;
           setActivePending(null);
-          if (queuedImages.length > 0) {
-            const { pendingSessionImages: psi } = store.get();
-            const next = { ...psi };
-            delete next[flushSid];
-            store.set({ pendingSessionImages: next });
-          }
+          if (flushImages.length > 0) clearQueuedImages(flushSid);
           renderPendingBar();
-          sendFromQueue(pending || "", queuedImages, flushRetries);
+          sendFromQueue(pending || "", flushImages, flushRetries);
         }, 30);
       }
     }
@@ -3728,31 +4143,29 @@ function updateConnStatus(connected: boolean) {
   store.set({ connected });
 }
 
+// Legacy alias — the unified composer button is driven by setComposerRunning.
 function updateSendStopButton() {
-  const btn = $("btnSend");
-  if (isActiveRunning()) {
-    btn.textContent = "■";
-    btn.className = "stop-btn";
-    btn.title = "Stop";
-  } else {
-    btn.textContent = "→";
-    btn.className = "send-btn";
-    btn.title = "Send";
-  }
+  const sid = store.get().activeSid || "";
+  if (sid) setComposerRunning(sid, isActiveRunning());
 }
 
-function updateContextProgress(pct: number, tokens: number) {
-  const arc = $("contextArc");
-  const pctLabel = $("contextPct");
+function updateContextProgress(pct: number, tokens: number, sid?: string) {
   const normalizedPct = Math.max(0, Math.min(pct, 1));
-  const circumference = 69.12; // 2 * π * 11
-  const offset = circumference * (1 - normalizedPct);
-  arc.setAttribute("stroke-dashoffset", String(offset));
   // Color: green → yellow → red
-  if (normalizedPct > 0.85) arc.setAttribute("stroke", "var(--red)");
-  else if (normalizedPct > 0.6) arc.setAttribute("stroke", "var(--orange)");
-  else arc.setAttribute("stroke", "var(--accent)");
-  pctLabel.textContent = Math.round(normalizedPct * 100) + "%";
+  const stroke = normalizedPct > 0.85 ? "var(--red)"
+    : normalizedPct > 0.6 ? "var(--orange)"
+    : "var(--accent)";
+  const pctText = Math.round(normalizedPct * 100) + "%";
+  // Every composer's ring is `.pane-context-arc[data-sid]` now (one
+  // geometry, r=11). Resolve by sid — works for full-screen and panes alike.
+  const targetSid = sid || store.get().activeSid || "";
+  const arc = composerContextArc(targetSid);
+  const pctLabel = composerContextPct(targetSid);
+  if (!arc || !pctLabel) return;
+  const circumference = 69.12; // 2 * π * 11
+  arc.setAttribute("stroke-dashoffset", String(circumference * (1 - normalizedPct)));
+  arc.setAttribute("stroke", stroke);
+  pctLabel.textContent = pctText;
 }
 
 // ---- Queue (Codex-style) ----
@@ -3761,94 +4174,58 @@ function updateContextProgress(pct: number, tokens: number) {
 // The `turn_end` event flushes it. The user sees a chip above the
 // composer with a one-click edit / clear affordance. Per-session —
 // background sessions keep their own queues untouched.
-function queuePromptMessage() {
-  const promptEl = $("prompt") as HTMLTextAreaElement;
-  const text = promptEl.value;
-  const trimmed = text.trim();
-  if (!trimmed && pendingImages.length === 0) return;
-  setActivePending(text || "", 0);
-  // Stash images per-session so they survive session switches
-  const { activeSid, pendingSessionImages } = store.get();
-  if (activeSid && pendingImages.length > 0) {
-    store.set({ pendingSessionImages: { ...pendingSessionImages, [activeSid]: [...pendingImages] } });
-  }
-  promptEl.value = "";
-  promptEl.style.height = "auto";
-  $("charCount").textContent = "";
-  pendingImages = [];
-  renderImagePreviews();
-  renderPendingBar();
-}
+// Legacy aliases — delegate to the per-session canonical functions for the
+// active session. Deleted once all callers move to the sid-aware versions.
+function queuePromptMessage() { queueComposerMessage(store.get().activeSid || ""); }
+function clearPendingMessage() { clearComposerPending(store.get().activeSid || ""); }
 
-function clearPendingMessage() {
-  setActivePending(null);
-  // Clear queued images too
-  const { activeSid, pendingSessionImages } = store.get();
-  if (activeSid && pendingSessionImages[activeSid]) {
-    // The stash we're about to drop may be the *only* live holder
-    // of these thumb URLs (loadPromptDraft restores by reference
-    // only for the same session, and other sessions don't share
-    // thumbs), so it's safe to release them now.
-    disposePendingImageThumbs(pendingSessionImages[activeSid]);
-    const next = { ...pendingSessionImages };
-    delete next[activeSid];
-    store.set({ pendingSessionImages: next });
-  }
-  renderPendingBar();
-}
+// Shared compaction/prune flow used by both the global composer and the
+// split-pane composer, so /compact behaves identically in every pane.
+// `messagesEl` selects where the reloaded history lands: null reloads the
+// shared #messages container (global composer); otherwise it reloads the
+// given pane's messages element directly. The context ring update is
+// routed to the right pane via updateContextProgress(sid).
+async function runCompactFlow(sid: string, isPrune: boolean, messagesEl: HTMLElement | null): Promise<void> {
+  const loadingMsg = isPrune ? "Pruning tool outputs..." : "Compacting context...";
+  const successMsg = isPrune ? "Tool outputs pruned" : "Context compacted successfully";
 
-function editPendingMessage() {
-  const pending = getActivePending();
-  if (pending == null) return;
-  const promptEl = $("prompt") as HTMLTextAreaElement;
-  promptEl.value = pending;
-  promptEl.style.height = "auto";
-  promptEl.style.height = Math.min(promptEl.scrollHeight, 160) + "px";
-  $("charCount").textContent = String(promptEl.value.length);
-  setActivePending(null);
-  renderPendingBar();
-  promptEl.focus();
-}
+  ensureCompactToast();
+  setCompactToastState("loading", loadingMsg, sid);
 
-function renderPendingBar() {
-  const bar = $("pendingBar");
-  const text = $("pendingBarText");
-  if (!bar || !text) return;
-  const pending = getActivePending();
-  const { activeSid, pendingSessionImages } = store.get();
-  const images = activeSid ? (pendingSessionImages[activeSid] || []) : [];
-  if (pending == null && images.length === 0) {
-    bar.hidden = true;
-    text.textContent = "";
-    // Remove any previously injected thumbnails
-    const oldThumbs = bar.querySelector(".pending-bar-images");
-    if (oldThumbs) oldThumbs.remove();
-    return;
-  }
-  // Truncate the preview so a long queued message doesn't blow up
-  // the composer's height. Full content is in the prompt when the
-  // user clicks the chip to edit.
-  const preview = (pending || "").length > 80
-    ? (pending || "").slice(0, 80) + "…"
-    : (pending || "");
-  text.textContent = preview;
-  text.title = pending || "";
-  bar.hidden = false;
-  // Show image thumbnails inside the pending bar
-  let thumbContainer = bar.querySelector(".pending-bar-images") as HTMLElement | null;
-  if (images.length > 0) {
-    if (!thumbContainer) {
-      thumbContainer = document.createElement("span");
-      thumbContainer.className = "pending-bar-images";
-      bar.insertBefore(thumbContainer, text);
+  const startTime = Date.now();
+  try {
+    const result = isPrune ? await api.pruneSession(sid) : await api.compactSession(sid);
+
+    const minMs = isPrune ? 300 : 600;
+    const elapsed = Date.now() - startTime;
+    if (elapsed < minMs) await new Promise(r => setTimeout(r, minMs - elapsed));
+
+    if (result.last_usage?.prompt_tokens !== undefined) {
+      const contextWindow = store.get().config.contextWindow || 200000;
+      const pct = Math.min(result.last_usage.prompt_tokens / contextWindow, 1);
+      updateContextProgress(pct, result.last_usage.prompt_tokens, sid);
     }
-    thumbContainer.innerHTML = images.map(img =>
-      `<img src="${esc(img.thumbUrl)}" alt="${esc(img.name)}" class="pending-bar-thumb" />`
-    ).join("");
-  } else if (thumbContainer) {
-    thumbContainer.remove();
+    if (messagesEl) {
+      await loadHistoryInto(sid, messagesEl);
+    } else {
+      await loadHistory(sid);
+    }
+    refreshSessionPreview(sid);
+
+    if (!isPrune && (result as any).noop) {
+      setCompactToastState("success", "Nothing to compact — context is already minimal", sid);
+    } else {
+      setCompactToastState("success", successMsg, sid);
+    }
+  } catch (e: any) {
+    setCompactToastState("error", (isPrune ? "Prune failed: " : "Compaction failed: ") + (e?.message || e), sid);
+  } finally {
+    setTimeout(() => hideCompactToast(), 3000);
   }
 }
+
+function editPendingMessage() { editComposerPending(store.get().activeSid || ""); }
+function renderPendingBar() { renderComposerPending(store.get().activeSid || ""); }
 
 // ---- Cancel ----
 async function cancelTurn() {
@@ -3890,100 +4267,144 @@ async function cancelTurn() {
   // untracked — next cancel becomes a no-op. 200ms is a pragmatic
   // middle ground; the user already sees "send" button immediately,
   // the queue is just a chip they aren't actively interacting with.
-  const { pendingMessages, pendingSessionImages } = store.get();
+  const { pendingMessages } = store.get();
   const pendingEntry = pendingMessages[activeSid];
   const pendingText = pendingEntry?.text;
   const pendingRetries = pendingEntry?.retries ?? 0;
-  const queuedImages = pendingSessionImages[activeSid] || [];
-  if (pendingText != null || queuedImages.length > 0) {
+  const flushImages = queuedImages(activeSid);
+  if (pendingText != null || flushImages.length > 0) {
     const flushSid = activeSid;
     const flushRetries = pendingRetries;
     setTimeout(() => {
       if (store.get().activeSid !== flushSid) return;
       setActivePending(null);
-      if (queuedImages.length > 0) {
-        const { pendingSessionImages: psi } = store.get();
-        const nextImages = { ...psi };
-        delete nextImages[flushSid];
-        store.set({ pendingSessionImages: nextImages });
-      }
+      if (flushImages.length > 0) clearQueuedImages(flushSid);
       renderPendingBar();
-      sendFromQueue(pendingText || "", queuedImages, flushRetries);
+      sendFromQueue(pendingText || "", flushImages, flushRetries);
     }, 200);
   }
 }
 
-// ---- Send ----
-async function sendMessage() {
-  const promptEl = $("prompt") as HTMLTextAreaElement;
-  const text = promptEl.value.trim();
-  if (!text && pendingImages.length === 0) return;
+// ---------------------------------------------------------------------------
+// Unified composer BEHAVIOR layer (sid-parameterized). One implementation
+// shared by the full-screen composer and every split pane — there is no
+// active/background distinction here. The full-screen and pane composers
+// both mount composerTemplate and are driven entirely by these functions.
+// ---------------------------------------------------------------------------
+
+// Toggle a session's send button between send (→) and stop (■).
+function setComposerRunning(sid: string, running: boolean) {
+  const btn = composerSendBtn(sid);
+  if (!btn) return;
+  if (running) {
+    btn.textContent = "■";
+    btn.className = "pane-send stop-btn";
+    btn.title = "Stop";
+  } else {
+    btn.textContent = "→";
+    btn.className = "pane-send";
+    btn.title = "Send";
+  }
+}
+
+// Render this session's draft image previews into its own .pane-previews.
+function renderComposerPreviews(sid: string) {
+  const wrap = composerPreviewsEl(sid);
+  if (!wrap) return;
+  const imgs = draftImages(sid);
+  wrap.replaceChildren();
+  if (imgs.length === 0) { wrap.style.display = "none"; return; }
+  wrap.style.display = "flex";
+  imgs.forEach((img, i) => {
+    const item = document.createElement("div");
+    item.className = "image-preview-item";
+    const im = document.createElement("img");
+    im.src = img.thumbUrl;
+    im.alt = img.name;
+    const rm = document.createElement("button");
+    rm.className = "image-preview-remove";
+    rm.title = "Remove";
+    rm.textContent = "×";
+    rm.onclick = () => {
+      const removed = imgs[i];
+      if (removed?.thumbUrl) {
+        abortImageUpload(removed.thumbUrl);
+        URL.revokeObjectURL(removed.thumbUrl);
+      }
+      setDraftImages(sid, imgs.filter((_, j) => j !== i));
+      renderComposerPreviews(sid);
+    };
+    item.appendChild(im);
+    item.appendChild(rm);
+    wrap.appendChild(item);
+  });
+}
+
+// Render this session's "排队中" (queued) bar into its own .pane-pending.
+function renderComposerPending(sid: string) {
+  const bar = composerPendingEl(sid);
+  if (!bar) return;
+  const textEl = bar.querySelector(".pending-bar-text") as HTMLElement | null;
+  const pending = getSessionPending(sid);
+  const imgs = queuedImages(sid);
+  const oldThumbs = bar.querySelector(".pending-bar-images");
+  if (oldThumbs) oldThumbs.remove();
+  if (pending == null && imgs.length === 0) {
+    bar.hidden = true;
+    if (textEl) textEl.textContent = "";
+    return;
+  }
+  const preview = (pending || "").length > 80 ? (pending || "").slice(0, 80) + "…" : (pending || "");
+  if (textEl) { textEl.textContent = preview; textEl.title = pending || ""; }
+  bar.hidden = false;
+  if (imgs.length > 0) {
+    const thumbContainer = document.createElement("span");
+    thumbContainer.className = "pending-bar-images";
+    imgs.forEach(img => {
+      const im = document.createElement("img");
+      im.src = img.thumbUrl;
+      im.alt = img.name;
+      im.className = "pending-bar-thumb";
+      thumbContainer.appendChild(im);
+    });
+    if (textEl) bar.insertBefore(thumbContainer, textEl);
+    else bar.appendChild(thumbContainer);
+  }
+}
+
+// The single send path. Handles slash commands, optimistic render into the
+// session's own messages container, typing indicator, attachments.
+async function sendComposerMessage(sid: string) {
+  const textarea = composerTextarea(sid);
+  if (!textarea) return;
+  const text = textarea.value.trim();
+  const imgs = draftImages(sid);
+  if (!text && imgs.length === 0) return;
 
   const trimmedCmd = text.trim();
   const isCommand = trimmedCmd.startsWith("/");
 
-  // Hide prompt immediately for responsiveness
-  promptEl.value = "";
-  promptEl.style.height = "auto";
-  $("charCount").textContent = "";
+  // Hide prompt immediately for responsiveness. CRITICAL: also clear the
+  // persisted draft text — otherwise a remount (e.g. entering split mode)
+  // rehydrates the textarea with the just-sent text via hydrateComposer.
+  textarea.value = "";
+  textarea.style.height = "auto";
+  setDraftText(sid, "");
+  const cc = composerCharCount(sid);
+  if (cc) cc.textContent = "";
 
-  // Hold a reference to the optimistic user message so we can remove
-  // it on failure. Same pattern as sendFromQueue: a failed send
-  // shouldn't leave the message in chat AND in the input box — the
-  // chat copy is reverted and only the input-box copy (which the
-  // user can edit and resend) remains.
+  const messagesEl = sessionMessagesEl(sid);
   let optimisticEl: HTMLElement | null = null;
 
   try {
-    if (!store.get().activeSid) await createSession();
-    const sid = store.get().activeSid!;
-
-    // For regular chat messages, optimistically update UI immediately to feel responsive
-    if (!isCommand) {
-      setActiveRunning(true);
-      updateSendStopButton();
-    }
-
-    // Intercept /compact and /prune commands
+    // Slash commands operate on THIS session.
     if (trimmedCmd === "/compact" || trimmedCmd === "/prune") {
-      const isPrune = trimmedCmd === "/prune";
-      const loadingMsg = isPrune ? "Pruning tool outputs..." : "Compacting context...";
-      const successMsg = isPrune ? "Tool outputs pruned" : "Context compacted successfully";
-      const errorLabel = isPrune ? "Prune" : "Compaction";
-
-      ensureCompactToast();
-      setCompactToastState("loading", loadingMsg, sid);
-
-      const startTime = Date.now();
-      const result = isPrune
-        ? await api.pruneSession(sid)
-        : await api.compactSession(sid);
-      
-      const minMs = isPrune ? 300 : 600;
-      const elapsed = Date.now() - startTime;
-      if (elapsed < minMs) await new Promise(r => setTimeout(r, minMs - elapsed));
-
-      if (result.last_usage?.prompt_tokens !== undefined) {
-        const contextWindow = store.get().config.contextWindow || 200000;
-        const pct = Math.min(result.last_usage.prompt_tokens / contextWindow, 1);
-        updateContextProgress(pct, result.last_usage.prompt_tokens);
-      }
-      await loadHistory(sid);
-      refreshSessionPreview(sid);
-
-      if (!isPrune && (result as any).noop) {
-        setCompactToastState("success", "Nothing to compact — context is already minimal", sid);
-      } else {
-        setCompactToastState("success", successMsg, sid);
-      }
-      setTimeout(() => hideCompactToast(), 3000);
+      await runCompactFlow(sid, trimmedCmd === "/prune", messagesEl);
       return;
     }
-
-    // Intercept /automation command
     if (trimmedCmd.startsWith("/automation ")) {
       const prompt = trimmedCmd.slice("/automation ".length).trim();
-      const name = prompt.slice(0, 30) + (prompt.length > 30 ? "..." : "") || "Chat task";
+      const name = (prompt.slice(0, 30) + (prompt.length > 30 ? "..." : "")) || "Chat task";
       ensureCompactToast();
       setCompactToastState("loading", "Creating automation...", sid);
       await api.createAutomation(name, prompt, 86400, "09:00:00");
@@ -3992,41 +4413,289 @@ async function sendMessage() {
       return;
     }
 
+    if (!isCommand) {
+      setSessionRunning(sid, true);
+      setComposerRunning(sid, true);
+    }
+
     const parts: unknown[] = [];
     if (text) parts.push({ type: "text", text });
-    // Embed attachment *paths* (not base64) — the runtime expands
-    // them to data URLs only in the per-turn copy sent to the
-    // provider, so the persisted history stays cheap. No more
-    // client-side canvas compression, no more silent-drop for
-    // non-vision models (the model can decide whether to call
-    // read_file on the path; if it can't, it just tells the user).
-    for (const img of pendingImages) {
-      parts.push({ type: "image_url", image_url: { url: img.path } });
-    }
-    optimisticEl = appendUserMsg(parts);
-    disposePendingImageThumbs(pendingImages);
-    pendingImages = [];
-    renderImagePreviews();
-    appendTyping();
-    scrollBottom();
+    for (const img of imgs) parts.push({ type: "image_url", image_url: { url: img.path } });
+    if (messagesEl) optimisticEl = appendUserMsg(parts, messagesEl);
+    setDraftImages(sid, []);
+    renderComposerPreviews(sid);
+    if (messagesEl) appendTyping(messagesEl);
+    scrollSessionBottom(sid);
     await api.createTurn(sid, parts);
+    // Success: the images are now part of history; release their thumbs.
+    disposePendingImageThumbs(imgs);
   } catch (e: any) {
     if (!isCommand) {
-      setActiveRunning(false);
-      updateSendStopButton();
-      // Revert the optimistic chat message so the user doesn't see
-      // the same content in chat + input (which they would interpret
-      // as "did it go out or not?"). After removal the input box
-      // copy is the only visible version — they can edit and resend.
-      if (optimisticEl && optimisticEl.parentNode) {
-        optimisticEl.remove();
-        optimisticEl = null;
-      }
-      // Restore the text so the user doesn't lose their prompt if network fails
-      if (!promptEl.value) promptEl.value = text;
+      setSessionRunning(sid, false);
+      setComposerRunning(sid, false);
     }
-    console.error("Failed to process message:", e);
+    if (messagesEl) removeTyping(messagesEl);
+    if (optimisticEl) optimisticEl.remove();
+    // Restore the unsent text + images so the user can retry.
+    textarea.value = text;
+    setDraftImages(sid, imgs);
+    renderComposerPreviews(sid);
+    console.error("send failed:", e);
   }
+}
+
+// Codex-style queue: while a turn is running, stash the typed message
+// (text + images) on the pending entry for THIS session, flush on turn_end.
+function queueComposerMessage(sid: string) {
+  const textarea = composerTextarea(sid);
+  if (!textarea) return;
+  const text = textarea.value;
+  const trimmed = text.trim();
+  const imgs = draftImages(sid);
+  if (!trimmed && imgs.length === 0) return;
+  setSessionPending(sid, text || "", 0);
+  if (imgs.length > 0) setQueuedImages(sid, imgs);
+  textarea.value = "";
+  textarea.style.height = "auto";
+  const cc = composerCharCount(sid);
+  if (cc) cc.textContent = "";
+  setDraftImages(sid, []);
+  renderComposerPreviews(sid);
+  renderComposerPending(sid);
+}
+
+// Send a previously-queued message for a session (called by flushComposerQueue).
+async function sendComposerFromQueue(sid: string, text: string, images: PendingAttachment[], initialRetries: number = 0) {
+  if (!text && images.length === 0) return;
+  const messagesEl = sessionMessagesEl(sid);
+  setSessionRunning(sid, true);
+  setComposerRunning(sid, true);
+  let optimisticEl: HTMLElement | null = null;
+  try {
+    const parts: unknown[] = [];
+    if (text) parts.push({ type: "text", text });
+    for (const img of images) parts.push({ type: "image_url", image_url: { url: img.path } });
+    if (messagesEl) optimisticEl = appendUserMsg(parts, messagesEl);
+    if (messagesEl) appendTyping(messagesEl);
+    scrollSessionBottom(sid);
+    await api.createTurn(sid, parts);
+    disposePendingImageThumbs(images);
+  } catch (e: any) {
+    setSessionRunning(sid, false);
+    setComposerRunning(sid, false);
+    if (messagesEl) removeTyping(messagesEl);
+    if (optimisticEl) optimisticEl.remove();
+    const { pendingMessages } = store.get();
+    const currentRetries = Math.max(initialRetries, pendingMessages[sid]?.retries ?? 0);
+    const newRetries = currentRetries + 1;
+    if (newRetries >= MAX_QUEUE_RETRIES) {
+      setSessionPending(sid, null);
+      clearQueuedImages(sid);
+      disposePendingImageThumbs(images);
+      renderComposerPending(sid);
+      appendError(`Queued message permanently failed after ${MAX_QUEUE_RETRIES} attempts: ${e?.message || e}. Please re-type and send again.`, messagesEl || undefined);
+      console.error(`Queued message exceeded max retries (${MAX_QUEUE_RETRIES}):`, e);
+      return;
+    }
+    setSessionPending(sid, text, newRetries);
+    if (images.length > 0) setQueuedImages(sid, [...images]);
+    renderComposerPending(sid);
+    console.error("Queued message send failed (will retry):", e);
+  }
+}
+
+// Flush a session's queued message after its turn closes. No active-session
+// guard needed: the queue is per-sid, so flushing session X always lands in
+// session X regardless of what is currently active.
+function flushComposerQueue(sid: string, delayMs: number) {
+  const { pendingMessages } = store.get();
+  const entry = pendingMessages[sid];
+  const text = entry?.text;
+  const retries = entry?.retries ?? 0;
+  const imgs = queuedImages(sid);
+  if (text == null && imgs.length === 0) return;
+  setTimeout(() => {
+    setSessionPending(sid, null);
+    if (imgs.length > 0) clearQueuedImages(sid);
+    renderComposerPending(sid);
+    sendComposerFromQueue(sid, text || "", imgs, retries);
+  }, delayMs);
+}
+
+function cancelComposerTurn(sid: string) {
+  api.cancelTurn(sid).catch(() => { /* ignore */ });
+  setSessionRunning(sid, false);
+  setComposerRunning(sid, false);
+  renderSessions();
+}
+
+function clearComposerPending(sid: string) {
+  disposePendingImageThumbs(queuedImages(sid));
+  setSessionPending(sid, null);
+  renderComposerPending(sid);
+}
+
+function editComposerPending(sid: string) {
+  const pending = getSessionPending(sid);
+  if (pending == null) return;
+  const ta = composerTextarea(sid);
+  if (ta) {
+    ta.value = pending;
+    ta.style.height = "auto";
+    ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
+  }
+  const cc = composerCharCount(sid);
+  if (cc && ta) cc.textContent = String(ta.value.length);
+  const imgs = queuedImages(sid);
+  if (imgs.length > 0) {
+    setDraftImages(sid, [...draftImages(sid), ...imgs]);
+    renderComposerPreviews(sid);
+  }
+  setSessionPending(sid, null);
+  renderComposerPending(sid);
+  if (ta) ta.focus();
+}
+
+// ---- Slash menu (sid-aware; one menu visible at a time — the focused one) ----
+function showSlashMenuFor(sid: string, text: string) {
+  const menu = composerSlashEl(sid);
+  if (!menu) return;
+  const q = text.startsWith("/") ? text.slice(1).toLowerCase() : "";
+  const matches = SLASH_COMMANDS.filter(c => !q || c.name.slice(1).toLowerCase().includes(q));
+  if (matches.length === 0) { menu.style.display = "none"; return; }
+  slashMenuSid = sid;
+  slashMenuIndex = 0;
+  menu.replaceChildren();
+  matches.forEach(c => {
+    const item = document.createElement("div");
+    item.className = "slash-item";
+    item.dataset.cmd = c.name;
+    const name = document.createElement("span");
+    name.className = "slash-name"; name.textContent = c.name;
+    const desc = document.createElement("span");
+    desc.className = "slash-desc"; desc.textContent = c.description || "";
+    item.appendChild(name); item.appendChild(desc);
+    menu.appendChild(item);
+  });
+  menu.querySelector(".slash-item")?.classList.add("active");
+  menu.style.display = "block";
+}
+function hideSlashMenuFor(sid: string) {
+  const menu = composerSlashEl(sid);
+  if (menu) menu.style.display = "none";
+  if (slashMenuSid === sid) slashMenuIndex = -1;
+}
+function moveSlashSelectionFor(sid: string, dir: number) {
+  const menu = composerSlashEl(sid);
+  if (!menu || menu.style.display === "none") return;
+  const items = menu.querySelectorAll(".slash-item");
+  if (items.length === 0) return;
+  items[slashMenuIndex]?.classList.remove("active");
+  slashMenuIndex = (slashMenuIndex + dir + items.length) % items.length;
+  items[slashMenuIndex]?.classList.add("active");
+}
+function selectSlashCommandFor(sid: string) {
+  const menu = composerSlashEl(sid);
+  if (!menu) return;
+  const items = menu.querySelectorAll(".slash-item");
+  const item = items[slashMenuIndex] as HTMLElement | undefined;
+  if (item) insertSlashCommandFor(sid, item.dataset.cmd || "");
+}
+function insertSlashCommandFor(sid: string, cmd: string) {
+  const ta = composerTextarea(sid);
+  if (ta) { ta.value = cmd + " "; ta.focus(); }
+  hideSlashMenuFor(sid);
+  // Auto-send no-argument commands like /compact.
+  if (cmd === "/compact" || cmd === "/prune") sendComposerMessage(sid);
+}
+
+// ---- Mount / hydrate / reconcile ----
+// Populate a mounted composer from per-session state (model, approval,
+// draft text + images, char count, running state). Idempotent + cheap.
+function hydrateComposer(sid: string) {
+  const modelSel = composerModelSelect(sid);
+  const approvalSel = composerApprovalSelect(sid);
+  const { config, sessions } = store.get();
+  const s = sessions.find(x => x.id === sid);
+  const models = (config as any).modelDetails || ((config as any).model?.available || []).map((m: string) => ({ name: m }));
+  if (modelSel) {
+    const currentModel = (s as any)?.model_name || config.model;
+    modelSel.replaceChildren();
+    models.forEach((m: any) => {
+      const opt = document.createElement("option");
+      opt.value = m.name;
+      opt.textContent = m.name;
+      if (m.name === currentModel) opt.selected = true;
+      modelSel.appendChild(opt);
+    });
+  }
+  if (approvalSel) {
+    approvalSel.value = (s as any)?.approval_policy || "full-auto";
+  }
+  const ta = composerTextarea(sid);
+  if (ta) {
+    ta.value = draftText(sid);
+    ta.style.height = "auto";
+    ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
+    if (ta.value.startsWith("/")) showSlashMenuFor(sid, ta.value); else hideSlashMenuFor(sid);
+  }
+  const cc = composerCharCount(sid);
+  if (cc) cc.textContent = ta && ta.value.length > 0 ? String(ta.value.length) : "";
+  // Restore the context ring from the session's cached last usage. Without
+  // this the ring stays empty because loadHistoryInto runs before the
+  // composer is mounted.
+  const lu = (s as any)?.lastUsage as { prompt_tokens?: number } | undefined;
+  if (lu?.prompt_tokens !== undefined) {
+    const contextWindow = config.contextWindow || 200000;
+    updateContextProgress(Math.min(lu.prompt_tokens / contextWindow, 1), lu.prompt_tokens, sid);
+  } else {
+    updateContextProgress(0, 0, sid);
+  }
+  setComposerRunning(sid, !!store.get().runningSessions[sid]);
+  renderComposerPreviews(sid);
+  renderComposerPending(sid);
+}
+
+// Mount the unified composer template into `host` for `sid`. Re-mounts only
+// when the sid changes (so rapid re-renders don't blow away focus/state).
+function mountComposer(sid: string, host: HTMLElement) {
+  if (host.dataset.sid === sid && host.childElementCount > 0) {
+    hydrateComposer(sid);
+    return;
+  }
+  host.dataset.sid = sid;
+  host.replaceChildren();
+  host.insertAdjacentHTML("beforeend", composerTemplate(sid));
+  hydrateComposer(sid);
+}
+
+// Reconcile mounted composers with the current session/split state. Called
+// from switchSession / renderSplitPanes / refreshConfig. Full-screen host
+// (#composerHost) is mounted only when not in split mode; pane hosts are
+// mounted inside renderSplitPanes.
+function renderComposers() {
+  const { activeSid, splitSessions } = store.get();
+  const host = $("composerHost");
+  if (!host) return;
+  if (splitSessions.length === 0 && activeSid) {
+    mountComposer(activeSid, host);
+  } else {
+    // Split mode: #composerHost is hidden. Clear any stale composer so it
+    // can't shadow the active pane's composer (two elements with the same
+    // data-sid would make querySelector-based helpers hit the wrong one).
+    host.replaceChildren();
+    host.dataset.sid = "";
+  }
+}
+
+// ---- Send ----
+// Legacy alias — the unified send path is sendComposerMessage(sid).
+async function sendMessage() {
+  if (!store.get().activeSid) {
+    try { await createSession(); } catch { return; }
+  }
+  const sid = store.get().activeSid;
+  if (sid) await sendComposerMessage(sid);
 }
 
 // Send a payload that came from the queue bar (turn_end / cancel
@@ -4043,108 +4712,12 @@ async function sendMessage() {
 // same payload. The user's typed draft in promptEl.value is
 // untouched throughout — queued messages and live typing don't
 // fight for the same textarea slot.
-const MAX_QUEUE_RETRIES = 3;
-
-async function sendFromQueue(
-  text: string,
-  images: PendingAttachment[],
-  initialRetries: number = 0,
-) {
-  if (!text && images.length === 0) return;
-  const { activeSid } = store.get();
-  if (!activeSid) return;
-  const sid = activeSid;
-
-  setActiveRunning(true);
-  updateSendStopButton();
-
-  // Hold a reference to the optimistic user message so we can
-  // remove it on failure. The queue bar is then the *single*
-  // source of truth for "this message hasn't gone out yet" —
-  // showing the same content in chat + queue is the kind of
-  // duplication that makes users wonder whether the send
-  // actually succeeded.
-  let optimisticEl: HTMLElement | null = null;
-
-  try {
-    // Embed attachment *paths* — same wire format as the live
-    // send path. The runtime expands them to data URLs only in the
-    // per-turn copy sent to the provider.
-    const parts: unknown[] = [];
-    if (text) parts.push({ type: "text", text });
-    for (const img of images) {
-      parts.push({ type: "image_url", image_url: { url: img.path } });
-    }
-    optimisticEl = appendUserMsg(parts);
-    appendTyping();
-    scrollBottom();
-    await api.createTurn(sid, parts);
-    // The queue's images have been embedded in the request — release
-    // their preview blobs. (The queue bar also re-pushes the images
-    // back into store.pendingSessionImages via the catch path; on
-    // success we don't, so the thumb URLs would otherwise stay live
-    // until the page reloads.)
-    disposePendingImageThumbs(images);
-  } catch (e: any) {
-    setActiveRunning(false);
-    updateSendStopButton();
-    // CRITICAL: clear the typing indicator that appendTyping() added
-    // before the await. Without this the "Thinking..." chip stays
-    // forever after a failed createTurn, making the UI look like
-    // the model is hanging even though no turn is actually running.
-    removeTyping();
-    // Revert the optimistic chat message. The queue bar (re-added
-    // below) is the user-visible "still pending" indicator, so we
-    // don't need the chat copy anymore.
-    if (optimisticEl && optimisticEl.parentNode) {
-      optimisticEl.remove();
-      optimisticEl = null;
-    }
-
-    // Count how many times this queued message has failed.
-    // Use the retry count passed in from the flush path (if this is
-    // a re-send triggered by turn_end) or the stored count.
-    const { pendingMessages } = store.get();
-    const currentRetries = Math.max(initialRetries, pendingMessages[sid]?.retries ?? 0);
-    const newRetries = currentRetries + 1;
-
-    if (newRetries >= MAX_QUEUE_RETRIES) {
-      // Permanently give up on this message. Show a final error and
-      // clear the queue so the user can start fresh.
-      setActivePending(null);
-      if (images.length > 0) {
-        const { pendingSessionImages } = store.get();
-        const nextImages = { ...pendingSessionImages };
-        delete nextImages[sid];
-        store.set({ pendingSessionImages: nextImages });
-      }
-      disposePendingImageThumbs(images);
-      renderPendingBar();
-      appendError(
-        `Queued message permanently failed after ${MAX_QUEUE_RETRIES} attempts: ${e?.message || e}. ` +
-        `Please re-type and send again.`
-      );
-      console.error(`Queued message exceeded max retries (${MAX_QUEUE_RETRIES}):`, e);
-      return;
-    }
-
-    // Re-queue so the next turn_end (or manual retry) picks it up
-    // again with the incremented retry counter. We deliberately do
-    // NOT touch promptEl.value here — that was the bug.
-    setActivePending(text, newRetries);
-    if (images.length > 0) {
-      const { pendingSessionImages } = store.get();
-      store.set({
-        pendingSessionImages: { ...pendingSessionImages, [sid]: [...images] },
-      });
-    }
-    renderPendingBar();
-    // Surface the failure inline so the user knows the message
-    // didn't go out (queue bar reappearing is too subtle — they
-    // might miss it if the chat has scrolled).
-    appendError(`Queued message failed to send (attempt ${newRetries}/${MAX_QUEUE_RETRIES}): ${e?.message || e}`);
-    console.error("Failed to send queued message:", e);
-  }
+// Legacy alias — delegates to the per-session sendComposerFromQueue for the
+// active session (the only session whose queue the legacy flush paths drain).
+async function sendFromQueue(text: string, images: PendingAttachment[], initialRetries: number = 0) {
+  const sid = store.get().activeSid;
+  if (!sid) return;
+  await sendComposerFromQueue(sid, text, images, initialRetries);
 }
 
 // ---- Plan ----
@@ -4721,12 +5294,15 @@ async function loadAutomationsIntoModal() {
       const lastUser = [...msgs].reverse().find((m: any) => m.role === "user");
       if (lastUser) {
         const text = typeof lastUser.content === "string" ? lastUser.content : JSON.stringify(lastUser.content);
-        const promptEl = $("prompt") as HTMLTextAreaElement;
-        promptEl.value = `/automation ${text}`;
-        promptEl.style.height = "auto";
-        promptEl.style.height = Math.min(promptEl.scrollHeight, 160) + "px";
-        $("charCount").textContent = String(promptEl.value.length);
-        promptEl.focus();
+        // Pre-fill the global #prompt textarea with the automation
+        // command + the last user message.
+        const promptEl = composerTextarea(store.get().activeSid || "");
+        if (promptEl) {
+          promptEl.value = `/automation ${text}`;
+          promptEl.style.height = "auto";
+          promptEl.style.height = Math.min(promptEl.scrollHeight, 160) + "px";
+          promptEl.focus();
+        }
       }
     } catch { /* ignore */ }
   };
@@ -4990,7 +5566,9 @@ async function refreshStatus() {
     const s = await api.getStatus();
     workspace = s.workspace || "";
     store.set({ config: { ...store.get().config, model: s.model, workspace: s.workspace, tools: s.tools, approval: s.approval_policy, contextWindow: s.context_window || 200000 } });
-    ($("approvalSelect") as HTMLSelectElement).value = s.approval_policy;
+    // Sync the active composer's approval dropdown to the session's policy.
+    const approvalSel = composerApprovalSelect(store.get().activeSid || "");
+    if (approvalSel) approvalSel.value = s.approval_policy;
     const wn = (s.workspace || "ziva").split("/").pop() || "Project";
     const workspaceNameEl = $("workspaceName") as HTMLElement;
     if (workspaceNameEl) workspaceNameEl.textContent = wn;
@@ -5005,79 +5583,6 @@ async function refreshStatus() {
   const gitBranchContextEl = $("gitBranchContext") as HTMLElement;
   if (gitBranchContextEl) {
     gitBranchContextEl.onclick = openGitBranchPicker;
-  }
-}
-
-// ---- Slash Commands ----
-const SLASH_COMMANDS = [
-  { name: "/compact", description: "Compact context window (model summary)" },
-  { name: "/prune", description: "Strip old tool outputs (no model call)" },
-];
-
-let slashMenuIndex = -1;
-
-function showSlashMenu(text: string) {
-  const menu = $("slashMenu");
-  const query = text.slice(1).toLowerCase();
-  const filtered = SLASH_COMMANDS.filter(
-    (c) => c.name.toLowerCase().includes(query) || c.description.toLowerCase().includes(query)
-  );
-  if (filtered.length === 0) {
-    hideSlashMenu();
-    return;
-  }
-  menu.innerHTML = filtered
-    .map(
-      (c, i) =>
-        `<div class="slash-item ${i === 0 ? "active" : ""}" data-cmd="${esc(c.name)}" data-index="${i}">
-           <span class="slash-name">${esc(c.name)}</span>
-           <span class="slash-desc">${esc(c.description)}</span>
-         </div>`
-    )
-    .join("");
-  menu.style.display = "block";
-  slashMenuIndex = 0;
-  menu.querySelectorAll(".slash-item").forEach((el) => {
-    el.addEventListener("click", () => {
-      const cmd = (el as HTMLElement).dataset.cmd || "";
-      insertSlashCommand(cmd);
-    });
-  });
-}
-
-function hideSlashMenu() {
-  $("slashMenu").style.display = "none";
-  slashMenuIndex = -1;
-}
-
-function isSlashMenuVisible() {
-  return $("slashMenu").style.display === "block";
-}
-
-function moveSlashSelection(dir: number) {
-  const items = $("slashMenu").querySelectorAll(".slash-item");
-  if (items.length === 0) return;
-  items[slashMenuIndex]?.classList.remove("active");
-  slashMenuIndex = (slashMenuIndex + dir + items.length) % items.length;
-  items[slashMenuIndex]?.classList.add("active");
-}
-
-function selectSlashCommand() {
-  const items = $("slashMenu").querySelectorAll(".slash-item");
-  if (items[slashMenuIndex]) {
-    const cmd = (items[slashMenuIndex] as HTMLElement).dataset.cmd || "";
-    insertSlashCommand(cmd);
-  }
-}
-
-function insertSlashCommand(cmd: string) {
-  const promptEl = $("prompt") as HTMLTextAreaElement;
-  promptEl.value = cmd + " ";
-  promptEl.focus();
-  hideSlashMenu();
-  // Auto-send no-argument commands like /compact and /prune
-  if (cmd === "/compact" || cmd === "/prune") {
-    sendMessage();
   }
 }
 
@@ -5112,6 +5617,7 @@ async function openSettingsModal() {
     const sandbox = cfg.sandbox || {};
     const hooks = cfg.hooks || {};
     const prompt = cfg.prompt || {};
+    const agents = (cfg.agents || {}) as Record<string, any>;
 
     // SVG icons for tabs (16x16)
     const icons = {
@@ -5123,6 +5629,7 @@ async function openSettingsModal() {
       memory: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="2" x2="9" y2="4"/><line x1="15" y1="2" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="22"/><line x1="15" y1="20" x2="15" y2="22"/><line x1="20" y1="9" x2="22" y2="9"/><line x1="20" y1="14" x2="22" y2="14"/><line x1="2" y1="9" x2="4" y2="9"/><line x1="2" y1="14" x2="4" y2="14"/></svg>`,
       sandbox: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`,
       prompt: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`,
+      agents: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="7" r="3"/><circle cx="17" cy="7" r="2.5"/><path d="M3 21v-1a6 6 0 0 1 12 0v1"/><path d="M14 14a5 5 0 0 1 7 4v1"/></svg>`,
     };
 
     // Build MCP servers HTML
@@ -5170,6 +5677,75 @@ async function openSettingsModal() {
           <button class="settings-add-btn" data-hook-add="${ht}">+ Add command</button>
         </div>`;
     }
+
+    // Build agents HTML
+    // Each agent has: name (key), instructions (textarea), tools
+    // (multi-select from cfg.tools), skills (multi-select from
+    // enabled skills), memory (backend selector), background (bool).
+    // `tools` / `skills` / `memory` are pre-populated from the agent
+    // def but the user can override per-agent.
+    const allToolNames: string[] = (cfg.tools || []) as string[];
+    const allSkillNames: string[] = (cfg.skill?.enabled || []) as string[];
+    const agentEntries = Object.entries(agents);
+    const agentsHtml = agentEntries.map(([name, def]) => {
+      const instructions = (def.instructions || "") as string;
+      const agentTools: string[] = def.tools || [];
+      const agentSkills: string[] = def.skills || [];
+      const agentHooks: string[] = def.hooks || [];
+      const background = !!def.background;
+      const memory = def.memory || "inherited";
+      // Build tool chips: checked = in agent's whitelist
+      const toolChips = allToolNames.map((tn) => {
+        const checked = agentTools.includes(tn) ? "checked" : "";
+        return `<label class="agent-chip"><input type="checkbox" data-agent-tool="${esc(name)}" value="${esc(tn)}" ${checked} /><span>${esc(tn)}</span></label>`;
+      }).join("");
+      // Build skill chips
+      const skillChips = allSkillNames.map((sn) => {
+        const checked = agentSkills.includes(sn) ? "checked" : "";
+        return `<label class="agent-chip"><input type="checkbox" data-agent-skill="${esc(name)}" value="${esc(sn)}" ${checked} /><span>${esc(sn)}</span></label>`;
+      }).join("");
+      // Build hook chips — candidates are the 4 hook types the runtime
+      // supports. Selecting one means "this sub-agent triggers the
+      // configured hooks of that type on its own turns/tools".
+      const hookChips = hookTypes.map((hk) => {
+        const checked = agentHooks.includes(hk) ? "checked" : "";
+        return `<label class="agent-chip"><input type="checkbox" data-agent-hook="${esc(name)}" value="${esc(hk)}" ${checked} /><span>${esc(hk)}</span></label>`;
+      }).join("");
+      return `
+        <div class="settings-agent-card" data-agent-name="${esc(name)}">
+          <div class="settings-agent-card-header">
+            <input class="settings-input settings-agent-name" data-agent-rename="${esc(name)}" value="${esc(name)}" placeholder="agent name (e.g. explore)" style="font-weight:600;font-size:13px" />
+            <label class="agent-bg-label"><input type="checkbox" data-agent-bg="${esc(name)}" ${background ? "checked" : ""} /> background</label>
+            <button class="settings-hook-remove" data-agent-remove="${esc(name)}" title="Remove agent">×</button>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-title">Instructions</div>
+            <textarea class="settings-input" data-agent-instructions="${esc(name)}" rows="4" placeholder="System prompt for the sub-agent">${esc(instructions)}</textarea>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-title">Tools <span style="color:var(--muted);font-weight:400;font-size:11px">(${agentTools.length} selected)</span></div>
+            <div class="settings-desc">Whitelist of tools the sub-agent can call. Empty = inherit all tools except spawn_agent.</div>
+            <div class="agent-chip-list">${toolChips || '<span style="color:var(--muted);font-size:12px">No tools available in config</span>'}</div>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-title">Skills <span style="color:var(--muted);font-weight:400;font-size:11px">(${agentSkills.length} selected)</span></div>
+            <div class="settings-desc">Skills available to the sub-agent.</div>
+            <div class="agent-chip-list">${skillChips || '<span style="color:var(--muted);font-size:12px">No skills enabled in config</span>'}</div>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-title">Hooks <span style="color:var(--muted);font-weight:400;font-size:11px">(${agentHooks.length} selected)</span></div>
+            <div class="settings-desc">Hook types this sub-agent triggers. Each selected type runs the matching <code>hooks.&lt;type&gt;</code> commands from config on the sub-agent's own turns/tools. Empty = inherit all hook types from main.</div>
+            <div class="agent-chip-list">${hookChips || '<span style="color:var(--muted);font-size:12px">No hook types defined</span>'}</div>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-title">Memory</div>
+            <select class="settings-select" data-agent-memory="${esc(name)}">
+              <option value="inherited" ${memory === "inherited" || memory === "" ? "selected" : ""}>Inherit from main</option>
+              <option value="none" ${memory === "none" ? "selected" : ""}>None (stateless)</option>
+            </select>
+          </div>
+        </div>`;
+    }).join("");
 
     // Build providers HTML for Model tab
     const rawProviders = (cfg.providers || []) as any[];
@@ -5227,6 +5803,7 @@ async function openSettingsModal() {
           <button class="settings-tab" data-tab="memory">${icons.memory}<span>Memory</span></button>
           <button class="settings-tab" data-tab="sandbox">${icons.sandbox}<span>Sandbox</span></button>
           <button class="settings-tab" data-tab="prompt">${icons.prompt}<span>Prompt</span></button>
+          <button class="settings-tab" data-tab="agents">${icons.agents}<span>Agents</span></button>
         </div>
         <div class="settings-content">
           <!-- Model -->
@@ -5345,6 +5922,17 @@ async function openSettingsModal() {
               </div>
             </div>
           </div>
+          <!-- Agents -->
+          <div class="settings-panel" data-panel="agents">
+            <div class="settings-panel-inner">
+              <div class="settings-section">
+                <div class="settings-section-title">Sub-Agents</div>
+                <div class="settings-desc">Predefined agent profiles the main agent can spawn via <code>spawn_agent(agent="name", task="...")</code>. Each agent has its own instructions, tool whitelist, skill set, and memory setting. The main agent may still pass <code>instructions</code> / <code>tools</code> / <code>background</code> at call time to override the defaults below.</div>
+                <div id="agentsList">${agentsHtml || '<div style="color:var(--muted);font-size:12px;padding:12px 0">No agents defined yet. Click <strong>+ Add agent</strong> below to create one.</div>'}</div>
+                <button class="settings-add-btn" id="addAgentBtn">+ Add agent</button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>`;
 
@@ -5382,6 +5970,73 @@ async function openSettingsModal() {
     body.querySelectorAll<HTMLButtonElement>("[data-mcp-remove]").forEach(btn => {
       btn.onclick = () => (btn.closest(".settings-mcp-card") as HTMLElement)?.remove();
     });
+
+    // Agent card remove
+    body.querySelectorAll<HTMLButtonElement>("[data-agent-remove]").forEach(btn => {
+      btn.onclick = () => (btn.closest(".settings-agent-card") as HTMLElement)?.remove();
+    });
+
+    // Add agent button — spawn an empty card the user can fill in
+    const addAgentBtn = body.querySelector("#addAgentBtn") as HTMLButtonElement | null;
+    if (addAgentBtn) {
+      addAgentBtn.onclick = () => {
+        const list = body.querySelector("#agentsList")!;
+        // Find a non-colliding placeholder name
+        let idx = 1;
+        while (list.querySelector(`[data-agent-name="new_agent_${idx}"]`)) idx++;
+        const n = `new_agent_${idx}`;
+        const toolChips = allToolNames.map((tn) =>
+          `<label class="agent-chip"><input type="checkbox" data-agent-tool="${esc(n)}" value="${esc(tn)}" /><span>${esc(tn)}</span></label>`
+        ).join("");
+        const skillChips = allSkillNames.map((sn) =>
+          `<label class="agent-chip"><input type="checkbox" data-agent-skill="${esc(n)}" value="${esc(sn)}" /><span>${esc(sn)}</span></label>`
+        ).join("");
+        const hookChips = hookTypes.map((hk) =>
+          `<label class="agent-chip"><input type="checkbox" data-agent-hook="${esc(n)}" value="${esc(hk)}" /><span>${esc(hk)}</span></label>`
+        ).join("");
+        const card = document.createElement("div");
+        card.className = "settings-agent-card";
+        card.dataset.agentName = n;
+        card.innerHTML = `
+          <div class="settings-agent-card-header">
+            <input class="settings-input settings-agent-name" data-agent-rename="${esc(n)}" value="${esc(n)}" placeholder="agent name" style="font-weight:600;font-size:13px" />
+            <label class="agent-bg-label"><input type="checkbox" data-agent-bg="${esc(n)}" /> background</label>
+            <button class="settings-hook-remove" data-agent-remove="${esc(n)}" title="Remove agent">×</button>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-title">Instructions</div>
+            <textarea class="settings-input" data-agent-instructions="${esc(n)}" rows="4" placeholder="System prompt for the sub-agent"></textarea>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-title">Tools</div>
+            <div class="agent-chip-list">${toolChips || '<span style="color:var(--muted);font-size:12px">No tools available in config</span>'}</div>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-title">Skills</div>
+            <div class="agent-chip-list">${skillChips || '<span style="color:var(--muted);font-size:12px">No skills enabled in config</span>'}</div>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-title">Hooks</div>
+            <div class="agent-chip-list">${hookChips || '<span style="color:var(--muted);font-size:12px">No hook types defined</span>'}</div>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-title">Memory</div>
+            <select class="settings-select" data-agent-memory="${esc(n)}">
+              <option value="inherited" selected>Inherit from main</option>
+              <option value="none">None (stateless)</option>
+            </select>
+          </div>`;
+        // Wire the new card's remove button
+        const removeBtn = card.querySelector("[data-agent-remove]") as HTMLButtonElement;
+        removeBtn.onclick = () => card.remove();
+        list.appendChild(card);
+        // Focus the name field for quick rename
+        (card.querySelector(`[data-agent-rename="${n}"]`) as HTMLInputElement)?.focus();
+        // Clear the "no agents" placeholder if it was showing
+        const empty = list.querySelector("div[style*='var(--muted)']");
+        if (empty) empty.remove();
+      };
+    }
 
     // Provider card management
     function wireProviderCardEvents(card: HTMLElement) {
@@ -5562,6 +6217,30 @@ async function openSettingsModal() {
 
         // Prompt
         updated.prompt = { ...updated.prompt, profile: (backdrop.querySelector("#s_prompt_profile") as HTMLSelectElement).value };
+
+        // Agents — rebuild from DOM. Each card has: name (key),
+        // instructions, tools[], skills[], background, memory.
+        const newAgents: Record<string, any> = {};
+        backdrop.querySelectorAll<HTMLElement>(".settings-agent-card").forEach(card => {
+          const origName = card.dataset.agentName!;
+          const renameInput = card.querySelector(`[data-agent-rename="${origName}"]`) as HTMLInputElement;
+          const newName = (renameInput?.value?.trim()) || origName;
+          const instr = ((card.querySelector(`[data-agent-instructions="${origName}"]`) as HTMLTextAreaElement)?.value || "").trim();
+          const tools = Array.from(card.querySelectorAll<HTMLInputElement>(`input[data-agent-tool="${origName}"]:checked`)).map(c => c.value);
+          const skills = Array.from(card.querySelectorAll<HTMLInputElement>(`input[data-agent-skill="${origName}"]:checked`)).map(c => c.value);
+          const hooks = Array.from(card.querySelectorAll<HTMLInputElement>(`input[data-agent-hook="${origName}"]:checked`)).map(c => c.value);
+          const bg = !!(card.querySelector(`input[data-agent-bg="${origName}"]`) as HTMLInputElement)?.checked;
+          const memVal = (card.querySelector(`[data-agent-memory="${origName}"]`) as HTMLSelectElement)?.value || "inherited";
+          newAgents[newName] = {
+            instructions: instr,
+            tools,
+            skills,
+            hooks,
+            background: bg,
+            ...(memVal !== "inherited" ? { memory: memVal } : {}),
+          };
+        });
+        updated.agents = newAgents;
 
         // Hooks — rebuild from DOM
         const newHooks: Record<string, string[]> = {};

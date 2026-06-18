@@ -69,6 +69,7 @@ class ChatResult:
     usage: Optional[Dict[str, int]] = None
     finish_reason: Optional[str] = None
     tool_calls: List[ToolCallItem] = field(default_factory=list)
+    reasoning_content: Optional[str] = None
     reasoning_signature: Optional[str] = None
 
 
@@ -148,6 +149,6 @@ class SessionState:
     turn_task: asyncio.Task | None = None
     event_queue: asyncio.Queue | None = None
     event_history: deque = field(default_factory=lambda: deque(maxlen=100))
-    model_adapter: Any = None
+    model_name: str | None = None
     load_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     plan: list[dict] | None = None

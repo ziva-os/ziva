@@ -169,6 +169,7 @@ class OpenAIChatAdapter:
         resp = await call_with_retry(self._client.chat.completions.create, **kwargs)
         choice = resp.choices[0]
         content = choice.message.content or ""
+        reasoning_content = getattr(choice.message, "reasoning_content", None) or getattr(choice.message, "reasoning", None)
         usage_dict = None
         if resp.usage:
             usage_dict = {
@@ -199,6 +200,7 @@ class OpenAIChatAdapter:
             usage=usage_dict,
             finish_reason=choice.finish_reason or "stop",
             tool_calls=tool_calls,
+            reasoning_content=reasoning_content,
         )
 
     async def chat_stream(
@@ -262,7 +264,7 @@ class OpenAIChatAdapter:
             delta = choice.delta
             finish_reason = choice.finish_reason
 
-            reasoning = getattr(delta, "reasoning_content", None)
+            reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
             content = delta.content or ""
 
             # Fall back to <think> tag parsing for providers that embed

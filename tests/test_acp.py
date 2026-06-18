@@ -14,7 +14,7 @@ class FakeAdapter:
 
 def test_acp_chat(tmp_path):
     async def _run():
-        runtime = Runtime.create(workspace_root=tmp_path, model_adapter=FakeAdapter())
+        runtime = Runtime.create(workspace_root=tmp_path)
         server = ACPServer(runtime)
 
         init_rsp = await server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})

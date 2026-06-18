@@ -13,7 +13,7 @@ class SimpleAdapter:
 def test_multi_session_event_isolation():
     async def _run():
         root = Path(__file__).resolve().parents[1]
-        rt = Runtime.create(workspace_root=root, model_adapter=SimpleAdapter())
+        rt = Runtime.create(workspace_root=root)
 
         qa = rt.event_bus.subscribe("sid-a")
         qb = rt.event_bus.subscribe("sid-b")

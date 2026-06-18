@@ -27,7 +27,7 @@ class LoopAdapter:
 def test_acp_incremental_open_next():
     async def _run():
         root = Path(__file__).resolve().parents[1]
-        runtime = Runtime.create(workspace_root=root, model_adapter=LoopAdapter())
+        runtime = Runtime.create(workspace_root=root)
         server = ACPServer(runtime)
 
         opened = await server.handle(

@@ -283,6 +283,12 @@
   flex-shrink: 0;
   animation: pulse-running 1.5s ease-in-out infinite;
 }
+.session-running-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: #22c55e;
+  flex-shrink: 0;
+  animation: pulse-running 1.5s ease-in-out infinite;
+}
 @keyframes pulse-running {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.6; transform: scale(1.2); }
@@ -636,6 +642,123 @@ webview.browser-frame {
   height: 100%;
 }
 
+/* Agent Browser — the dedicated webview chrome-devtools-mcp drives.
+   The user sees the same webContents the agent controls, so the layout
+   surfaces the CDP endpoint + load status. */
+.agent-browser-host {
+  --abb-fg: var(--ink);
+  --abb-fg-dim: var(--text-dim);
+  --abb-line: var(--line);
+}
+.agent-browser-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--abb-line);
+  background: var(--surface-alt, transparent);
+  flex-shrink: 0;
+}
+.abb-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.abb-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--abb-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.abb-url {
+  font-size: 10.5px;
+  color: var(--abb-fg-dim);
+  font-family: var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.abb-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  color: var(--abb-fg-dim);
+  text-transform: lowercase;
+}
+.abb-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--abb-fg-dim);
+  transition: background 0.2s;
+}
+.abb-dot.active {
+  background: var(--accent, #10b981);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent, #10b981) 50%, transparent);
+}
+.abb-actions {
+  display: flex;
+  gap: 2px;
+}
+.abb-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+}
+.abb-btn:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+.agent-browser-frame-wrap {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  background: #fff;
+  display: flex;
+}
+.agent-browser-frame-wrap webview.browser-frame {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  display: flex;
+}
+.agent-browser-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 5px 10px;
+  border-top: 1px solid var(--abb-line);
+  font-size: 10.5px;
+  color: var(--abb-fg-dim);
+  font-family: var(--mono);
+  background: var(--surface-alt, transparent);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.abb-cdp {
+  font-weight: 500;
+  color: var(--abb-fg);
+}
+.abb-hint {
+  opacity: 0.7;
+}
+.abb-hint code {
+  font-family: var(--mono);
+  background: var(--surface);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
 /* Files panel */
 .files-layout {
   display: flex;
@@ -743,6 +866,37 @@ webview.browser-frame {
 .ziva-center.has-messages .empty-state { display: none; }
 .ziva-center:not(.has-messages) .messages { display: none; }
 
+/* Per-pane empty state — matches the original .empty-state centered
+   layout. The pane is a flex column, the empty-state takes the
+   remaining space and centers its content vertically. The composer
+   sits below the empty state. */
+.pane-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  text-align: center;
+  padding: 0 24px;
+  gap: 20px;
+  min-height: 0;
+}
+.pane-empty-state[hidden] { display: none; }
+.pane-empty-state .welcome-icon { color: var(--muted); }
+.pane-empty-state .welcome-title { font-size: 20px; font-weight: 600; color: var(--ink); }
+.pane-empty-state .welcome-desc { font-size: 14px; color: var(--muted); max-width: 420px; line-height: 1.55; }
+
+.split-pane-active .pane-messages { display: block; }
+.split-pane-active:not(.has-messages) .pane-messages { display: none; }
+.split-pane-active.has-messages .pane-empty-state { display: none; }
+
+/* Status bar visibility — only show on the welcome screen (no
+   messages yet). Once a turn is in flight or chat has started, hide
+   the workspace/branch chip row so the chat area takes the full
+   height. */
+.ziva-center.has-messages .ziva-status-bar { display: none; }
+.split-pane-active.has-messages ~ .ziva-status-bar { display: none; }
+
 /* Composer — shared styles */
 .ziva-composer-wrapper {
   padding: 0 0 16px;
@@ -763,6 +917,9 @@ webview.browser-frame {
   padding: 8px 0 16px;
 }
 
+/* Status bar (workspace name + git branch) only shows in the welcome
+   state — when the user is mid-conversation the chat surface takes
+   priority, so the status row is hidden to give messages more room. */
 .ziva-center.has-messages .ziva-status-bar {
   display: none;
 }
@@ -773,6 +930,11 @@ webview.browser-frame {
   gap: 8px;
   padding: 4px 0;
   margin-top: 4px;
+  flex-shrink: 0;
+  max-width: var(--content-max-w);
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
 }
 .ziva-status-bar .status-item {
   display: inline-flex;
@@ -899,18 +1061,57 @@ webview.browser-frame {
 /* ============ Messages ============ */
 .messages { flex: 1; overflow-y: auto; padding: 16px 0; scroll-behavior: smooth; }
 
-/* Split-screen layout: active session (#messages) plus any secondary panes */
+/* Split-screen layout: every visible session is an equal pane with header,
+   messages, and its own composer. The standalone #messages/composer are
+   hidden while split mode is active. */
 .split-container { flex: 1; display: flex; flex-direction: row; overflow: hidden; }
-.split-container .split-pane { flex: 1; min-width: 0; }
-.split-container.split .messages { border-right: 1px solid var(--line); }
-.split-pane-secondary {
+.split-container .split-pane {
   flex: 1;
-  min-width: 0;
+  min-width: 280px;
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--line);
+  overflow: hidden;
 }
-.split-pane-secondary:last-child { border-right: none; }
+.split-container .split-pane:last-child { border-right: none; }
+/* 3+ panes: enable horizontal scroll so each pane keeps a usable
+   minimum width instead of getting squished unreadably narrow. */
+.split-container.has-many { overflow-x: auto; }
+
+/* Active pane header — sits between the toolbar and the messages when
+   the user is in multi-pane (split) mode. Hidden in single-pane
+   (fullscreen) mode. Houses the active session's title and the ↗
+   (fullscreen) + × (close) actions, mirroring the per-secondary-pane
+   header styling. */
+.active-pane-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  background: var(--surface);
+  color: var(--ink);
+}
+.active-pane { display: flex; align-items: center; justify-content: space-between; width: 100%; min-width: 0; }
+.active-pane-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.active-pane-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.active-pane-close, .active-pane-enter {
+  background: transparent; border: none; color: var(--muted); cursor: pointer;
+  font-size: 14px; line-height: 1; padding: 2px 6px; border-radius: 4px;
+}
+.active-pane-close:hover { color: var(--red); background: var(--surface-hover); }
+.active-pane-enter:hover { color: var(--accent); background: var(--surface-hover); }
+
+/* Single-pane mode: the active pane takes the entire split container and
+   shows no header (fullscreen). The header is only rendered when there's
+   a second pane to be closed/expanded. The active-pane-header's display
+   is toggled by renderSplitPanes() (inline style); the .split-pane-header
+   in secondary panes is hidden by the .multi-class selector below. */
+.split-container:not(.multi) .split-pane { border-right: none; }
+.split-container:not(.multi) .split-pane-header { display: none !important; }
+.split-container .pane-messages,
+.split-container .messages { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 0; scroll-behavior: smooth; }
 .split-pane-header {
   flex-shrink: 0;
   padding: 8px 12px;
@@ -923,12 +1124,171 @@ webview.browser-frame {
   color: var(--ink);
 }
 .split-pane-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.split-pane-close {
+.split-pane-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.split-pane-close, .split-pane-enter {
   background: transparent; border: none; color: var(--muted); cursor: pointer;
-  font-size: 16px; line-height: 1; padding: 0 4px; margin-left: 8px;
+  font-size: 14px; line-height: 1; padding: 2px 6px; border-radius: 4px;
 }
-.split-pane-close:hover { color: var(--red); }
+.split-pane-close:hover { color: var(--red); background: var(--surface-hover); }
+.split-pane-enter:hover { color: var(--accent); background: var(--surface-hover); }
 .pane-messages { flex: 1; overflow-y: auto; padding: 16px 0; scroll-behavior: smooth; }
+
+/* Per-pane composer — each split pane has its own composer at the bottom
+   with independent draft state, so the user can type in any pane without
+   disturbing the others. The shared #composerWrapper is hidden in split
+   mode (see renderSplitPanes). */
+/* Unified composer shell — same look for full-screen (#composerHost) and
+   every split pane. Bordered box with a focus glow, matching the original
+   .ziva-composer. */
+.pane-composer {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  background: var(--surface-alt);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  gap: 0;
+  min-width: 0;
+  position: relative;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.pane-composer:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-light);
+}
+.pane-prompt {
+  flex: 1;
+  resize: none;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 16px 16px 10px;
+  color: var(--ink);
+  font-size: 16px;
+  font-family: var(--sans);
+  min-height: 48px;
+  max-height: 160px;
+  outline: none;
+  line-height: 1.5;
+  width: 100%;
+  box-sizing: border-box;
+}
+.pane-prompt:focus { outline: none; }
+.pane-prompt::placeholder { color: #555555; }
+/* Per-pane composer toolbar — same shape as the global composer's
+   toolbar (attach / mode / model / context / mic / send), scaled
+   down to fit the narrower pane width. */
+.pane-composer .composer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+.pane-composer .toolbar-left,
+.pane-composer .toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+.pane-composer .toolbar-left { flex-shrink: 1; min-width: 0; overflow: hidden; }
+.pane-composer .toolbar-right { flex-shrink: 0; }
+.pane-composer .composer-action-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.pane-composer .composer-action-btn:hover { background: var(--surface-hover); color: var(--ink); }
+.pane-composer .mic-btn.recording { color: var(--red); animation: pulse 1.2s infinite; }
+.pane-composer select {
+  background: var(--surface-alt);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--ink);
+  font-size: 11px;
+  padding: 2px 4px;
+  cursor: pointer;
+  max-width: 80px;
+  min-width: 0;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
+}
+.pane-composer .char-count {
+  font-size: 10px;
+  color: var(--muted);
+  min-width: 16px;
+  text-align: right;
+  flex-shrink: 0;
+}
+.pane-composer .context-ring {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.pane-composer .context-ring .context-pct {
+  position: absolute;
+  font-size: 8px;
+  color: var(--muted);
+  line-height: 1;
+}
+.pane-send {
+  background: var(--accent);
+  border: none;
+  color: var(--bg);
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 700;
+  flex-shrink: 0;
+  padding: 0;
+  line-height: 1;
+  transition: opacity 0.15s, transform 0.1s, background 0.15s;
+}
+.pane-send:hover { background: var(--blue); }
+.pane-send:active { transform: scale(0.95); }
+.pane-send:disabled { opacity: 0.4; cursor: not-allowed; }
+.pane-send.stop-btn {
+  background: var(--red);
+  color: #fff;
+  font-size: 10px;
+  animation: pulse-red 1.5s infinite;
+}
+.pane-send.stop-btn:hover { background: var(--red); opacity: 0.85; }
+/* Per-pane image previews (above the textarea, like the global composer) */
+.pane-composer .pane-previews {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 4px 0;
+}
+.pane-composer .pane-previews:empty { display: none; }
+/* Per-pane pending bar */
+.pane-composer .pane-pending { padding: 4px 8px; font-size: 11px; }
+
+/* Split mode: hide the shared composer + status bar; each visible pane
+   has its own per-pane composer (`.pane-composer`) which takes over. */
+.ziva-center.multi .ziva-composer-wrapper { display: none; }
+.ziva-center.multi .ziva-status-bar { display: none; }
+
 
 /* Split button on session items */
 .session-item .split-btn {
@@ -1030,8 +1390,12 @@ webview.browser-frame {
 
 /* Compact collapse bar — sits above the summary message in the chat
    stream. The user can expand it to see the dropped earlier messages
-   (read-only) on demand. */
-.compact-boundary { max-width: var(--content-max-w); margin: 16px auto 8px; }
+   (read-only) on demand. width: 100% is REQUIRED: a <details> element
+   defaults to display: block but shrinks to fit its content, so without
+   this rule the bar would render ~350px wide (just the summary text) and
+   look misaligned with the thinking-card and message body, which both
+   fill the full content column. */
+.compact-boundary { width: 100%; max-width: var(--content-max-w); margin: 16px auto 8px; }
 .compact-collapse {
   border: 1px dashed var(--line);
   border-radius: 8px;
@@ -1130,14 +1494,14 @@ webview.browser-frame {
 
 /* Thinking Card */
 .thinking-card { margin: 6px auto 8px; padding: 0; border-radius: 6px; background: var(--surface-alt); font-size: 12px; color: var(--muted); max-width: var(--content-max-w); }
-.thinking-card summary { font-weight: 500; cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 8px 12px; color: var(--muted); }
+.thinking-card summary { font-weight: 500; cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 8px 4px; color: var(--muted); }
 .thinking-card summary::-webkit-details-marker { display: none; }
 .thinking-card summary::before { content: "▸"; font-size: 9px; }
 .thinking-card[open] summary::before { content: "▾"; }
 .thinking-card-content { padding: 0 12px 10px; white-space: pre-wrap; line-height: 1.6; font-family: var(--mono); font-size: 11px; }
 
 /* Tool Card */
-.tool-card { margin: 2px auto; max-width: var(--content-max-w); border-radius: 6px; overflow: hidden; font-size: 13px; background: var(--surface); border: 1px solid var(--line); }
+.tool-card { width: 100%; margin: 2px auto; max-width: var(--content-max-w); border-radius: 6px; overflow: hidden; font-size: 13px; background: var(--surface); border: 1px solid var(--line); flex-shrink: 0; }
 .tool-card-header {
   display: flex; align-items: center; gap: 8px; padding: 10px 14px;
   background: transparent; cursor: pointer; font-size: 13px; font-weight: 500;
@@ -1204,7 +1568,7 @@ webview.browser-frame {
 .plan-step-pending .plan-step-text { color: var(--muted); }
 
 /* Approval Card */
-.approval-card { margin: 10px auto; max-width: var(--content-max-w); padding: 14px 16px; border-radius: var(--radius-sm); background: var(--surface); border-left: 3px solid var(--purple); }
+.approval-card { width: 100%; margin: 10px auto; max-width: var(--content-max-w); padding: 14px 16px; border-radius: var(--radius-sm); background: var(--surface); border-left: 3px solid var(--purple); }
 .approval-card .approval-header { font-size: 13px; font-weight: 600; color: var(--purple); margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
 .approval-card .approval-detail { font-size: 12px; color: var(--muted); margin-bottom: 12px; line-height: 1.5; }
 .approval-card .approval-detail pre { background: var(--surface-alt); padding: 8px; border-radius: 4px; margin-top: 8px; font-size: 11px; overflow-x: auto; }
@@ -1216,7 +1580,7 @@ webview.browser-frame {
 .approval-card .approval-actions button:hover { opacity: 0.85; }
 
 /* Typing Indicator */
-.typing-indicator { display: flex; align-items: center; gap: 10px; padding: 6px 0; font-size: 12px; color: var(--muted); max-width: var(--content-max-w); margin: 0 auto; }
+.typing-indicator { width: 100%; display: flex; align-items: center; gap: 10px; padding: 6px 0; font-size: 12px; color: var(--muted); max-width: var(--content-max-w); margin: 0 auto; }
 .typing-dots { display: flex; gap: 3px; }
 .typing-dots span { width: 4px; height: 4px; background: var(--muted); border-radius: 50%; animation: typing-bounce 1.4s infinite ease-in-out both; }
 .typing-dots span:nth-child(1) { animation-delay: -0.32s; }
@@ -1227,7 +1591,7 @@ webview.browser-frame {
 }
 
 /* Error Card */
-.error-card { padding: 12px 16px; border-radius: var(--radius-sm); background: rgba(242, 139, 130, 0.08); border-left: 3px solid var(--red); font-size: 13px; color: var(--red); margin: 10px auto; max-width: var(--content-max-w); }
+.error-card { width: 100%; padding: 12px 16px; border-radius: var(--radius-sm); background: rgba(242, 139, 130, 0.08); border-left: 3px solid var(--red); font-size: 13px; color: var(--red); margin: 10px auto; max-width: var(--content-max-w); }
 
 /* ============ Composer — Antigravity "Ask anything" card ============ */
 
@@ -2067,6 +2431,41 @@ webview.browser-frame {
   background: none; border: none; color: var(--muted); cursor: pointer; font-size: 16px; padding: 2px 6px;
 }
 .settings-hook-remove:hover { color: #e55; }
+
+/* Sub-agent card (Settings → Agents tab). Same visual language as
+   .settings-mcp-card: a 1px-bordered block with a header row, then
+   per-section rows. The "chip list" is a flex-wrap of small toggleable
+   labels so the user can pick from the configured tool / skill set
+   without typing names by hand. */
+.settings-agent-card {
+  border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; margin-bottom: 14px;
+  background: var(--surface);
+}
+.settings-agent-card-header {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 12px;
+}
+.settings-agent-name { font-size: 13px; font-weight: 600; color: var(--ink); flex: 1; }
+.settings-agent-card-header .agent-bg-label {
+  display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted);
+  cursor: pointer; user-select: none;
+}
+.settings-agent-card-header .agent-bg-label input { cursor: pointer; }
+.agent-chip-list {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px;
+}
+.agent-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 10px; border-radius: 14px;
+  border: 1px solid var(--line); background: var(--bg);
+  font-size: 12px; color: var(--muted); cursor: pointer;
+  transition: border-color 0.12s, color 0.12s, background 0.12s;
+  user-select: none;
+}
+.agent-chip:hover { border-color: var(--accent); color: var(--ink); }
+.agent-chip input { margin: 0; cursor: pointer; accent-color: var(--accent); }
+.agent-chip:has(input:checked) {
+  border-color: var(--accent); color: var(--accent); background: var(--accent-light);
+}
 .settings-add-btn {
   display: inline-flex; align-items: center; gap: 4px;
   padding: 6px 14px; font-size: 12px; font-family: inherit;
@@ -2558,4 +2957,9 @@ webview.browser-frame {
   border-top: 1px solid var(--line);
   max-height: 200px; overflow-y: auto;
   font-size: 12px; color: var(--ink);
+}
+
+.split-pane.active {
+  background: var(--surface-hover);
+  border-color: var(--accent);
 }

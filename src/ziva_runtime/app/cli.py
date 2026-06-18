@@ -62,7 +62,6 @@ def _runtime_for_workspace(path: str, session_override: dict | None = None) -> R
     return Runtime.create(
         workspace_root=workspace,
         global_config_path=global_config,
-        workspace_config_path=workspace / ".ziva" / "config.yaml",
         session_override=session_override,
     )
 

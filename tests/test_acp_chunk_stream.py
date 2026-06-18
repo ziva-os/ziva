@@ -27,7 +27,7 @@ class LoopAdapter:
 def test_acp_chat_stream_chunks():
     async def _run():
         root = Path(__file__).resolve().parents[1]
-        runtime = Runtime.create(workspace_root=root, model_adapter=LoopAdapter())
+        runtime = Runtime.create(workspace_root=root)
         server = ACPServer(runtime)
         resp = await server.handle(
             {

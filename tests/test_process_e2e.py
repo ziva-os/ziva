@@ -17,7 +17,7 @@ def _serve_desktop_process(port: int) -> None:
             return ChatResult(role="assistant", content="ok", model=model, usage={}, finish_reason="stop")
 
     root = Path("/Users/wangxinxin/code/ziva")
-    rt = Runtime.create(workspace_root=root, model_adapter=FakeAdapter())
+    rt = Runtime.create(workspace_root=root)
     asyncio.run(DesktopAPIServer(rt).run_async(host="127.0.0.1", port=port))
 
 

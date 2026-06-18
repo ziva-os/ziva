@@ -1,6 +1,6 @@
 export interface RightPanelTab {
   id: string;
-  type: "review" | "terminal" | "browser" | "files";
+  type: "review" | "plan" | "terminal" | "browser" | "files" | "agent-browser";
   title: string;
 }
 
@@ -35,8 +35,7 @@ export interface AppState {
   // its "is running" or queued-input state into the newly active
   // session. The render / input layer consults these by activeSid.
   runningSessions: Record<string, boolean>;
-  pendingMessages: Record<string, { text: string; retries: number }>;
-  pendingSessionImages: Record<string, PendingAttachment[]>;
+  pendingMessages: Record<string, { text: string; retries: number; images?: PendingAttachment[] }>;
   // Per-session in-progress prompt content (textarea text + attached
   // images). Stashed on switchSession and restored when the user
   // comes back, so each session keeps its own draft.

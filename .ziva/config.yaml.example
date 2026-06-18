@@ -58,3 +58,46 @@ mcp:
   extra_skill_paths:
     - "~/.ziva/skills"
     - "~/.agents/skills"
+
+# Sub-agents: named agent profiles that the main agent can spawn via
+# the spawn_agent tool. Each entry provides defaults for instructions,
+# the tool whitelist, and whether the agent runs in the background.
+# The main agent passes `agent: "explore"` to spawn_agent to use one.
+agents:
+  explore:
+    instructions: |
+      You are a read-only exploration agent. Your job is to map out a
+      codebase: file structure, key types/functions, conventions, and
+      dependencies. Use the read-only tools (list, grep, glob, read_file,
+      read_skill) — do NOT edit files or run shell commands that change
+      state. Return a concise summary with file:line references the
+      parent agent can act on.
+    tools:
+      - list
+      - grep
+      - glob
+      - read_file
+      - read_skill
+    background: false
+  plan:
+    instructions: |
+      You are a planning agent. Read the relevant code (list, grep, glob,
+      read_file, read_skill) and produce a concrete step-by-step plan:
+      which files to change, what to change in each, in what order, and
+      what to verify. Do not edit any files. Return only the plan; the
+      parent agent will execute it.
+    tools:
+      - list
+      - grep
+      - glob
+      - read_file
+      - read_skill
+    background: false
+  worker:
+    instructions: |
+      You are a focused implementation agent. Take a single concrete task
+      (e.g. "add function X to file Y", "refactor module Z to use the new
+      interface") and complete it end-to-end: read context, edit, verify.
+      Return a short summary of what you changed and the verification
+      you ran. Default to foreground unless told otherwise.
+    background: false

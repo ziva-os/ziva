@@ -364,8 +364,24 @@ class DesktopAPIServer:
         return web.Response(text=html, content_type="text/html")
 
     async def create_session(self, request: web.Request) -> web.Response:
+        # Optional initial model_name so the caller can pin the session
+        # to a specific model at creation time (the alternative is to
+        # create the session and then immediately PATCH /sessions/{sid}
+        # with model_name; both paths persist to disk via FileStorage).
+        model_name: str | None = None
+        if request.body_exists:
+            try:
+                payload = await request.json()
+            except Exception:
+                payload = None
+            if isinstance(payload, dict):
+                raw = payload.get("model_name")
+                if isinstance(raw, str) and raw:
+                    model_name = raw
         sid = self.store.create()
-        return web.json_response({"id": sid})
+        if model_name is not None:
+            FileStorage.update_session(self.runtime.project_id, sid, {"model_name": model_name})
+        return web.json_response({"id": sid, "model_name": model_name})
 
     @staticmethod
     def _read_recent_workspaces() -> List[str]:
@@ -653,7 +669,14 @@ class DesktopAPIServer:
             return web.json_response({"error": "session_not_found"}, status=404)
 
         messages = self._load_session_messages(sid)
-        model_cfg = self.runtime.config.get("model", {})
+        # Honor the session's per-session model_name (set via PATCH /sessions
+        # or POST /sessions?model_name=…) so compact uses the same model as
+        # the chat turns it's summarizing. Fall back to the runtime config
+        # when the session hasn't pinned a model.
+        model_cfg = dict(self.runtime.config.get("model", {}))
+        sess = self.runtime._sessions.get(sid)
+        if sess and sess.model_name:
+            model_cfg["name"] = sess.model_name
         model_name = model_cfg.get("name", "")
         context_window = int(self.runtime.config.get("memory", {}).get("context_window_tokens", 200000) or 200000)
 
@@ -668,10 +691,11 @@ class DesktopAPIServer:
         from ziva_runtime.runtime import AUTO_COMPACT_KEEP_LAST_ASSISTANT_TURNS
         keep_last = AUTO_COMPACT_KEEP_LAST_ASSISTANT_TURNS
 
-        # Create an adapter that matches the current model_cfg so the provider
-        # and model name stay in sync (avoids sending a new model name to an
-        # old provider's adapter).
-        model_adapter = _create_adapter(self.runtime.config)
+        # Build a per-session merged config so the adapter matches the model
+        # the session is actually running on (mirrors chat()'s logic).
+        turn_config = dict(self.runtime.config)
+        turn_config["model"] = model_cfg
+        model_adapter = _create_adapter(turn_config)
         try:
             summary_list = await compact_messages(
                 llm_visible, context_window, model_name, model_adapter,
@@ -1245,6 +1269,15 @@ class DesktopAPIServer:
             return web.json_response({"error": "session_not_found"}, status=404)
         if updates:
             FileStorage.update_session(target_pid, sid, updates)
+        # Mirror model_name onto the in-memory SessionState so the next
+        # chat() turn picks it up immediately — don't wait for a
+        # disk reload on the next _get_session. Only the active
+        # project's sessions live in memory; sessions from other
+        # projects will be populated from disk when they're loaded.
+        if "model_name" in updates and target_pid == self.runtime.project_id:
+            sess = self.runtime._sessions.get(sid)
+            if sess is not None:
+                sess.model_name = updates["model_name"]
         return web.json_response({"ok": True})
 
     async def revert_files(self, request: web.Request) -> web.Response:
@@ -1349,13 +1382,6 @@ class DesktopAPIServer:
         if "model" in payload:
             fresh.setdefault("model", {}).update(payload["model"])
             self.runtime.config.setdefault("model", {}).update(payload["model"])
-            # Invalidate all per-session model adapters so the next turn
-            # re-creates them from the updated config.  Without this,
-            # sessions created before the switch keep using the stale
-            # (provider, model) pair while model_cfg["name"] carries the
-            # new name — producing a "unknown model" error from the API.
-            for sess in self.runtime._sessions.values():
-                sess.model_adapter = None
         if "approval" in payload:
             fresh.setdefault("approval", {}).update(payload["approval"])
             self.runtime.config.setdefault("approval", {}).update(payload["approval"])
@@ -1484,16 +1510,14 @@ class DesktopAPIServer:
 
         # Config is global (shared across workspaces). Reload from the global
         # config so external edits are picked up, but do NOT switch to the
-        # target workspace's local .ziva/config.yaml — the settings UI is
-        # workspace-agnostic and users expect model/MCP/etc. to stay the same
-        # after switching projects.
+        # Config is global (shared across workspaces). Reload from the global
+        # config so external edits are picked up. The runtime has a single
+        # source of truth — `~/.ziva/config.yaml` — and chat() rebuilds a
+        # fresh adapter per turn from the current config, so no per-session
+        # cache invalidation is needed here.
         from ziva_runtime.config.loader import load_effective_config
         try:
-            self.runtime.config = load_effective_config(
-                self._global_config_path,
-                None,
-                None,
-            )
+            self.runtime.config = load_effective_config(self._global_config_path)
         except Exception as e:
             # Don't fail the switch if the global config is broken — surface
             # the error and keep the old config so existing sessions don't get

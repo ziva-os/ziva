@@ -19,7 +19,7 @@ class ToolLoopAdapter:
 def test_event_metadata_fields_present():
     async def _run():
         root = Path(__file__).resolve().parents[1]
-        rt = Runtime.create(workspace_root=root, model_adapter=ToolLoopAdapter())
+        rt = Runtime.create(workspace_root=root)
         sid, _, events = await rt.chat_with_events([ChatMessage(role="user", content="hello")], session_id="meta-1")
         assert sid == "meta-1"
         assert events

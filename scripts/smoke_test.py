@@ -26,10 +26,8 @@ def test_config() -> None:
     base = Path("/tmp/ziva_smoke")
     base.mkdir(parents=True, exist_ok=True)
     global_cfg = base / "global.yaml"
-    workspace_cfg = base / "workspace.yaml"
     global_cfg.write_text("model:\n  provider: openai_agents\n  name: gpt-4.1\n", encoding="utf-8")
-    workspace_cfg.write_text("prompt:\n  profile: custom\n", encoding="utf-8")
-    cfg = load_effective_config(global_cfg, workspace_cfg, {"memory": {"backend": "sqlite"}})
+    cfg = load_effective_config(global_cfg, {"memory": {"backend": "sqlite"}})
     assert cfg["memory"]["backend"] == "sqlite"
 
 
@@ -43,7 +41,7 @@ def test_plugins() -> None:
 
 async def test_acp() -> None:
     root = Path(__file__).resolve().parents[1]
-    runtime = Runtime.create(workspace_root=root, model_adapter=FakeAdapter())
+    runtime = Runtime.create(workspace_root=root)
     server = ACPServer(runtime)
     rsp = await server.handle({
         "jsonrpc": "2.0",
@@ -56,7 +54,7 @@ async def test_acp() -> None:
 
 async def test_runtime_tool_loop() -> None:
     root = Path(__file__).resolve().parents[1]
-    runtime = Runtime.create(workspace_root=root, model_adapter=FakeAdapter())
+    runtime = Runtime.create(workspace_root=root)
     rsp = await runtime.chat([ChatMessage(role="user", content="loop")], session_id="smoke-loop")
     assert rsp.content == "ok:done"
 

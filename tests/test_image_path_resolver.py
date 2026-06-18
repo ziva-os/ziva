@@ -408,7 +408,6 @@ def _make_runtime() -> "Runtime":
     specific model config just mutate ``rt.config`` afterward."""
     return Runtime.create(
         workspace_root=Path(tempfile.mkdtemp()),
-        model_adapter=_FakeAdapter(),
     )
 
 

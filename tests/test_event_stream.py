@@ -20,7 +20,7 @@ class ToolLoopAdapter:
 def test_event_stream_contains_tool_and_turn_events():
     async def _run():
         root = Path(__file__).resolve().parents[1]
-        rt = Runtime.create(workspace_root=root, model_adapter=ToolLoopAdapter())
+        rt = Runtime.create(workspace_root=root)
         sid = "event-stream-1"
         queue = rt.event_bus.subscribe(sid)
         try:

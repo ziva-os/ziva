@@ -32,12 +32,14 @@ def _fake_create_adapter(config=None):
 
 
 def _make_server() -> DesktopAPIServer:
-    root = Path(__file__).resolve().parents[1]
+    # Use a temp workspace so automation/session state does not leak into the
+    # real project directory (e.g. .ziva/sessions/<project>/automations.json).
+    root = Path(tempfile.mkdtemp())
     # Patch the symbol the runtime module exposes (server.py imports
     # _create_adapter from here too, so a single patch covers both
     # call sites).
     with patch.object(runtime_mod, "_create_adapter", _fake_create_adapter):
-        rt = Runtime.create(workspace_root=root, model_adapter=FakeAdapter())
+        rt = Runtime.create(workspace_root=root)
         return DesktopAPIServer(rt)
 
 
@@ -112,16 +114,15 @@ class TestDesktopAutomations(AioHTTPTestCase):
         resp = await self.client.post(f"/automations/{aid}/run")
         assert resp.status == 200
         data = await resp.json()
-        assert data["ok"] is True
-        assert data["automation"]["run_count"] >= 1
-        assert data["result"]["content"] == "response"
+        assert data["accepted"] is True
+        assert data["automation"]["id"] == aid
 
         await self.client.delete(f"/automations/{aid}")
 
     @unittest_run_loop
     async def test_persisted_automation_is_loaded(self):
         with tempfile.TemporaryDirectory() as td:
-            rt = Runtime.create(workspace_root=Path(td), model_adapter=FakeAdapter())
+            rt = Runtime.create(workspace_root=Path(td))
             FileStorage.upsert_automation(rt.project_id, {
                 "id": "persisted",
                 "name": "persisted task",

@@ -36,7 +36,7 @@ class FileStorage:
         """Create all required directories."""
         base = _ZIVA_DIR
         cls._lock_dir = base / ".locks"
-        for d in [base, base / "sessions", cls._lock_dir]:
+        for d in [base, base / "sessions", base / "automations", cls._lock_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
     @classmethod
@@ -53,7 +53,7 @@ class FileStorage:
 
     @classmethod
     def _automations_file(cls, project_id: str) -> Path:
-        return cls._project_dir(project_id) / "automations.json"
+        return _ZIVA_DIR / "automations" / f"{project_id}.json"
 
     @classmethod
     @contextmanager

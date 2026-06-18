@@ -13,7 +13,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "thinking_mode": "disabled",
         "thinking_budget_tokens": 4000,
     },
-    "providers": [{"name": "OpenAI", "api_type": "openai_compatible", "api_key": "", "base_url": "", "models": [{"name": "gpt-4.1"}]}],
+    "providers": [{"name": "OpenAI", "api_type": "openai_compatible", "api_key": "", "base_url": "", "models": [{"name": "gpt-4.1", "capabilities": {"vision": True}}]}],
     "prompt": {"profile": "default", "variables": {}},
     "tool": {"allow": [], "deny": [], "max_rounds": 0},
     "skill": {
@@ -200,18 +200,42 @@ def validate_config(config: Dict[str, Any]) -> None:
             raise ValueError(f"agents.{name}.tools must be a list of strings")
         if "background" in definition and not isinstance(definition["background"], bool):
             raise ValueError(f"agents.{name}.background must be a boolean")
+        # Skills whitelist (sub-agent only sees these). Optional.
+        _expect_type(definition, "skills", list, f"agents.{name}")
+        if "skills" in definition and not all(isinstance(s, str) for s in definition["skills"]):
+            raise ValueError(f"agents.{name}.skills must be a list of strings")
+        # Hook types this sub-agent triggers. Each value must be one
+        # of the supported hook types the runtime recognises
+        # (matches cfg.hooks keys). Empty list = inherit all hook
+        # types from the parent.
+        _expect_type(definition, "hooks", list, f"agents.{name}")
+        if "hooks" in definition:
+            valid_hook_types = {"before_turn", "after_turn", "before_tool", "after_tool"}
+            for hk in definition["hooks"]:
+                if not isinstance(hk, str):
+                    raise ValueError(f"agents.{name}.hooks must be a list of strings")
+                if hk not in valid_hook_types:
+                    raise ValueError(
+                        f"agents.{name}.hooks contains unknown type '{hk}'. "
+                        f"Valid types: {sorted(valid_hook_types)}"
+                    )
+        # Memory: "inherited" (default — same as parent) or "none" (stateless).
+        if "memory" in definition and definition["memory"] not in ("inherited", "none"):
+            raise ValueError(f"agents.{name}.memory must be 'inherited' or 'none'")
 
 
 def load_effective_config(
     global_path: Path | None = None,
-    workspace_path: Path | None = None,
     session_override: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
+    """Load the global config (~/.ziva/config.yaml) and merge any session
+    override on top. The runtime has a single source of truth — the global
+    config file under the user's home directory. Workspace-local configs
+    are intentionally not consulted.
+    """
     config = dict(DEFAULT_CONFIG)
     if global_path:
         config = _deep_merge(config, _load_yaml(global_path))
-    if workspace_path:
-        config = _deep_merge(config, _load_yaml(workspace_path))
     if session_override:
         config = _deep_merge(config, session_override)
     validate_config(config)

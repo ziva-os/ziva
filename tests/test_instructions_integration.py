@@ -17,7 +17,7 @@ class CaptureAdapter:
 def test_instructions_injected_into_prompt(tmp_path):
     (tmp_path / "AGENTS.md").write_text("Always use type hints")
     adapter = CaptureAdapter()
-    rt = Runtime.create(workspace_root=tmp_path, model_adapter=adapter)
+    rt = Runtime.create(workspace_root=tmp_path)
     asyncio.run(rt.chat([ChatMessage(role="user", content="hello")], session_id="s1"))
     assert adapter.last_system_prompt is not None
     assert "Always use type hints" in adapter.last_system_prompt
@@ -27,7 +27,7 @@ def test_environment_context_injected(tmp_path, monkeypatch):
     monkeypatch.setenv("SHELL", "/bin/zsh")
     monkeypatch.setenv("TZ", "Asia/Shanghai")
     adapter = CaptureAdapter()
-    rt = Runtime.create(workspace_root=tmp_path, model_adapter=adapter)
+    rt = Runtime.create(workspace_root=tmp_path)
 
     asyncio.run(rt.chat([ChatMessage(role="user", content="hello")], session_id="s2"))
 

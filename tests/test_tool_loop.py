@@ -27,7 +27,7 @@ def test_model_tool_model_loop():
     async def _run():
         root = Path(__file__).resolve().parents[1]
         adapter = ToolLoopAdapter()
-        rt = Runtime.create(workspace_root=root, model_adapter=adapter)
+        rt = Runtime.create(workspace_root=root)
         result = await rt.chat([ChatMessage(role="user", content="say hi")], session_id="loop-1")
         assert result.content == "final answer"
         assert adapter.calls == 2

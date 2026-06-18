@@ -28,7 +28,7 @@ def test_switch_model_does_not_kill_background_session():
     async def _run():
         root = Path(__file__).resolve().parents[1]
         adapter_a = DelayedAdapter("A")
-        rt = Runtime.create(workspace_root=root, model_adapter=adapter_a)
+        rt = Runtime.create(workspace_root=root)
 
         # Monkey-patch _create_adapter so it never fails and returns our test adapter
         from ziva_runtime import runtime as runtime_module
@@ -45,7 +45,6 @@ def test_switch_model_does_not_kill_background_session():
         adapter_b = DelayedAdapter("B")
         rt.config["model"] = {"name": "Kimi-K2.6"}
         runtime_module._create_adapter = lambda config: adapter_b
-        rt.model_adapter = adapter_b
 
         # Start session B
         task_b = asyncio.create_task(

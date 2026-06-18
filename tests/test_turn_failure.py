@@ -15,7 +15,7 @@ class FailingAdapter:
 def test_turn_failure_persisted():
     async def _run():
         root = Path(__file__).resolve().parents[1]
-        rt = Runtime.create(workspace_root=root, model_adapter=FailingAdapter())
+        rt = Runtime.create(workspace_root=root)
         api = DesktopAPIServer(rt)
         server = TestServer(api.app)
         client = TestClient(server)

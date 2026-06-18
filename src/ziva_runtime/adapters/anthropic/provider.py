@@ -215,6 +215,7 @@ class AnthropicChatAdapter:
             usage=usage_dict,
             finish_reason=resp.stop_reason or "stop",
             tool_calls=tool_calls,
+            reasoning_content=reasoning_content,
             reasoning_signature=getattr(resp, "signature", None),
         )
 
@@ -260,9 +261,10 @@ class AnthropicChatAdapter:
                         }
                     elif btype == "thinking":
                         sig = getattr(event.content_block, "signature", None)
+                        initial_thinking = getattr(event.content_block, "thinking", "") or ""
                         yield StreamDelta(
                             content="",
-                            reasoning_content="",
+                            reasoning_content=initial_thinking,
                             reasoning_signature=sig,
                         )
 
@@ -276,6 +278,13 @@ class AnthropicChatAdapter:
                         idx = getattr(event, "index", -1)
                         if idx in tool_calls_acc:
                             tool_calls_acc[idx]["arguments"] += event.delta.partial_json
+
+                elif event.type == "content_block_stop":
+                    btype = getattr(event.content_block, "type", None)
+                    if btype == "thinking":
+                        sig = getattr(event.content_block, "signature", None)
+                        if sig:
+                            yield StreamDelta(content="", reasoning_signature=sig)
 
                 elif event.type == "message_delta":
                     finish_reason = event.delta.stop_reason if hasattr(event.delta, "stop_reason") else None

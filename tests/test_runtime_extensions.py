@@ -14,7 +14,7 @@ class FakeAdapter:
 def test_runtime_memory_integration():
     async def _run():
         root = Path(__file__).resolve().parents[1]
-        rt = Runtime.create(workspace_root=root, model_adapter=FakeAdapter())
+        rt = Runtime.create(workspace_root=root)
         result = await rt.chat([ChatMessage(role="user", content="hello")], session_id="s1")
         assert "hello" in result.content
 

@@ -5,7 +5,6 @@ from pathlib import Path
 from ziva_runtime.runtime import Runtime
 from ziva_runtime.shared_types import ChatMessage, ChatResult, StreamDelta, ToolCallItem
 
-
 def test_compaction_estimates_tokens():
     from ziva_runtime.session.compaction import estimate_tokens
 
@@ -17,7 +16,6 @@ def test_compaction_estimates_tokens():
     assert tokens > 0
     # Each message has ~10 overhead + content estimate
     assert tokens < 100
-
 
 def test_compaction_prunes_tool_messages():
     """Prune keeps the tool message structure but collapses the output content
@@ -47,7 +45,6 @@ def test_compaction_prunes_tool_messages():
     user_msgs = [m for m in pruned if m.role == "user"]
     assert len(user_msgs) == 2
 
-
 def test_compaction_noop_when_too_few_user_turns():
     """If the message list has <= keep_last_assistant_turns asst messages,
     compact_messages returns the same list (no-op)."""
@@ -65,14 +62,13 @@ def test_compaction_noop_when_too_few_user_turns():
     ]
     async def _run():
         result = await compact_messages(
-            msgs, context_window=100, model_name="m", model_adapter=MockAdapter(),
+            msgs, context_window=100, model_name="m",
             keep_last_assistant_turns=3,
         )
         # No-op: same list reference, no summary created.
         assert result is msgs
 
     asyncio.run(_run())
-
 
 def test_compaction_keeps_recent_assistant_turns():
     """Compact splits at the K-th-from-last asst message, keeping the last K
@@ -101,7 +97,7 @@ def test_compaction_keeps_recent_assistant_turns():
     ]
     async def _run():
         result = await compact_messages(
-            msgs, context_window=100, model_name="m", model_adapter=MockAdapter(),
+            msgs, context_window=100, model_name="m",
             keep_last_assistant_turns=2,
         )
         # asst_indices = [1, 3, 5, 7]; K=2 → cutoff = 5 (a3). NO walk-back.
@@ -116,7 +112,6 @@ def test_compaction_keeps_recent_assistant_turns():
         assert result[3].content == "a4"
 
     asyncio.run(_run())
-
 
 def test_compaction_counts_assistant_turns_not_user_messages():
     """The key behavior change: K=3 asst turns should keep 3 model-call
@@ -150,7 +145,7 @@ def test_compaction_counts_assistant_turns_not_user_messages():
     ]
     async def _run():
         result = await compact_messages(
-            msgs, context_window=100, model_name="m", model_adapter=MockAdapter(),
+            msgs, context_window=100, model_name="m",
             keep_last_assistant_turns=3,
         )
         # asst_indices = [1, 3, 5, 7, 9, 11]; K=3 → cutoff = 7 (a3).
@@ -179,7 +174,6 @@ def test_compaction_counts_assistant_turns_not_user_messages():
 
     asyncio.run(_run())
 
-
 def test_compaction_noop_when_too_few_assistant_turns():
     """If the message list has ≤ K asst messages, compact returns the
     same list (no-op) — there's nothing older to summarize."""
@@ -198,14 +192,13 @@ def test_compaction_noop_when_too_few_assistant_turns():
     ]
     async def _run():
         result = await compact_messages(
-            msgs, context_window=100, model_name="m", model_adapter=MockAdapter(),
+            msgs, context_window=100, model_name="m",
             keep_last_assistant_turns=3,
         )
         # asst_indices = [1, 3]; len=2 ≤ K=3 → return msgs as-is, no LLM call
         assert result is msgs
 
     asyncio.run(_run())
-
 
 def test_compaction_keeps_exactly_k_assistant_cycles_in_chain():
     """The tight-window guarantee: even if a single user turn produced
@@ -232,7 +225,7 @@ def test_compaction_keeps_exactly_k_assistant_cycles_in_chain():
     ]
     async def _run():
         result = await compact_messages(
-            msgs, context_window=100, model_name="m", model_adapter=MockAdapter(),
+            msgs, context_window=100, model_name="m",
             keep_last_assistant_turns=3,
         )
         # asst_indices = [1, 3, 5, 7, 9]; K=3 → cutoff = 5 (a3). NO walk-back.
@@ -250,7 +243,6 @@ def test_compaction_keeps_exactly_k_assistant_cycles_in_chain():
         assert not any(m.content == "u1" for m in result[1:])
 
     asyncio.run(_run())
-
 
 def test_compose_post_compact_on_disk_first_compact():
     """On the first compact, the on-disk layout after compact is
@@ -306,7 +298,6 @@ def test_compose_post_compact_on_disk_first_compact():
     assert result[6] == {"role": "assistant", "content": "a3"}
     assert result[7] == {"role": "user", "content": "u4"}
     assert result[8] == {"role": "assistant", "content": "a4"}
-
 
 def test_compose_post_compact_on_disk_second_compact():
     """On the second compact, the previous summary is preserved in
@@ -374,7 +365,6 @@ def test_compose_post_compact_on_disk_second_compact():
     assert result[10] == {"role": "user", "content": "u5"}
     assert result[11] == {"role": "assistant", "content": "a5"}
 
-
 def test_compose_post_compact_on_disk_noop_when_too_few_assistant_turns():
     """If find_cutoff_in_llm_visible returns -1 (no split possible), the
     helper should just return current_on_disk + new_working as-is (no split)."""
@@ -395,7 +385,6 @@ def test_compose_post_compact_on_disk_noop_when_too_few_assistant_turns():
     # Helper still concatenates, but caller shouldn't use this path; the
     # _apply_compact_to_disk wrapper short-circuits on cutoff == -1.
     assert result == on_disk + new_working_dicts
-
 
 def test_doom_loop_detection():
     class DoomLoopAdapter:
@@ -420,7 +409,7 @@ def test_doom_loop_detection():
         root = Path(__file__).resolve().parents[1]
         rt = Runtime.create(
             workspace_root=root,
-            model_adapter=DoomLoopAdapter(),
+
             session_override={"tool": {"max_rounds": 10}},
         )
         result = await rt.chat([ChatMessage(role="user", content="loop")], session_id="doom-1")
