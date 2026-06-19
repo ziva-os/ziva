@@ -1314,7 +1314,9 @@ class DesktopAPIServer:
 
         servers = []
         for name in mcp_client.connected_servers:
-            tool_count = sum(1 for t in mcp_client._tools if True)
+            # Count tools belonging to *this* server only (MCPToolWrapper carries
+            # its server name). Previously this summed ALL tools for every server.
+            tool_count = sum(1 for t in mcp_client._tools if getattr(t, "_server_name", None) == name)
             servers.append({"name": name, "status": "connected", "tool_count": tool_count})
 
         mcp_tools = []
