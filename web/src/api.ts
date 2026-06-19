@@ -101,7 +101,7 @@ export async function deleteSession(sid: string, opts?: { workspace?: string }):
   });
 }
 
-export async function updateSession(sid: string, updates: { name?: string; model_name?: string; workspace?: string }): Promise<void> {
+export async function updateSession(sid: string, updates: { name?: string; model_name?: string; workspace?: string; approval_policy?: string }): Promise<void> {
   await api("PATCH", `/sessions/${sid}`, updates);
 }
 

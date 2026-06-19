@@ -10,6 +10,7 @@ import { Store } from "./state";
 import type { AppState, PendingAttachment, RightPanelTab } from "./state";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import Prism from "prismjs";
 
 // ---- Helpers ----
 function esc(s: string): string {
@@ -154,9 +155,40 @@ function setSessionPending(sid: string, text: string | null, retries: number = 0
 }
 
 const sse = new SSEPool();
-const pendingTools = new Map<string, HTMLElement>();
-let currentAssistantEl: HTMLElement | null = null;
-let currentTextParts: { thinking: string; main: string } = { thinking: "", main: "" };
+
+// Per-session streaming context. Keyed by sid so two panes can stream
+// concurrently without their in-progress assistant element / pending tool
+// cards colliding. The streaming text buffers (_main / _reasoning) live on
+// the assistant DOM element itself, so isolating `assistantEl` +
+// `pendingTools` per sid is enough for correct concurrent streaming.
+interface StreamCtx { assistantEl: HTMLElement | null; pendingTools: Map<string, HTMLElement>; }
+const _streamCtx = new Map<string, StreamCtx>();
+function streamCtx(sid: string): StreamCtx {
+  let c = _streamCtx.get(sid);
+  if (!c) { c = { assistantEl: null, pendingTools: new Map() }; _streamCtx.set(sid, c); }
+  return c;
+}
+function clearStreamCtx(sid: string): void {
+  const c = _streamCtx.get(sid);
+  if (!c) return;
+  if (c.assistantEl) c.assistantEl.remove();
+  c.pendingTools.forEach((el) => el.remove());
+  _streamCtx.delete(sid);
+}
+// The sid whose turn is currently being processed by handleSessionEvent.
+// Set only while a streaming event is being handled (null during history
+// rendering), so the append* helpers' "next assistant segment starts
+// fresh" invalidation hits the right session without clobbering others.
+let liveStreamSid: string | null = null;
+// The messages container for that session. While a streaming event is
+// being handled, the no-arg scrollBottom()/removeTyping()/appendTyping()/
+// append* helpers resolve to this target so the same code streams into a
+// split pane as into #messages. Null outside event handling → defaults to
+// #messages (the active container), which is correct for history rendering.
+let liveStreamTarget: HTMLElement | null = null;
+function invalidateLiveStreamEl(): void {
+  if (liveStreamSid) streamCtx(liveStreamSid).assistantEl = null;
+}
 
 // Global voice-input state. Bound to `#btnMic` in the (single, global)
 // composer. The MediaRecorder is a single resource — only one
@@ -340,7 +372,7 @@ function renderTabBar() {
       closeRightPanelTab(((btn as HTMLElement).dataset.closeTab)!);
     };
   });
-  const addBtn = bar.querySelector("#btnAddTab");
+  const addBtn = bar.querySelector("#btnAddTab") as HTMLElement;
   if (addBtn) addBtn.onclick = showAddTabMenu;
   const fsBtn = bar.querySelector("#btnFullscreenPanel");
   if (fsBtn) fsBtn.addEventListener("click", toggleFullscreenPanel);
@@ -372,7 +404,7 @@ function renderWelcomeState() {
     welcome.querySelectorAll(".welcome-action-btn").forEach(btn => {
       (btn as HTMLElement).onclick = () => {
         const type = (btn as HTMLElement).dataset.panelType;
-        if (type) openRightPanel(type);
+        if (type) openRightPanel(type as RightPanelTab["type"]);
       };
     });
   }
@@ -602,8 +634,8 @@ function renderReviewTab(container: HTMLElement) {
       </div>
     </div>`;
   const body = container.querySelector("[data-review-body]") as HTMLElement;
-  container.querySelector('[data-action="expand-all"]')!.onclick = () => body.querySelectorAll(".diff-file-content").forEach(el => ((el as HTMLElement).style.display = "block"));
-  container.querySelector('[data-action="collapse-all"]')!.onclick = () => body.querySelectorAll(".diff-file-content").forEach(el => ((el as HTMLElement).style.display = "none"));
+  (container.querySelector('[data-action="expand-all"]') as HTMLElement).onclick = () => body.querySelectorAll(".diff-file-content").forEach(el => ((el as HTMLElement).style.display = "block"));
+  (container.querySelector('[data-action="collapse-all"]') as HTMLElement).onclick = () => body.querySelectorAll(".diff-file-content").forEach(el => ((el as HTMLElement).style.display = "none"));
   // Filter handler
   const filterInput = container.querySelector("[data-review-filter]") as HTMLInputElement;
   filterInput.addEventListener("input", () => {
@@ -656,14 +688,14 @@ function renderBrowserTab(container: HTMLElement) {
     if (isElectron) { if (frame) frame.loadURL(url); }
     else { frame.src = "/api/proxy?url=" + encodeURIComponent(url); }
   };
-  container.querySelector(".browser-go-btn")!.onclick = navigate;
+  (container.querySelector(".browser-go-btn") as HTMLElement).onclick = navigate;
   urlInput.addEventListener("keydown", (e: KeyboardEvent) => { if (e.key === "Enter") navigate(); });
   if (isElectron) {
     frame?.addEventListener("did-navigate", (e: any) => { urlInput.value = e.url; });
     frame?.addEventListener("did-navigate-in-page", (e: any) => { urlInput.value = e.url; });
-    container.querySelector('[data-action="back"]')!.onclick = () => { try { frame?.goBack(); } catch {} };
-    container.querySelector('[data-action="forward"]')!.onclick = () => { try { frame?.goForward(); } catch {} };
-    container.querySelector('[data-action="reload"]')!.onclick = () => { try { frame?.reload(); } catch {} };
+    (container.querySelector('[data-action="back"]') as HTMLElement).onclick = () => { try { frame?.goBack(); } catch {} };
+    (container.querySelector('[data-action="forward"]') as HTMLElement).onclick = () => { try { frame?.goForward(); } catch {} };
+    (container.querySelector('[data-action="reload"]') as HTMLElement).onclick = () => { try { frame?.reload(); } catch {} };
     // Right-click on selected text → send to chat input with context
     frame?.addEventListener("context-menu", (e: any) => {
       const selected = (e.selectionText || "").trim();
@@ -701,9 +733,9 @@ function renderBrowserTab(container: HTMLElement) {
       setTimeout(() => document.addEventListener("click", closeMenu, true), 10);
     });
   } else {
-    container.querySelector('[data-action="back"]')!.onclick = () => { try { frame.contentWindow?.history.back(); } catch {} };
-    container.querySelector('[data-action="forward"]')!.onclick = () => { try { frame.contentWindow?.history.forward(); } catch {} };
-    container.querySelector('[data-action="reload"]')!.onclick = () => { try { frame.contentWindow?.location.reload(); } catch { frame.src = frame.src; } };
+    (container.querySelector('[data-action="back"]') as HTMLElement).onclick = () => { try { frame.contentWindow?.history.back(); } catch {} };
+    (container.querySelector('[data-action="forward"]') as HTMLElement).onclick = () => { try { frame.contentWindow?.history.forward(); } catch {} };
+    (container.querySelector('[data-action="reload"]') as HTMLElement).onclick = () => { try { frame.contentWindow?.location.reload(); } catch { frame.src = frame.src; } };
   }
 }
 
@@ -2673,10 +2705,7 @@ async function deleteSession(sid: string, workspace?: string) {
 async function loadHistory(sid: string) {
   showEmptyState(true);
   $("messages").innerHTML = "";
-  currentAssistantEl = null;
-  currentTextParts = { thinking: "", main: "" };
-  pendingTools.forEach(c => c.remove());
-  pendingTools.clear();
+  clearStreamCtx(sid);
   updateContextProgress(0, 0);
 
   const ok = await loadHistoryInto(sid, $("messages"));
@@ -2935,7 +2964,7 @@ function appendCompactBoundary(
   droppedCount: number,
   start: number,
   end: number,
-  target: HTMLElement = $("messages"),
+  target: HTMLElement = (liveStreamTarget || $("messages")),
 ): void {
   const wrapper = document.createElement("div");
   wrapper.className = "compact-boundary";
@@ -2994,7 +3023,7 @@ function attachmentUrl(url: string): string {
 // compact-history expand affordance passes a different container so the
 // folded messages reuse the same DOM (and styling) as the live chat,
 // just visually scaled down via a wrapper class.
-function appendUserMsg(text: string | unknown[], target: HTMLElement = $("messages")): HTMLElement {
+function appendUserMsg(text: string | unknown[], target: HTMLElement = (liveStreamTarget || $("messages"))): HTMLElement {
   showEmptyState(false);
   const div = document.createElement("div");
   div.className = "msg user";
@@ -3015,7 +3044,7 @@ function appendUserMsg(text: string | unknown[], target: HTMLElement = $("messag
   }
   div.innerHTML = `<div class="msg-inner"><div class="role-label"><span class="dot"></span> You</div><div class="md">${body}</div></div>`;
   target.appendChild(div);
-  currentAssistantEl = null;
+  invalidateLiveStreamEl();
   highlightCode(div);
   // Return the element so the caller can remove it on failure
   // (the optimistic render is reverted when the server rejects the
@@ -3039,7 +3068,7 @@ function mergeThinking(reasoning: string | undefined, content: string): string {
   return "";
 }
 
-function appendAssistantMsg(text: string, target: HTMLElement = $("messages"), reasoning: string = "") {
+function appendAssistantMsg(text: string, target: HTMLElement = (liveStreamTarget || $("messages")), reasoning: string = "") {
   const div = document.createElement("div");
   div.className = "msg assistant";
   const thinking = mergeThinking(reasoning || undefined, text);
@@ -3053,46 +3082,42 @@ function appendAssistantMsg(text: string, target: HTMLElement = $("messages"), r
   target.appendChild(div);
   addCopyButtons(div);
   highlightCode(div);
-  currentAssistantEl = null;
+  invalidateLiveStreamEl();
 }
 
 /**
- * Wipe everything that's mid-flight for the *current* turn: the
- * streaming assistant block (its _main buffer + DOM), any in-flight
- * tool cards, and the typing indicator. Used when the user switches
- * sessions (abandon current turn) and when the server emits
- * `stream_reset` before a same-input retry (server-side failure that
- * never reached `model_response`, so disk / history have no record
- * of it — we just need the UI to forget the partial text the deltas
- * already painted).
+ * Wipe everything mid-flight for a session's current turn: the streaming
+ * assistant block, any in-flight tool cards, and the typing indicator —
+ * all scoped to `sid` (defaults to the active session). Used on session
+ * switch (abandon current turn) and on `stream_reset` (server retries the
+ * same input; the partial text the deltas painted must be forgotten).
  */
-function resetStreamingState() {
-  if (currentAssistantEl) {
-    currentAssistantEl.remove();
+function resetStreamingState(sid?: string) {
+  const targetSid = sid || store.get().activeSid || "";
+  if (targetSid) {
+    clearStreamCtx(targetSid);
+    const t = sessionMessagesEl(targetSid);
+    if (t) removeTyping(t);
   }
-  currentAssistantEl = null;
-  currentTextParts = { thinking: "", main: "" };
-  pendingTools.forEach(c => c.remove());
-  pendingTools.clear();
-  removeTyping();
 }
 
-function getOrCreateAssistantEl(): HTMLElement {
-  if (!currentAssistantEl) {
+function getOrCreateAssistantEl(sid: string = liveStreamSid || "", target: HTMLElement = liveStreamTarget || $("messages")): HTMLElement {
+  const ctx = streamCtx(sid);
+  if (!ctx.assistantEl) {
     const div = document.createElement("div");
     div.className = "msg assistant";
     div.innerHTML = `<div class="msg-inner"><div class="role-label"><span class="dot"></span> Assistant</div><div class="md"></div></div>`;
-    $("messages").appendChild(div);
-    currentAssistantEl = div.querySelector(".md") as HTMLElement;
-    currentTextParts = { thinking: "", main: "" };
-    (currentAssistantEl as any)._main = "";
+    target.appendChild(div);
+    const md = div.querySelector(".md") as HTMLElement;
+    (md as any)._main = "";
     // Buffer for streaming `reasoning_delta` events (Anthropic / OpenAI
     // `reasoning_effort` providers send thinking in a separate field,
     // not embedded as <think> tags in the main content). Rendered into
     // the thinking card alongside any inline <think> blocks.
-    (currentAssistantEl as any)._reasoning = "";
+    (md as any)._reasoning = "";
+    ctx.assistantEl = md;
   }
-  return currentAssistantEl!;
+  return ctx.assistantEl!;
 }
 
 // Render the assistant message body (thinking card + markdown) from the
@@ -3113,7 +3138,7 @@ function renderAssistantContent(el: HTMLElement) {
   el.innerHTML = html;
 }
 
-function appendTyping(target: HTMLElement = $("messages")) {
+function appendTyping(target: HTMLElement = (liveStreamTarget || $("messages"))) {
   if (target.querySelector(".typing-indicator")) return;
   const el = document.createElement("div");
   el.className = "typing-indicator";
@@ -3121,7 +3146,7 @@ function appendTyping(target: HTMLElement = $("messages")) {
   target.appendChild(el);
 }
 
-function removeTyping(target: HTMLElement = $("messages")) {
+function removeTyping(target: HTMLElement = (liveStreamTarget || $("messages"))) {
   const el = target.querySelector(".typing-indicator");
   if (el) el.remove();
 }
@@ -3190,7 +3215,7 @@ function appendToolCard(
   output?: unknown,
   subagentTools?: string[],
   isPruned: boolean = false,
-  target: HTMLElement = $("messages"),
+  target: HTMLElement = (liveStreamTarget || $("messages")),
 ): HTMLElement {
   const card = document.createElement("div");
   card.className = "tool-card" + (status === "running" ? " open" : "") + (isPruned ? " pruned" : "");
@@ -3265,7 +3290,7 @@ function appendToolCard(
   };
 
   target.appendChild(card);
-  currentAssistantEl = null;
+  invalidateLiveStreamEl();
   return card;
 }
 
@@ -3294,7 +3319,7 @@ function appendApprovalCard(requestId: string, toolName: string, args: Record<st
     card.remove();
   };
   $("messages").appendChild(card);
-  currentAssistantEl = null;
+  invalidateLiveStreamEl();
 }
 
 interface OptionDisplay {
@@ -3517,12 +3542,12 @@ function appendQuestionCard(question: string, rawOptions: unknown[], multiSelect
  * away), we append the card to the end so the user still sees that
  * the question was answered.
  */
-function appendError(msg: string, target: HTMLElement = $("messages")) {
+function appendError(msg: string, target: HTMLElement = (liveStreamTarget || $("messages"))) {
   const div = document.createElement("div");
   div.className = "error-card";
   div.textContent = "Error: " + msg;
   target.appendChild(div);
-  currentAssistantEl = null;
+  invalidateLiveStreamEl();
 }
 
 // ---- Compact progress toast (aicoder-aligned) ----
@@ -3578,7 +3603,7 @@ function hideCompactToast(): void {
   if (toast) toast.classList.add("hidden");
 }
 
-function scrollBottom(target: HTMLElement = $("messages")) {
+function scrollBottom(target: HTMLElement = (liveStreamTarget || $("messages"))) {
   if (store.get().autoScroll) { target.scrollTop = target.scrollHeight; }
 }
 
@@ -3600,13 +3625,15 @@ function routeSSEEvent(ev: api.Event) {
   if (!sid) return;
   const { activeSid, splitSessions } = store.get();
   if (sid === activeSid) {
-    handleEvent(ev, true);
+    handleSessionEvent(sid, ev, true);
   } else {
     if (splitSessions.includes(sid)) {
+      // Live-stream into the pane (delta / reasoning_delta / model_response /
+      // tool_* / ask_user / permission). Previously only turn-boundary events
+      // refreshed the pane from history, so a split session showed just the
+      // user message with no streaming model output and no stop button.
+      handleSessionEvent(sid, ev, false);
       const t = ev.type as string;
-      if (t === "turn_start" || t === "turn_end" || t === "turn_failed" || t === "turn_cancelled") {
-        refreshSplitPane(sid);
-      }
       // Update this pane's context ring from usage events. Without this
       // routing, a background pane's token ring never moved — usage_update
       // / round_complete were only handled for the active session.
@@ -3712,7 +3739,7 @@ async function replayRunningTurn(sid: string) {
       setActiveRunning(true);
       if (activeTurn.events) {
         for (const ev of activeTurn.events) {
-          handleEvent(ev, false);
+          handleSessionEvent(sid, ev, false);
         }
         scrollBottom();
       }
@@ -3764,12 +3791,16 @@ async function reconcileRunningSessions() {
   }
 }
 
-function handleEvent(ev: api.Event, updateScroll: boolean = true) {
+function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = true) {
+  if (!sid) return;
+  liveStreamSid = sid;
+  try {
   // Skip re-emitted internal sub-agent events (delta, tool_start, tool_end, etc.)
   // But let subagent_start / subagent_end through for background agent display.
   if ((ev as any)._subagent && ev.type !== "subagent_start" && ev.type !== "subagent_end") return;
 
-  const sid = (ev as any).session_id;
+  const target = sessionMessagesEl(sid) || $("messages");
+  liveStreamTarget = target;
   const t = ev.type as string;
   const { activeSid, sessions } = store.get();
 
@@ -3857,6 +3888,11 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
       setActiveRunning(true);
       appendTyping();
       updateSendStopButton();
+    } else {
+      // Secondary split-pane session: reflect running state on its own
+      // composer + typing chip (per-sid, no active/background fork).
+      setComposerRunning(sid, true);
+      appendTyping();
     }
   } else if (t === "usage_update") {
     const usage = ev.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
@@ -3875,7 +3911,7 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     resetStreamingState();
   } else if (t === "delta") {
     removeTyping();
-    showEmptyState(false);
+    if (target === $("messages")) showEmptyState(false);
     const el = getOrCreateAssistantEl();
     const content = (ev.content as string) || "";
     (el as any)._main += content;
@@ -3884,7 +3920,7 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
       (el as any)._renderTimer = setTimeout(() => {
         (el as any)._renderTimer = null;
         renderAssistantContent(el);
-        if (updateScroll) scrollBottom();
+        if (updateScroll) scrollBottom(target);
       }, 80);
     }
   } else if (t === "reasoning_delta") {
@@ -3895,7 +3931,7 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     // thinking card. We share the same throttle timer as the main
     // `delta` handler so a fast reasoning burst doesn't double-render.
     removeTyping();
-    showEmptyState(false);
+    if (target === $("messages")) showEmptyState(false);
     const el = getOrCreateAssistantEl();
     const content = (ev.content as string) || "";
     (el as any)._reasoning += content;
@@ -3903,13 +3939,13 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
       (el as any)._renderTimer = setTimeout(() => {
         (el as any)._renderTimer = null;
         renderAssistantContent(el);
-        if (updateScroll) scrollBottom();
+        if (updateScroll) scrollBottom(target);
       }, 80);
     }
   } else if (t === "model_response") {
     // Final full response; ensure _main matches exactly to avoid drift from deltas
     removeTyping();
-    showEmptyState(false);
+    if (target === $("messages")) showEmptyState(false);
     const el = getOrCreateAssistantEl();
     // Cancel any pending throttle timer so it doesn't overwrite the final render
     if ((el as any)._renderTimer) {
@@ -3945,13 +3981,13 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
     removeTyping();
     const key = `${ev.round}:${ev.call_id || ev.tool}`;
     const card = appendToolCard(ev.tool as string, (ev.arguments || {}) as Record<string, unknown>, "running");
-    pendingTools.set(key, card);
+    streamCtx(sid).pendingTools.set(key, card);
     if (updateScroll) scrollBottom();
   } else if (t === "tool_end") {
     const key = `${ev.round}:${ev.call_id || ev.tool}`;
-    const pending = pendingTools.get(key);
+    const pending = streamCtx(sid).pendingTools.get(key);
     if (pending) {
-      pendingTools.delete(key);
+      streamCtx(sid).pendingTools.delete(key);
       pending.remove();
     }
     if (ev.tool === "ask_user") {
@@ -3972,11 +4008,8 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
         const imgMeta = (output as any).metadata || {};
         const imgPath = imgMeta.path || "";
         if (imgPath) {
-          // Load _hidden messages to find the image URL
-          const sid = store.get().activeSid;
-          if (sid) {
-            loadHiddenImageForTool(sid, imgPath);
-          }
+          // Load _hidden messages to find the image URL (this session's).
+          loadHiddenImageForTool(sid, imgPath);
           // Show placeholder while loading
           output = { type: "image", metadata: imgMeta };
         }
@@ -4040,7 +4073,7 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
         });
       });
       setActiveRunning(false);
-      currentAssistantEl = null;
+      invalidateLiveStreamEl();
       updateSendStopButton();
       refreshPlan();
       if ($("rightPanel").classList.contains("show")) refreshActiveReviewTabs();
@@ -4050,7 +4083,7 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
       flushComposerQueue(sid, 30);
     }
   } else if (t === "round_complete") {
-    currentAssistantEl = null;
+    invalidateLiveStreamEl();
     const usage = ev.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
     if (usage?.prompt_tokens) {
       const contextWindow = store.get().config.contextWindow || 200000;
@@ -4134,6 +4167,7 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
   }
 
   updateConnStatus(sse.isConnected());
+  } finally { liveStreamSid = null; liveStreamTarget = null; }
 }
 
 function updateConnStatus(connected: boolean) {
