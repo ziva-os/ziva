@@ -19,6 +19,30 @@ function esc(s: string): string {
   return d.innerHTML;
 }
 
+// Drag a vertical resizer to resize a pane's width. `side` = which side the
+// target pane sits on relative to the handle: a "left" pane grows when the
+// handle is dragged right, a "right" pane grows when dragged left. Width is
+// not persisted (per product decision — resets on reopen).
+function bindResizer(handle: HTMLElement, target: HTMLElement, side: "left" | "right", min = 120, max = 600): void {
+  handle.addEventListener("mousedown", (e: MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = target.offsetWidth;
+    const dir = side === "left" ? 1 : -1;
+    target.style.maxWidth = "none"; // clear any CSS max-width cap so drag wins
+    const onMove = (ev: MouseEvent) => {
+      const w = Math.max(min, Math.min(max, startW + dir * (ev.clientX - startX)));
+      target.style.width = w + "px";
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+}
+
 // Strip <think>...</think> blocks (and any unclosed <think>…EOF) from
 // automation outputs. The model's chain-of-thought is internal noise;
 // the UI only shows the user-facing part. Runs before line-clamp
@@ -625,6 +649,7 @@ function renderReviewTab(container: HTMLElement) {
         <div class="review-diff-area" data-review-body>
           <div class="diff-empty">No changes yet</div>
         </div>
+        <div class="resizer" data-review-resizer title="Drag to resize"></div>
         <div class="review-file-sidebar">
           <div class="review-file-search">
             <input type="text" placeholder="Filter files..." data-review-filter />
@@ -633,6 +658,7 @@ function renderReviewTab(container: HTMLElement) {
         </div>
       </div>
     </div>`;
+  bindResizer(container.querySelector("[data-review-resizer]") as HTMLElement, container.querySelector(".review-file-sidebar") as HTMLElement, "right", 140);
   const body = container.querySelector("[data-review-body]") as HTMLElement;
   (container.querySelector('[data-action="expand-all"]') as HTMLElement).onclick = () => body.querySelectorAll(".diff-file-content").forEach(el => ((el as HTMLElement).style.display = "block"));
   (container.querySelector('[data-action="collapse-all"]') as HTMLElement).onclick = () => body.querySelectorAll(".diff-file-content").forEach(el => ((el as HTMLElement).style.display = "none"));
@@ -750,12 +776,14 @@ function renderFilesTab(container: HTMLElement) {
     <div class="panel-content-body">
       <div class="files-layout">
         <div class="files-tree" data-files-tree></div>
+        <div class="resizer" data-files-resizer title="Drag to resize"></div>
         <div class="files-viewer" data-files-viewer>
           <div class="files-viewer-empty">Select a file to view</div>
         </div>
       </div>
     </div>`;
   loadFileTreeForContainer(container);
+  bindResizer(container.querySelector("[data-files-resizer]") as HTMLElement, container.querySelector("[data-files-tree]") as HTMLElement, "left", 120);
 }
 
 function initTerminal(tabId: string) {
@@ -1361,7 +1389,10 @@ function bindEvents() {
     if ((e.metaKey || e.ctrlKey) && e.key === "b") { e.preventDefault(); toggleSidebar(); }
     if ((e.metaKey || e.ctrlKey) && e.key === "n") { e.preventDefault(); createSession(); }
     if (e.key === "Escape") {
-      if (document.getElementById("skillsModalBackdrop")) {
+      if (document.getElementById("settingsModalBackdrop")) {
+        e.preventDefault();
+        closeSettingsModal();
+      } else if (document.getElementById("skillsModalBackdrop")) {
         e.preventDefault();
         closeSkillViewer();
       } else if (document.getElementById("automationsModalBackdrop")) {
@@ -2522,6 +2553,7 @@ function _doRenderSessions() {
 }
 
 async function createSession() {
+  closeAllFullpageOverlays();
   const id = await api.createSession();
   // New sessions always belong to the active workspace, so tag them here
   // so they show up in the right project group without waiting for the
@@ -5657,6 +5689,8 @@ async function refreshStatus() {
 
 // ---- Settings modal ----
 async function openSettingsModal() {
+  // Toggle: if already open, clicking Settings again closes it.
+  if (document.getElementById("settingsModalBackdrop")) { closeSettingsModal(); return; }
   closeAllFullpageOverlays();
   const backdrop = document.createElement("div");
   backdrop.className = "fullpage-overlay";

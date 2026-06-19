@@ -765,6 +765,8 @@ webview.browser-frame {
   flex: 1;
   overflow: hidden;
 }
+.resizer { width: 4px; cursor: col-resize; background: transparent; flex-shrink: 0; transition: background 0.1s; }
+.resizer:hover, .resizer:active { background: var(--accent); }
 .files-tree {
   width: 160px;
   min-width: 120px;

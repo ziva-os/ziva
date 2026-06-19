@@ -1354,6 +1354,7 @@ class DesktopAPIServer:
                 "current": self.runtime.config.get("approval", {}).get("policy", "suggest"),
                 "options": ["suggest", "auto-edit", "full-auto"],
             },
+            "agents": self.runtime.config.get("agents", {}),
         })
 
     @property
@@ -1887,7 +1888,12 @@ class DesktopAPIServer:
             return web.json_response({"error": str(exc)}, status=500)
 
     async def list_background_agents(self, request: web.Request) -> web.Response:
-        agents = list(self.runtime._background_agents.values())
+        # Whitelist serializable fields. The stored dict includes the asyncio
+        # Task under "task", which web.json_response cannot serialize — that
+        # made this endpoint 500 with a non-JSON body.
+        safe_keys = ("agent_id", "call_id", "session_id", "task_desc",
+                     "status", "result", "error", "tools_used", "finished_at")
+        agents = [{k: a.get(k) for k in safe_keys} for a in self.runtime._background_agents.values()]
         return web.json_response({"agents": agents})
 
     async def get_background_agent(self, request: web.Request) -> web.Response:
