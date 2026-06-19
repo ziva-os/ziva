@@ -287,10 +287,11 @@ class MCPClient:
         return self._tools
 
     async def _connect_server(self, cfg: MCPServerConfig) -> None:
-        try:
-            from agents.mcp import MCPServerSse, MCPServerStdio, MCPServerStreamableHttp
-        except ImportError:
-            raise RuntimeError("openai-agents is required for MCP support")
+        # Local thin wrapper over the `mcp` SDK (adapters/mcp/server.py),
+        # replacing the former openai-agents `agents.mcp` dependency.
+        from ziva_runtime.adapters.mcp.server import (
+            MCPServerSse, MCPServerStdio, MCPServerStreamableHttp,
+        )
 
         transport = cfg.transport.lower().replace("-", "_")
         if transport in ("stdio", "local") and cfg.command:

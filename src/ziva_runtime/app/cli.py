@@ -189,13 +189,6 @@ async def _repl_loop(runtime: Runtime, approval_policy: str, session_id: str | N
     # Suppress non-warning logs in REPL
     logging.getLogger("ziva_runtime").setLevel(logging.WARNING)
 
-    # Disable SDK tracing to avoid atexit shutdown errors on Ctrl+C
-    try:
-        from agents import set_tracing_disabled
-        set_tracing_disabled(True)
-    except ImportError:
-        pass
-
     console = Console()
 
     # Try prompt_toolkit for better input; fall back to bare input()

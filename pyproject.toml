@@ -13,14 +13,12 @@ dependencies = [
   "rich>=13.0.0",
   "prompt_toolkit>=3.0.0",
   "openai>=1.30.0",
+  "mcp>=1.0.0",
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0.0",
-]
-openai_agents = [
-  "openai-agents>=0.14.0",
 ]
 
 [project.scripts]
