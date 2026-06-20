@@ -24,6 +24,8 @@ class MCPServerConfig:
     headers: Dict[str, str] = field(default_factory=dict)
     cwd: str | None = None
     timeout: int = 120  # seconds
+    max_retry_attempts: int = 2  # retry transient failures (timeout / connect / HTTP 5xx)
+    retry_backoff_seconds_base: float = 1.0
 
 
 class MCPToolWrapper:
@@ -304,6 +306,8 @@ class MCPClient:
                 name=cfg.name,
                 params=params,
                 client_session_timeout_seconds=cfg.timeout,
+                max_retry_attempts=cfg.max_retry_attempts,
+                retry_backoff_seconds_base=cfg.retry_backoff_seconds_base,
             )
         elif transport in ("http", "streamable_http", "streamablehttp") and cfg.url:
             params = {"url": cfg.url, "headers": cfg.headers, "timeout": cfg.timeout}
@@ -311,6 +315,8 @@ class MCPClient:
                 name=cfg.name,
                 params=params,
                 client_session_timeout_seconds=cfg.timeout,
+                max_retry_attempts=cfg.max_retry_attempts,
+                retry_backoff_seconds_base=cfg.retry_backoff_seconds_base,
             )
         elif transport == "sse" and cfg.url:
             params = {"url": cfg.url, "headers": cfg.headers, "timeout": cfg.timeout}
@@ -318,6 +324,8 @@ class MCPClient:
                 name=cfg.name,
                 params=params,
                 client_session_timeout_seconds=cfg.timeout,
+                max_retry_attempts=cfg.max_retry_attempts,
+                retry_backoff_seconds_base=cfg.retry_backoff_seconds_base,
             )
         else:
             raise ValueError(f"Unsupported MCP transport: {cfg.transport}")
@@ -422,6 +430,8 @@ def _mcp_server_from_mapping(name: str, srv: Dict[str, Any]) -> MCPServerConfig 
         headers=_coerce_str_dict(srv.get("headers")),
         cwd=str(srv.get("cwd")) if srv.get("cwd") else None,
         timeout=int(srv.get("timeout", 120)),
+        max_retry_attempts=int(srv.get("max_retry_attempts", 2)),
+        retry_backoff_seconds_base=float(srv.get("retry_backoff_seconds_base", 1.0)),
     )
 
 

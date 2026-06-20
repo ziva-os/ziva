@@ -39,15 +39,55 @@ def _swallow_cleanup_noise(name: str, exc: BaseException) -> bool:
     return False
 
 
+def _is_retryable(exc: BaseException) -> bool:
+    """Transient failures worth retrying with backoff: timeouts, connection
+    drops, HTTP 5xx. Cancel-scope cleanup noise is NOT retried — it means the
+    connection is gone, not a transient hiccup."""
+    try:
+        import httpx
+        if isinstance(exc, (httpx.ConnectError, httpx.TimeoutException)):
+            return True
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code >= 500:
+            return True
+    except ImportError:
+        pass
+    msg = str(exc).lower()
+    return "timeout" in msg or "timed out" in msg
+
+
+def _map_mcp_error(exc: BaseException, name: str) -> BaseException:
+    """Translate low-level transport exceptions into readable messages —
+    mirrors agents.mcp's httpx → UserError mapping. Cancel-scope noise becomes
+    a clear 'connection closed'. Non-mappable errors pass through unchanged."""
+    try:
+        import httpx
+        if isinstance(exc, httpx.ConnectError):
+            return RuntimeError(f"MCP server {name!r}: connection lost — {exc}")
+        if isinstance(exc, httpx.TimeoutException):
+            return RuntimeError(f"MCP server {name!r}: timed out — {exc}")
+        if isinstance(exc, httpx.HTTPStatusError):
+            return RuntimeError(f"MCP server {name!r}: HTTP {exc.response.status_code} — {exc}")
+    except ImportError:
+        pass
+    if isinstance(exc, RuntimeError) and "cancel scope" in str(exc):
+        return RuntimeError(f"MCP server {name!r}: connection closed")
+    return exc
+
+
 class MCPServer:
     """Minimal MCP client over the `mcp` SDK's ClientSession."""
 
-    def __init__(self, name: str, client_session_timeout_seconds: Optional[float] = 5.0):
+    def __init__(self, name: str, client_session_timeout_seconds: Optional[float] = 5.0,
+                 max_retry_attempts: int = 0, retry_backoff_seconds_base: float = 1.0):
         self._name = name
         self.session: Any = None
         self.exit_stack: AsyncExitStack = AsyncExitStack()
         self._cleanup_lock: asyncio.Lock = asyncio.Lock()
         self.client_session_timeout_seconds = client_session_timeout_seconds
+        # Retry transient failures (timeouts / connection drops / HTTP 5xx) with
+        # exponential backoff. Mirrors agents.mcp's _run_with_retries.
+        self.max_retry_attempts = max(0, int(max_retry_attempts))
+        self.retry_backoff_seconds_base = max(0.0, float(retry_backoff_seconds_base))
         # Instance attribute so callers (ziva MCPClient) can override to, e.g.,
         # redirect the stdio subprocess's stderr to devnull.
         self.create_streams: Callable[[], Awaitable[Any]] = self._create_streams  # type: ignore[assignment]
@@ -96,7 +136,24 @@ class MCPServer:
     async def call_tool(self, tool_name: str, arguments: Optional[dict[str, Any]]) -> Any:
         if self.session is None:
             raise RuntimeError(f"MCP server {self._name!r} not connected")
-        return await self.session.call_tool(tool_name, arguments or {})
+        # Retry transient failures with exponential backoff, then map transport
+        # errors to readable messages (mirrors agents.mcp _run_with_retries +
+        # _raise_user_error_for_http_error).
+        last_exc: Optional[BaseException] = None
+        for attempt in range(self.max_retry_attempts + 1):
+            try:
+                return await self.session.call_tool(tool_name, arguments or {})
+            except Exception as exc:
+                last_exc = exc
+                if _is_retryable(exc) and attempt < self.max_retry_attempts:
+                    delay = self.retry_backoff_seconds_base * (2 ** attempt)
+                    logger.debug("MCP %s call %s failed (attempt %d/%d), retrying in %.1fs: %s",
+                                 self._name, tool_name, attempt + 1, self.max_retry_attempts, delay, exc)
+                    await asyncio.sleep(delay)
+                    continue
+                raise _map_mcp_error(exc, self._name) from exc
+        assert last_exc is not None
+        raise _map_mcp_error(last_exc, self._name)
 
     async def cleanup(self) -> None:
         async with self._cleanup_lock:
@@ -116,8 +173,10 @@ class MCPServer:
 
 
 class MCPServerStdio(MCPServer):
-    def __init__(self, name: str, params: dict[str, Any], client_session_timeout_seconds: Optional[float] = 5.0):
-        super().__init__(name=name, client_session_timeout_seconds=client_session_timeout_seconds)
+    def __init__(self, name: str, params: dict[str, Any], client_session_timeout_seconds: Optional[float] = 5.0,
+                 max_retry_attempts: int = 0, retry_backoff_seconds_base: float = 1.0):
+        super().__init__(name=name, client_session_timeout_seconds=client_session_timeout_seconds,
+                         max_retry_attempts=max_retry_attempts, retry_backoff_seconds_base=retry_backoff_seconds_base)
         from mcp import StdioServerParameters
         self.params = StdioServerParameters(
             command=params["command"],
@@ -135,8 +194,10 @@ class MCPServerStdio(MCPServer):
 
 
 class MCPServerSse(MCPServer):
-    def __init__(self, name: str, params: dict[str, Any], client_session_timeout_seconds: Optional[float] = 5.0):
-        super().__init__(name=name, client_session_timeout_seconds=client_session_timeout_seconds)
+    def __init__(self, name: str, params: dict[str, Any], client_session_timeout_seconds: Optional[float] = 5.0,
+                 max_retry_attempts: int = 0, retry_backoff_seconds_base: float = 1.0):
+        super().__init__(name=name, client_session_timeout_seconds=client_session_timeout_seconds,
+                         max_retry_attempts=max_retry_attempts, retry_backoff_seconds_base=retry_backoff_seconds_base)
         self.params = params
         self.create_streams = self._create_streams  # type: ignore[assignment]
 
@@ -151,8 +212,10 @@ class MCPServerSse(MCPServer):
 
 
 class MCPServerStreamableHttp(MCPServer):
-    def __init__(self, name: str, params: dict[str, Any], client_session_timeout_seconds: Optional[float] = 5.0):
-        super().__init__(name=name, client_session_timeout_seconds=client_session_timeout_seconds)
+    def __init__(self, name: str, params: dict[str, Any], client_session_timeout_seconds: Optional[float] = 5.0,
+                 max_retry_attempts: int = 0, retry_backoff_seconds_base: float = 1.0):
+        super().__init__(name=name, client_session_timeout_seconds=client_session_timeout_seconds,
+                         max_retry_attempts=max_retry_attempts, retry_backoff_seconds_base=retry_backoff_seconds_base)
         self.params = params
         self.create_streams = self._create_streams  # type: ignore[assignment]
 
