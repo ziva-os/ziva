@@ -1,0 +1,5 @@
+id: hook.file_guard
+type: hook
+version: 0.1.0
+entry: impl.py:FileGuardHook
+enabled_by_default: true
