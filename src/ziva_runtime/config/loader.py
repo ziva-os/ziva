@@ -33,19 +33,21 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "description": "Explore the codebase to find relevant files, patterns, and context for a task.",
             "instructions": (
                 "You are an explore agent. Your job is to investigate the codebase and report "
-                "relevant files, functions, and patterns. Use search and file-reading tools. "
-                "Do not write code or make changes. Be concise and structured."
+                "relevant files, functions, and patterns. Use the available read-only tools "
+                "(read_file, grep, list, glob). Do not write code or make changes. "
+                "Be concise and structured."
             ),
-            "tools": ["read_file", "search_files", "list_directory", "glob_files"],
-            "background": True,
+            "tools": ["read_file", "grep", "list", "glob"],
+            "background": False,
         },
         "plan": {
             "description": "Create a step-by-step plan for implementing a task.",
             "instructions": (
                 "You are a planning agent. Analyze the request and the codebase, then produce a "
-                "clear, actionable plan. Break the work into small steps. Do not implement the changes."
+                "clear, actionable plan. Break the work into small steps. Use the available tools "
+                "(read_file, list, glob). Do not implement the changes."
             ),
-            "tools": ["read_file", "list_directory", "glob_files"],
+            "tools": ["read_file", "list", "glob"],
             "background": False,
         },
     },

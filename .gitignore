@@ -46,3 +46,4 @@ weibo_snapshot.txt
 # Ad-hoc screenshots in repo root
 /screenshot-*.png
 /douyin_*.png
+.gstack/

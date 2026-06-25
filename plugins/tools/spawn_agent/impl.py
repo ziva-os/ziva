@@ -8,6 +8,18 @@ from ziva_runtime.shared_types import ChatMessage, RuntimeContext, ToolResult
 
 BLOCKED_TOOLS = {"spawn_agent", "get_agent_result", "cancel_agent"}
 
+# Config-defined agent tool lists may use aliases that differ from the
+# registered tool names in this runtime. Map common aliases to real names.
+_TOOL_ALIASES = {
+    "search_files": "grep",
+    "list_directory": "list",
+    "glob_files": "glob",
+    "read_file": "read_file",
+    "write_file": "write_file",
+    "edit_file": "edit_file",
+    "shell": "shell",
+}
+
 
 class SpawnAgentTool:
     """Spawn a sub-agent to handle a specific task independently."""
@@ -92,22 +104,28 @@ class SpawnAgentTool:
             background = bool(agent_def.get("background", False))
         background = bool(background)
 
-        # Build child agent messages
-        child_messages: list[ChatMessage] = []
+        # Build child agent messages. The sub-agent has its own system
+        # prompt construction taken directly from the agent configuration
+        # in settings. Only the agent's own instructions are used; the
+        # main agent's layered AGENTS.md instructions are NOT loaded.
+        child_messages: list[ChatMessage] = [ChatMessage(role="user", content=task)]
         if instructions:
-            child_messages.append(ChatMessage(role="system", content=instructions))
-        child_messages.append(ChatMessage(role="user", content=task))
+            child_messages.insert(
+                0, ChatMessage(role="system", content=instructions)
+            )
 
         call_id = uuid.uuid4().hex[:12]
 
-        # Create child context with subagent flag and tool restrictions
         child_meta: dict[str, Any] = {
             "_runtime": runtime,
             "_subagent": True,
             "_subagent_call_id": call_id,
         }
         if tool_whitelist is not None:
-            child_meta["_allowed_tools"] = set(tool_whitelist) - BLOCKED_TOOLS
+            resolved = set()
+            for t in tool_whitelist:
+                resolved.add(_TOOL_ALIASES.get(t, t))
+            child_meta["_allowed_tools"] = resolved - BLOCKED_TOOLS
 
         child_ctx = RuntimeContext(
             session_id=ctx.session_id,

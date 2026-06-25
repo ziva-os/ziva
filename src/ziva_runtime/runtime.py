@@ -43,10 +43,26 @@ _ADAPTER_REGISTRY: dict[tuple, "ModelAdapter"] = {}
 
 
 def _find_provider_for_model(config: dict) -> dict | None:
-    model_name = config.get("model", {}).get("name", "")
+    """Return the provider entry that owns ``config["model"]["name"]``.
+
+    Lookup is **case-insensitive**: session metadata persists the model
+    name as it was selected in the UI at the time the turn was created,
+    and historical sessions (or older tests) can have casing that
+    differs from the canonical case declared in ``~/.ziva/config.yaml``
+    (e.g. ``"Kimi-K2.6"`` vs. ``"kimi-k2.6"``). A case-sensitive
+    comparison would then refuse the turn with "Model … is not listed
+    in any provider's models" even though the model is in fact
+    configured. The provider config is returned unchanged so the
+    caller can read ``api_key`` / ``base_url`` / ``options`` with the
+    original keys intact.
+    """
+    model_name = (config.get("model", {}).get("name") or "").lower()
+    if not model_name:
+        return None
     for p in config.get("providers", []) or []:
-        if any(m.get("name") == model_name for m in p.get("models", [])):
-            return p
+        for m in p.get("models", []) or []:
+            if (m.get("name") or "").lower() == model_name:
+                return p
     return None
 
 
@@ -876,6 +892,8 @@ class Runtime:
     ) -> AsyncIterator[Dict[str, Any]]:
 
         await self._connect_mcp_if_needed(session_id)
+        is_sub = ctx.metadata.get("_subagent", False) if ctx else False
+        sub_call_id = ctx.metadata.get("_subagent_call_id") if ctx else None
         # Use the snapshot from the turn entry point if provided;
         # otherwise fall back to current config (for backward compat).
         if model_cfg is None:
@@ -887,8 +905,6 @@ class Runtime:
         context_window = int(self.config.get("memory", {}).get("context_window_tokens", 200000) or 200000)
         working = list(messages)
         api_tools = self._build_tools_param(ctx)
-        is_sub = ctx.metadata.get("_subagent", False) if ctx else False
-        sub_call_id = ctx.metadata.get("_subagent_call_id") if ctx else None
 
         def _flag(payload: dict) -> dict:
             if is_sub:
@@ -1453,15 +1469,19 @@ class Runtime:
             spec = tool.spec()
             if spec.get("name") == call.name:
                 hook_result = await self._run_hooks("before_tool", {"tool": call.name, "arguments": call.arguments}, ctx)
-                if call.name in ("spawn_agent", "ask_user"):
-                    # These two block on a per-session future that the
+                if call.name in ("spawn_agent", "ask_user", "get_agent_result"):
+                    # These three block on a per-session future that the
                     # *caller* (UI for ask_user, parent turn for
-                    # spawn_agent) is responsible for resolving or
-                    # cancelling. A 120s default executor timeout would
-                    # race that and surface a synthetic "Error: timeout"
-                    # tool_result, which the model would happily treat
-                    # as a real answer and write a new reply on top of.
-                    # Keep the executor layer out of the way.
+                    # spawn_agent, sibling turn for get_agent_result) is
+                    # responsible for resolving or cancelling. A 120s
+                    # default executor timeout would race that and
+                    # surface a synthetic "Error: timeout" tool_result,
+                    # which the model would happily treat as a real
+                    # answer and write a new reply on top of. The tool
+                    # itself enforces its own per-call bound (e.g. the
+                    # `timeout` arg on get_agent_result, capped at
+                    # 600000ms), so the executor layer is redundant
+                    # *and* harmful here. Keep it out of the way.
                     timeout = None
                 else:
                     timeout = tool_timeouts.get(call.name, default_timeout)

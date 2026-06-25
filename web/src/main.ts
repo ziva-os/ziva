@@ -280,7 +280,21 @@ const MAX_QUEUE_RETRIES = 3;
 function showEmptyState(show: boolean) {
   const center = document.querySelector(".ziva-center");
   if (center) center.classList.toggle("has-messages", !show);
-  $("messages").style.display = show ? "none" : "block";
+  // In split mode we keep #messages visible and show a per-pane placeholder.
+  const inSplit = !!center?.classList.contains("multi");
+  if (!inSplit) {
+    $("messages").style.display = show ? "none" : "block";
+  } else {
+    $("messages").style.display = "";
+  }
+}
+
+function setPaneEmptyPlaceholder(target: HTMLElement) {
+  target.innerHTML = `<div class="pane-empty-state"><svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><div>No messages yet</div></div>`;
+}
+
+function clearPaneEmptyPlaceholder(target: HTMLElement) {
+  target.querySelectorAll(".pane-empty-state").forEach((el) => el.remove());
 }
 
 // ---- Right Panel Tab System ----
@@ -1062,10 +1076,16 @@ function init() {
   refreshConfig();
   refreshSessions().then(() => {
     const s = store.get();
-    if (s.sessions.length > 0) {
-      switchSession(s.sessions[0].id);
-    } else {
-      createSession();
+    // Only auto-select a session on initial load if the user hasn't already
+    // picked one (e.g. by clicking "New Session" while refreshSessions was
+    // still in flight). Otherwise we clobber the user's explicit choice and
+    // the composer swaps to a different session unexpectedly.
+    if (!s.activeSid) {
+      if (s.sessions.length > 0) {
+        switchSession(s.sessions[0].id);
+      } else {
+        createSession();
+      }
     }
   });
 }
@@ -1734,6 +1754,9 @@ async function renderSplitPanes() {
   // The shared #composerWrapper + status bar are hidden in split mode
   // (see .ziva-center.multi CSS); each pane gets its own composer.
   document.querySelector(".ziva-center")?.classList.toggle("multi", isMulti);
+  // If we just entered split mode, clear any stale inline display:none so
+  // the CSS rules that show the active pane's per-pane placeholder win.
+  if (isMulti) $("messages").style.display = "";
 
   // Tag the active session's container with its sid so the unified
   // sessionMessagesEl(sid) selector resolves #messages (the active
@@ -1791,6 +1814,12 @@ async function renderSplitPanes() {
   }
   setComposerRunning(activeSid || "", !!store.get().runningSessions[activeSid || ""]);
 
+  // In split mode, show a placeholder inside the active pane when it has no
+  // messages. (Single-pane mode uses the global empty-state area instead.)
+  if (isMulti && activeSid && $("messages").children.length === 0) {
+    setPaneEmptyPlaceholder($("messages"));
+  }
+
   // Wire up the active pane header buttons (↗ fullscreen, × close).
   // Always wired (not just on first render) so the handlers survive
   // any innerHTML rewrites of the messages container.
@@ -1810,11 +1839,14 @@ async function renderSplitPanes() {
       renderSplitPanes();
       // Mount/hydrate the full-screen composer for the active session so
       // the user sees their saved draft.
-      if (activeSid) renderComposers();
+      if (activeSid) {
+        renderComposers();
+        showEmptyState($("messages").children.length === 0);
+      }
     };
   }
   if (activeClose) {
-    activeClose.onclick = () => {
+    activeClose.onclick = async () => {
       // "Close" the active pane: if there are secondary sessions,
       // promote the first one to be the new active session and drop
       // it from the split list. If there are no secondary sessions,
@@ -1828,7 +1860,10 @@ async function renderSplitPanes() {
         renderSplitPanes();
         // Re-load history into the active pane for the new active session
         const newActive = store.get().activeSid;
-        if (newActive) loadHistoryInto(newActive, $("messages"));
+        if (newActive) {
+          await loadHistoryInto(newActive, $("messages"));
+          showEmptyState($("messages").children.length === 0);
+        }
       }
     };
   }
@@ -1863,27 +1898,21 @@ async function renderSplitPanes() {
       <div class="pane-messages"></div>
       <div class="pane-composer" data-sid="${sid}"></div>
     `;
-    // ↗ button: fullscreen — make this pane the only one.
+    // ↗ button: fullscreen — make this pane the only visible one.
     const enterBtn = pane.querySelector(".split-pane-enter") as HTMLButtonElement;
     enterBtn.onclick = () => {
-      // Promote this secondary session to be the new active, drop all
-      // other secondary sessions (and the old active stays in the sidebar).
       const { activeSid: curActive } = store.get();
-      const newSplit = store.get().splitSessions.filter((s2) => s2 !== sid);
-      // Move the old active into the split (so the user keeps both sessions
-      // accessible), and make this pane the active.
-      if (curActive && curActive !== sid) {
-        newSplit.push(curActive);
-      }
-      store.set({ activeSid: sid, splitSessions: newSplit });
+      store.set({ activeSid: sid, splitSessions: [] });
       renderSessions();
       renderSplitPanes();
-      // Reload history for the newly-active session
-      loadHistoryInto(sid, $("messages"));
+      // Reload history for the newly-active session and sync empty-state.
+      loadHistoryInto(sid, $("messages")).then(() => {
+        showEmptyState($("messages").children.length === 0);
+      });
     };
     // × button: remove this pane from the split.
     const closeBtnEl = pane.querySelector(".split-pane-close") as HTMLButtonElement;
-    closeBtnEl.onclick = () => {
+    closeBtnEl.onclick = async () => {
       const { splitSessions: cur, activeSid: curActive } = store.get();
       const remaining = cur.filter((s2) => s2 !== sid);
       // If we just removed the only secondary and active was it, fall
@@ -1893,24 +1922,49 @@ async function renderSplitPanes() {
         store.set({ splitSessions: remaining.slice(1), activeSid: remaining[0] });
         renderSessions();
         renderSplitPanes();
-        loadHistoryInto(remaining[0], $("messages"));
+        await loadHistoryInto(remaining[0], $("messages"));
+        showEmptyState($("messages").children.length === 0);
       } else if (curActive === sid && remaining.length === 0) {
         // No more sessions visible — keep active as the removed one
         // (the sidebar still has it); just exit split mode.
         store.set({ splitSessions: [] });
         renderSplitPanes();
+        showEmptyState($("messages").children.length === 0);
       } else {
+        // Closing a non-active secondary pane. The active session is
+        // unchanged and its messages are still in #messages, but
+        // entering split mode can have flipped `.ziva-center.has-messages`
+        // to true (loadHistoryInto on the secondary pane calls
+        // showEmptyState(false) unconditionally on appendUserMsg), and
+        // CSS then hides both the global empty-state and the per-pane
+        // placeholder — leaving the active pane blank when it actually
+        // is empty. Sync the empty-state class with the actual messages
+        // count so the user sees the right thing post-close.
         store.set({ splitSessions: remaining });
         renderSplitPanes();
+        // Entering split mode injects a per-pane placeholder into
+        // #messages when the active session is empty. After exiting,
+        // a single child = the placeholder (not a real message), so
+        // strip it and let the global empty-state surface instead.
+        const msgs = $("messages");
+        if (msgs.children.length === 1 && msgs.querySelector(".pane-empty-state")) {
+          clearPaneEmptyPlaceholder(msgs);
+        }
+        showEmptyState(msgs.children.length === 0);
       }
     };
     container.appendChild(pane);
     // Load the secondary session's history (read-only — live events are
     // routed via SSE only to the active session's pane).
+    const paneMessages = pane.querySelector(".pane-messages") as HTMLElement;
     try {
-      await loadHistoryInto(sid, pane.querySelector(".pane-messages") as HTMLElement);
+      await loadHistoryInto(sid, paneMessages);
     } catch (e: any) {
       console.error("renderSplitPanes: loadHistoryInto failed for", sid, e?.message || e, e?.stack);
+    }
+    // Empty-session placeholder inside the pane so split panes don't look broken.
+    if (paneMessages && paneMessages.children.length === 0) {
+      setPaneEmptyPlaceholder(paneMessages);
     }
     // Mount the unified composer for this pane (hydrates model/approval/
     // draft/running state). Same template + behavior as the full-screen one.
@@ -2621,7 +2675,7 @@ async function switchSession(sid: string, opts: { skipGitRefresh?: boolean } = {
   cancelInFlightUploads(sid);
   renderSessions();
   $("messages").innerHTML = "";
-  resetStreamingState();
+  resetStreamingState(sid);
   renderPendingBar();
   await loadHistory(sid);
   renderSplitPanes();
@@ -2661,6 +2715,8 @@ async function switchSession(sid: string, opts: { skipGitRefresh?: boolean } = {
               (args.options as unknown[]) || [],
               !!args.multi_select,
               tc.id,
+              $("messages"),
+              sid,
             );
           }
         }
@@ -2780,6 +2836,9 @@ async function loadHistoryInto(sid: string, target: HTMLElement): Promise<boolea
   // (empty-state, context ring, model dropdown) that doesn't exist per-pane.
   if (target === $("messages")) {
     showEmptyState(fullMsgs.length === 0);
+    if (fullMsgs.length === 0 && document.querySelector(".ziva-center")?.classList.contains("multi")) {
+      setPaneEmptyPlaceholder(target);
+    }
     if (fullData.last_usage?.prompt_tokens !== undefined) {
       const contextWindow = store.get().config.contextWindow || 200000;
       const pct = Math.min(fullData.last_usage.prompt_tokens / contextWindow, 1);
@@ -3057,6 +3116,13 @@ function attachmentUrl(url: string): string {
 // just visually scaled down via a wrapper class.
 function appendUserMsg(text: string | unknown[], target: HTMLElement = (liveStreamTarget || $("messages"))): HTMLElement {
   showEmptyState(false);
+  // In split mode `setPaneEmptyPlaceholder` injects a `.pane-empty-state`
+  // placeholder inside the per-pane messages container. `showEmptyState`
+  // only toggles a CSS class on `.ziva-center`, which doesn't reach the
+  // per-pane placeholder, so without this the user message lands BELOW
+  // the still-visible placeholder (the placeholder has `flex: 1` and
+  // hogs the vertical space). Tear the element out explicitly.
+  if (target) clearPaneEmptyPlaceholder(target);
   const div = document.createElement("div");
   div.className = "msg user";
   let body = "";
@@ -3199,7 +3265,7 @@ function getAbbreviatedArg(args: Record<string, unknown>): string {
   return JSON.stringify(args).slice(0, 50);
 }
 
-async function loadHiddenImageForTool(sid: string, imagePath: string) {
+async function loadHiddenImageForTool(sid: string, imagePath: string, target: HTMLElement = $("messages")) {
   try {
     const data = await api.getMessages(sid, { includeDropped: true });
     const msgs = data.messages || [];
@@ -3217,7 +3283,7 @@ async function loadHiddenImageForTool(sid: string, imagePath: string) {
           const pathMatch = textPart.match(/\[Image from (.+)\]/);
           if (pathMatch && pathMatch[1] === imagePath) {
             // Find the last tool card for read_file with this path and inject the image
-            const toolCards = document.querySelectorAll(".tool-card");
+            const toolCards = target.querySelectorAll(".tool-card");
             for (let i = toolCards.length - 1; i >= 0; i--) {
               const card = toolCards[i];
               const argsEl = card.querySelector(".tool-args");
@@ -3326,7 +3392,7 @@ function appendToolCard(
   return card;
 }
 
-function appendApprovalCard(requestId: string, toolName: string, args: Record<string, unknown>) {
+function appendApprovalCard(requestId: string, toolName: string, args: Record<string, unknown>, target: HTMLElement = $("messages")) {
   const card = document.createElement("div");
   card.className = "approval-card";
   const argsStr = JSON.stringify(args, null, 2);
@@ -3350,7 +3416,7 @@ function appendApprovalCard(requestId: string, toolName: string, args: Record<st
     await api.replyPermission(requestId, "reject");
     card.remove();
   };
-  $("messages").appendChild(card);
+  target.appendChild(card);
   invalidateLiveStreamEl();
 }
 
@@ -3414,9 +3480,16 @@ function normalizeOption(o: unknown): OptionDisplay {
   return { display: esc(s), submitValue: s };
 }
 
-function appendQuestionCard(question: string, rawOptions: unknown[], multiSelect: boolean = false, callId?: string) {
+function appendQuestionCard(
+  question: string,
+  rawOptions: unknown[],
+  multiSelect: boolean = false,
+  callId?: string,
+  target: HTMLElement = $("messages"),
+  sid: string = store.get().activeSid || "",
+) {
   const options = rawOptions.map(normalizeOption);
-  showEmptyState(false);
+  if (target === $("messages")) showEmptyState(false);
   const card = document.createElement("div");
   card.className = "question-card";
   let html = `<div class="question-text">${esc(question)}</div>`;
@@ -3476,12 +3549,12 @@ function appendQuestionCard(question: string, rawOptions: unknown[], multiSelect
     if (submitted) return;
     const trimmed = answer.trim();
     if (!trimmed) return;
-    const activeSid = store.get().activeSid;
-    if (!activeSid) return;
+    const questionSid = sid || store.get().activeSid;
+    if (!questionSid) return;
     // Resolve the pending ask_user future on the backend instead of
     // starting a brand-new turn — the original model round is still
     // waiting for our answer.
-    api.replyQuestion(activeSid, trimmed, callId).catch((e) => {
+    api.replyQuestion(questionSid, trimmed, callId).catch((e) => {
       console.error("replyQuestion failed:", e);
     });
     lockCard(trimmed);
@@ -3520,9 +3593,9 @@ function appendQuestionCard(question: string, rawOptions: unknown[], multiSelect
   const chatAboutBtn = card.querySelector(".question-chat-about") as HTMLElement;
   chatAboutBtn.onclick = () => {
     if (submitted) return;
-    const activeSid = store.get().activeSid;
-    if (!activeSid) return;
-    api.replyQuestion(activeSid, "（用户放弃当前选项，希望直接讨论这个话题）", callId).catch((e) => {
+    const questionSid = sid || store.get().activeSid;
+    if (!questionSid) return;
+    api.replyQuestion(questionSid, "（用户放弃当前选项，希望直接讨论这个话题）", callId).catch((e) => {
       console.error("replyQuestion failed:", e);
     });
     lockCard("还是聊聊吧");
@@ -3534,13 +3607,13 @@ function appendQuestionCard(question: string, rawOptions: unknown[], multiSelect
     }, 50);
   };
 
-  $("messages").appendChild(card);
+  target.appendChild(card);
   // Mark the turn as still running: the model round is suspended
   // waiting on the user, not idle. questionPending lets the Stop
   // button know to resolve the question as "user abandoned" rather
   // than cancelling the entire turn.
   store.set({ questionPending: true });
-  setActiveRunning(true);
+  if (target === $("messages")) setActiveRunning(true);
   const clearPending = () => store.set({ questionPending: false });
   // Watch the card for the .question-card-answered / .question-card-cancelled
   // classes — once applied, drop the questionPending flag.
@@ -3560,9 +3633,9 @@ function appendQuestionCard(question: string, rawOptions: unknown[], multiSelect
       removalObserver.disconnect();
     }
   });
-  removalObserver.observe($("messages"), { childList: true });
+  removalObserver.observe(target, { childList: true });
   updateSendStopButton();
-  scrollBottom();
+  scrollBottom(target);
 }
 
 /**
@@ -3855,8 +3928,8 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
         </div>
         <div class="agent-card-task">${esc(taskDesc)}</div>
       `;
-      $("messages").appendChild(card);
-      if (updateScroll) scrollBottom();
+      target.appendChild(card);
+      if (updateScroll) scrollBottom(target);
     }
     return;
   } else if (t === "subagent_end") {
@@ -3901,7 +3974,7 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
           ${resultPreview ? `<div class="agent-card-result">${renderMarkdown(resultPreview)}</div>` : ''}
         `;
       }
-      if (updateScroll) scrollBottom();
+      if (updateScroll) scrollBottom(target);
     }
     return;
   }
@@ -3940,11 +4013,12 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
     // painted so the new attempt's deltas land in a fresh block.
     // Disk / history are untouched on the server side, so a page
     // refresh mid-retry would still show the right state.
-    resetStreamingState();
+    resetStreamingState(sid);
   } else if (t === "delta") {
-    removeTyping();
+    removeTyping(target);
+    clearPaneEmptyPlaceholder(target);
     if (target === $("messages")) showEmptyState(false);
-    const el = getOrCreateAssistantEl();
+    const el = getOrCreateAssistantEl(sid, target);
     const content = (ev.content as string) || "";
     (el as any)._main += content;
     // Throttle expensive DOM operations during streaming
@@ -3962,9 +4036,10 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
     // main content; renderAssistantContent() merges both into the
     // thinking card. We share the same throttle timer as the main
     // `delta` handler so a fast reasoning burst doesn't double-render.
-    removeTyping();
+    removeTyping(target);
+    clearPaneEmptyPlaceholder(target);
     if (target === $("messages")) showEmptyState(false);
-    const el = getOrCreateAssistantEl();
+    const el = getOrCreateAssistantEl(sid, target);
     const content = (ev.content as string) || "";
     (el as any)._reasoning += content;
     if (!(el as any)._renderTimer) {
@@ -3976,9 +4051,10 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
     }
   } else if (t === "model_response") {
     // Final full response; ensure _main matches exactly to avoid drift from deltas
-    removeTyping();
+    removeTyping(target);
+    clearPaneEmptyPlaceholder(target);
     if (target === $("messages")) showEmptyState(false);
-    const el = getOrCreateAssistantEl();
+    const el = getOrCreateAssistantEl(sid, target);
     // Cancel any pending throttle timer so it doesn't overwrite the final render
     if ((el as any)._renderTimer) {
       clearTimeout((el as any)._renderTimer);
@@ -3992,9 +4068,10 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
     renderAssistantContent(el);
     addCopyButtons(el.parentElement!);
     highlightCode(el.parentElement!);
-    if (updateScroll) scrollBottom();
+    if (updateScroll) scrollBottom(target);
   } else if (t === "ask_user_question") {
-    removeTyping();
+    removeTyping(target);
+    clearPaneEmptyPlaceholder(target);
     const q = String((ev.question as string) || "");
     const opts = (ev.options as unknown[]) || [];
     const ms = !!ev.multi_select;
@@ -4003,18 +4080,19 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
     // question (happens when replaying a running turn whose earlier
     // ask_user calls have already been answered and persisted as tool
     // results in the message history).
-    const existing = $("messages").querySelectorAll(".question-card-answered .question-text");
+    const existing = target.querySelectorAll(".question-card-answered .question-text");
     const alreadyAnswered = Array.from(existing).some(el => (el.textContent || "").trim() === q);
     if (!alreadyAnswered) {
-      appendQuestionCard(q, opts, ms, cid);
+      appendQuestionCard(q, opts, ms, cid, target, sid);
     }
-    if (updateScroll) scrollBottom();
+    if (updateScroll) scrollBottom(target);
   } else if (t === "tool_start") {
-    removeTyping();
+    removeTyping(target);
+    clearPaneEmptyPlaceholder(target);
     const key = `${ev.round}:${ev.call_id || ev.tool}`;
     const card = appendToolCard(ev.tool as string, (ev.arguments || {}) as Record<string, unknown>, "running");
     streamCtx(sid).pendingTools.set(key, card);
-    if (updateScroll) scrollBottom();
+    if (updateScroll) scrollBottom(target);
   } else if (t === "tool_end") {
     const key = `${ev.round}:${ev.call_id || ev.tool}`;
     const pending = streamCtx(sid).pendingTools.get(key);
@@ -4041,7 +4119,7 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
         const imgPath = imgMeta.path || "";
         if (imgPath) {
           // Load _hidden messages to find the image URL (this session's).
-          loadHiddenImageForTool(sid, imgPath);
+          loadHiddenImageForTool(sid, imgPath, target);
           // Show placeholder while loading
           output = { type: "image", metadata: imgMeta };
         }
@@ -4065,16 +4143,16 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
     if (sid === activeSid && FILE_MUTATING_TOOLS.has(ev.tool as string)) {
       scheduleDiffRefresh();
     }
-    if (updateScroll) scrollBottom();
+    if (updateScroll) scrollBottom(target);
   } else if (t === "permission_request" || t === "approval_request") {
-    removeTyping();
+    removeTyping(target);
     const req = (ev.request || ev) as Record<string, unknown>;
     const tool = (req.tool || {}) as Record<string, unknown>;
     const requestId = (req.id || req.request_id || "") as string;
     const toolName = (tool.name || req.tool_name || "unknown") as string;
     const args = (tool.arguments || req.arguments || {}) as Record<string, unknown>;
-    appendApprovalCard(requestId, toolName, args);
-    if (updateScroll) scrollBottom();
+    appendApprovalCard(requestId, toolName, args, target);
+    if (updateScroll) scrollBottom(target);
   } else if (t === "turn_end") {
     // Trust the live streaming events to have already rendered the new
     // user / assistant / tool messages. We previously called `loadHistory`
@@ -4094,11 +4172,11 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
     }
 
     if (!sid || sid === activeSid) {
-      removeTyping();
+      removeTyping(target);
       // Any question card still on screen is now abandoned — the round
       // closed without an answer (probably cancelled). Lock its inputs
       // so the user can't submit a reply that will land in a new turn.
-      document.querySelectorAll(".question-card:not(.question-card-answered)").forEach((el) => {
+      target.querySelectorAll(".question-card:not(.question-card-answered)").forEach((el) => {
         el.classList.add("question-card-cancelled");
         (el.querySelectorAll("input, button") as NodeListOf<HTMLInputElement | HTMLButtonElement>).forEach((b) => {
           b.disabled = true;
@@ -4539,6 +4617,10 @@ function queueComposerMessage(sid: string) {
   if (imgs.length > 0) setQueuedImages(sid, imgs);
   textarea.value = "";
   textarea.style.height = "auto";
+  // Mirror sendComposerMessage: also clear the persisted draft so any later
+  // hydrateComposer (e.g. after a session switch or remount) doesn't
+  // re-populate the textarea with the just-queued text.
+  setDraftText(sid, "");
   const cc = composerCharCount(sid);
   if (cc) cc.textContent = "";
   setDraftImages(sid, []);
@@ -4637,6 +4719,11 @@ function editComposerPending(sid: string) {
   }
   const cc = composerCharCount(sid);
   if (cc && ta) cc.textContent = String(ta.value.length);
+  // Sync the persisted draft with the textarea so a session switch /
+  // remount between "click edit" and the next keystroke doesn't lose the
+  // pulled-back text (the input event handler hasn't fired yet to keep
+  // promptDrafts in sync on its own).
+  setDraftText(sid, pending);
   const imgs = queuedImages(sid);
   if (imgs.length > 0) {
     setDraftImages(sid, [...draftImages(sid), ...imgs]);
@@ -5787,8 +5874,12 @@ async function openSettingsModal() {
     // enabled skills), memory (backend selector), background (bool).
     // `tools` / `skills` / `memory` are pre-populated from the agent
     // def but the user can override per-agent.
-    const allToolNames: string[] = (cfg.tools || []) as string[];
-    const allSkillNames: string[] = (cfg.skill?.enabled || []) as string[];
+    const [status, skillIndex] = await Promise.all([
+      api.getStatus().catch(() => ({ tools: [] as string[] })),
+      api.listSkills().catch(() => [] as { name: string; description?: string }[]),
+    ]);
+    const allToolNames: string[] = status.tools || [];
+    const allSkillNames: string[] = skillIndex.map((s: any) => s.name).filter(Boolean);
     const agentEntries = Object.entries(agents);
     const agentsHtml = agentEntries.map(([name, def]) => {
       const instructions = (def.instructions || "") as string;
@@ -5797,23 +5888,21 @@ async function openSettingsModal() {
       const agentHooks: string[] = def.hooks || [];
       const background = !!def.background;
       const memory = def.memory || "inherited";
-      // Build tool chips: checked = in agent's whitelist
-      const toolChips = allToolNames.map((tn) => {
-        const checked = agentTools.includes(tn) ? "checked" : "";
-        return `<label class="agent-chip"><input type="checkbox" data-agent-tool="${esc(name)}" value="${esc(tn)}" ${checked} /><span>${esc(tn)}</span></label>`;
-      }).join("");
-      // Build skill chips
-      const skillChips = allSkillNames.map((sn) => {
-        const checked = agentSkills.includes(sn) ? "checked" : "";
-        return `<label class="agent-chip"><input type="checkbox" data-agent-skill="${esc(name)}" value="${esc(sn)}" ${checked} /><span>${esc(sn)}</span></label>`;
-      }).join("");
-      // Build hook chips — candidates are the 4 hook types the runtime
-      // supports. Selecting one means "this sub-agent triggers the
-      // configured hooks of that type on its own turns/tools".
-      const hookChips = hookTypes.map((hk) => {
-        const checked = agentHooks.includes(hk) ? "checked" : "";
-        return `<label class="agent-chip"><input type="checkbox" data-agent-hook="${esc(name)}" value="${esc(hk)}" ${checked} /><span>${esc(hk)}</span></label>`;
-      }).join("");
+      // Build dropdown + removable selected-tag boxes for tools/skills/hooks.
+      const buildSelect = (cls: string, kind: string, all: string[], selected: string[]) => {
+        const options = all.filter((x) => !selected.includes(x)).map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join("");
+        return `<select class="settings-select ${cls}" data-agent-select-${kind}="${esc(name)}"><option value="">Add ${kind}...</option>${options}</select>`;
+      };
+      const buildBox = (kind: string, selected: string[]) => {
+        const tags = selected.map((x) => `<span class="agent-selected-tag" data-kind="${kind}" data-value="${esc(x)}">${esc(x)}<button type="button" class="agent-selected-remove" data-remove-kind="${kind}" data-remove="${esc(x)}">×</button></span>`).join("");
+        return `<div class="agent-selected-box" data-agent-box-${kind}="${esc(name)}">${tags}</div>`;
+      };
+      const toolSelect = buildSelect("agent-tools-select", "tools", allToolNames, agentTools);
+      const toolBox = buildBox("tools", agentTools);
+      const skillSelect = buildSelect("agent-skills-select", "skills", allSkillNames, agentSkills);
+      const skillBox = buildBox("skills", agentSkills);
+      const hookSelect = buildSelect("agent-hooks-select", "hooks", hookTypes, agentHooks);
+      const hookBox = buildBox("hooks", agentHooks);
       return `
         <div class="settings-agent-card" data-agent-name="${esc(name)}">
           <div class="settings-agent-card-header">
@@ -5823,22 +5912,25 @@ async function openSettingsModal() {
           </div>
           <div class="settings-section">
             <div class="settings-section-title">Instructions</div>
-            <textarea class="settings-input" data-agent-instructions="${esc(name)}" rows="4" placeholder="System prompt for the sub-agent">${esc(instructions)}</textarea>
+            <textarea class="settings-input settings-agent-instructions" data-agent-instructions="${esc(name)}" rows="8" placeholder="System prompt for the sub-agent">${esc(instructions)}</textarea>
           </div>
           <div class="settings-section">
             <div class="settings-section-title">Tools <span style="color:var(--muted);font-weight:400;font-size:11px">(${agentTools.length} selected)</span></div>
             <div class="settings-desc">Whitelist of tools the sub-agent can call. Empty = inherit all tools except spawn_agent.</div>
-            <div class="agent-chip-list">${toolChips || '<span style="color:var(--muted);font-size:12px">No tools available in config</span>'}</div>
+            ${toolSelect}
+            ${toolBox}
           </div>
           <div class="settings-section">
             <div class="settings-section-title">Skills <span style="color:var(--muted);font-weight:400;font-size:11px">(${agentSkills.length} selected)</span></div>
             <div class="settings-desc">Skills available to the sub-agent.</div>
-            <div class="agent-chip-list">${skillChips || '<span style="color:var(--muted);font-size:12px">No skills enabled in config</span>'}</div>
+            ${skillSelect}
+            ${skillBox}
           </div>
           <div class="settings-section">
             <div class="settings-section-title">Hooks <span style="color:var(--muted);font-weight:400;font-size:11px">(${agentHooks.length} selected)</span></div>
             <div class="settings-desc">Hook types this sub-agent triggers. Each selected type runs the matching <code>hooks.&lt;type&gt;</code> commands from config on the sub-agent's own turns/tools. Empty = inherit all hook types from main.</div>
-            <div class="agent-chip-list">${hookChips || '<span style="color:var(--muted);font-size:12px">No hook types defined</span>'}</div>
+            ${hookSelect}
+            ${hookBox}
           </div>
           <div class="settings-section">
             <div class="settings-section-title">Memory</div>
@@ -5849,6 +5941,54 @@ async function openSettingsModal() {
           </div>
         </div>`;
     }).join("");
+
+    // Wire the dropdown + removable tag UX for a single agent card.
+    function wireAgentSelections(card: HTMLElement, name: string) {
+      const updateCount = (kind: string) => {
+        const count = card.querySelectorAll(`.agent-selected-tag[data-kind="${kind}"]`).length;
+        const box = card.querySelector(`[data-agent-box-${kind}="${name}"]`);
+        const titleSpan = box?.parentElement?.querySelector(".settings-section-title span");
+        if (titleSpan) titleSpan.textContent = `(${count} selected)`;
+      };
+      const addTag = (kind: string, value: string) => {
+        if (!value) return;
+        const box = card.querySelector(`[data-agent-box-${kind}="${name}"]`) as HTMLElement | null;
+        const select = card.querySelector(`[data-agent-select-${kind}="${name}"]`) as HTMLSelectElement | null;
+        if (!box || !select || box.querySelector(`[data-value="${esc(value)}"]`)) return;
+        const tag = document.createElement("span");
+        tag.className = "agent-selected-tag";
+        tag.dataset.kind = kind;
+        tag.dataset.value = value;
+        tag.innerHTML = `${esc(value)}<button type="button" class="agent-selected-remove" data-remove-kind="${kind}" data-remove="${esc(value)}">×</button>`;
+        box.appendChild(tag);
+        select.querySelector(`option[value="${esc(value)}"]`)?.remove();
+        select.value = "";
+        updateCount(kind);
+      };
+      const removeTag = (kind: string, value: string) => {
+        const box = card.querySelector(`[data-agent-box-${kind}="${name}"]`) as HTMLElement | null;
+        const select = card.querySelector(`[data-agent-select-${kind}="${name}"]`) as HTMLSelectElement | null;
+        if (!box || !select) return;
+        box.querySelector(`[data-value="${esc(value)}"]`)?.remove();
+        const all = kind === "tools" ? allToolNames : kind === "skills" ? allSkillNames : hookTypes;
+        const remaining = all.filter((x) => !Array.from(box.querySelectorAll(".agent-selected-tag")).map(t => (t as HTMLElement).dataset.value).includes(x));
+        select.innerHTML = `<option value="">Add ${kind}...</option>` + remaining.map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join("");
+        updateCount(kind);
+      };
+      card.addEventListener("change", (e) => {
+        const sel = e.target as HTMLSelectElement;
+        if (!sel.classList.contains("settings-select")) return;
+        const kind = sel.classList.contains("agent-tools-select") ? "tools" : sel.classList.contains("agent-skills-select") ? "skills" : sel.classList.contains("agent-hooks-select") ? "hooks" : null;
+        if (kind) addTag(kind, sel.value);
+      });
+      card.addEventListener("click", (e) => {
+        const btn = (e.target as HTMLElement).closest(".agent-selected-remove") as HTMLElement | null;
+        if (!btn) return;
+        const kind = btn.dataset.removeKind!;
+        const value = btn.dataset.remove!;
+        removeTag(kind, value);
+      });
+    }
 
     // Build providers HTML for Model tab
     const rawProviders = (cfg.providers || []) as any[];
@@ -6027,7 +6167,7 @@ async function openSettingsModal() {
           </div>
           <!-- Agents -->
           <div class="settings-panel" data-panel="agents">
-            <div class="settings-panel-inner">
+            <div class="settings-panel-inner settings-panel-wide">
               <div class="settings-section">
                 <div class="settings-section-title">Sub-Agents</div>
                 <div class="settings-desc">Predefined agent profiles the main agent can spawn via <code>spawn_agent(agent="name", task="...")</code>. Each agent has its own instructions, tool whitelist, skill set, and memory setting. The main agent may still pass <code>instructions</code> / <code>tools</code> / <code>background</code> at call time to override the defaults below.</div>
@@ -6079,6 +6219,12 @@ async function openSettingsModal() {
       btn.onclick = () => (btn.closest(".settings-agent-card") as HTMLElement)?.remove();
     });
 
+    // Wire dropdown + removable-tag UX for every existing agent card.
+    body.querySelectorAll<HTMLElement>(".settings-agent-card").forEach(card => {
+      const name = card.dataset.agentName!;
+      if (name) wireAgentSelections(card, name);
+    });
+
     // Add agent button — spawn an empty card the user can fill in
     const addAgentBtn = body.querySelector("#addAgentBtn") as HTMLButtonElement | null;
     if (addAgentBtn) {
@@ -6088,15 +6234,9 @@ async function openSettingsModal() {
         let idx = 1;
         while (list.querySelector(`[data-agent-name="new_agent_${idx}"]`)) idx++;
         const n = `new_agent_${idx}`;
-        const toolChips = allToolNames.map((tn) =>
-          `<label class="agent-chip"><input type="checkbox" data-agent-tool="${esc(n)}" value="${esc(tn)}" /><span>${esc(tn)}</span></label>`
-        ).join("");
-        const skillChips = allSkillNames.map((sn) =>
-          `<label class="agent-chip"><input type="checkbox" data-agent-skill="${esc(n)}" value="${esc(sn)}" /><span>${esc(sn)}</span></label>`
-        ).join("");
-        const hookChips = hookTypes.map((hk) =>
-          `<label class="agent-chip"><input type="checkbox" data-agent-hook="${esc(n)}" value="${esc(hk)}" /><span>${esc(hk)}</span></label>`
-        ).join("");
+        const toolOptions = allToolNames.map((tn) => `<option value="${esc(tn)}">${esc(tn)}</option>`).join("");
+        const skillOptions = allSkillNames.map((sn) => `<option value="${esc(sn)}">${esc(sn)}</option>`).join("");
+        const hookOptions = hookTypes.map((hk) => `<option value="${esc(hk)}">${esc(hk)}</option>`).join("");
         const card = document.createElement("div");
         card.className = "settings-agent-card";
         card.dataset.agentName = n;
@@ -6108,19 +6248,22 @@ async function openSettingsModal() {
           </div>
           <div class="settings-section">
             <div class="settings-section-title">Instructions</div>
-            <textarea class="settings-input" data-agent-instructions="${esc(n)}" rows="4" placeholder="System prompt for the sub-agent"></textarea>
+            <textarea class="settings-input settings-agent-instructions" data-agent-instructions="${esc(n)}" rows="8" placeholder="System prompt for the sub-agent"></textarea>
           </div>
           <div class="settings-section">
-            <div class="settings-section-title">Tools</div>
-            <div class="agent-chip-list">${toolChips || '<span style="color:var(--muted);font-size:12px">No tools available in config</span>'}</div>
+            <div class="settings-section-title">Tools <span style="color:var(--muted);font-weight:400;font-size:11px">(0 selected)</span></div>
+            <select class="settings-select agent-tools-select" data-agent-select-tools="${esc(n)}"><option value="">Add tools...</option>${toolOptions}</select>
+            <div class="agent-selected-box" data-agent-box-tools="${esc(n)}"></div>
           </div>
           <div class="settings-section">
-            <div class="settings-section-title">Skills</div>
-            <div class="agent-chip-list">${skillChips || '<span style="color:var(--muted);font-size:12px">No skills enabled in config</span>'}</div>
+            <div class="settings-section-title">Skills <span style="color:var(--muted);font-weight:400;font-size:11px">(0 selected)</span></div>
+            <select class="settings-select agent-skills-select" data-agent-select-skills="${esc(n)}"><option value="">Add skills...</option>${skillOptions}</select>
+            <div class="agent-selected-box" data-agent-box-skills="${esc(n)}"></div>
           </div>
           <div class="settings-section">
-            <div class="settings-section-title">Hooks</div>
-            <div class="agent-chip-list">${hookChips || '<span style="color:var(--muted);font-size:12px">No hook types defined</span>'}</div>
+            <div class="settings-section-title">Hooks <span style="color:var(--muted);font-weight:400;font-size:11px">(0 selected)</span></div>
+            <select class="settings-select agent-hooks-select" data-agent-select-hooks="${esc(n)}"><option value="">Add hooks...</option>${hookOptions}</select>
+            <div class="agent-selected-box" data-agent-box-hooks="${esc(n)}"></div>
           </div>
           <div class="settings-section">
             <div class="settings-section-title">Memory</div>
@@ -6129,9 +6272,10 @@ async function openSettingsModal() {
               <option value="none">None (stateless)</option>
             </select>
           </div>`;
-        // Wire the new card's remove button
+        // Wire the new card's remove button and selections
         const removeBtn = card.querySelector("[data-agent-remove]") as HTMLButtonElement;
         removeBtn.onclick = () => card.remove();
+        wireAgentSelections(card, n);
         list.appendChild(card);
         // Focus the name field for quick rename
         (card.querySelector(`[data-agent-rename="${n}"]`) as HTMLInputElement)?.focus();
@@ -6329,9 +6473,9 @@ async function openSettingsModal() {
           const renameInput = card.querySelector(`[data-agent-rename="${origName}"]`) as HTMLInputElement;
           const newName = (renameInput?.value?.trim()) || origName;
           const instr = ((card.querySelector(`[data-agent-instructions="${origName}"]`) as HTMLTextAreaElement)?.value || "").trim();
-          const tools = Array.from(card.querySelectorAll<HTMLInputElement>(`input[data-agent-tool="${origName}"]:checked`)).map(c => c.value);
-          const skills = Array.from(card.querySelectorAll<HTMLInputElement>(`input[data-agent-skill="${origName}"]:checked`)).map(c => c.value);
-          const hooks = Array.from(card.querySelectorAll<HTMLInputElement>(`input[data-agent-hook="${origName}"]:checked`)).map(c => c.value);
+          const tools = Array.from(card.querySelectorAll<HTMLElement>(`.agent-selected-tag[data-kind="tools"]`)).map(c => c.dataset.value!);
+          const skills = Array.from(card.querySelectorAll<HTMLElement>(`.agent-selected-tag[data-kind="skills"]`)).map(c => c.dataset.value!);
+          const hooks = Array.from(card.querySelectorAll<HTMLElement>(`.agent-selected-tag[data-kind="hooks"]`)).map(c => c.dataset.value!);
           const bg = !!(card.querySelector(`input[data-agent-bg="${origName}"]`) as HTMLInputElement)?.checked;
           const memVal = (card.querySelector(`[data-agent-memory="${origName}"]`) as HTMLSelectElement)?.value || "inherited";
           newAgents[newName] = {
@@ -6356,6 +6500,8 @@ async function openSettingsModal() {
         delete (updated as any)._skill_index;
 
         await api.saveConfigJson(updated);
+        await refreshConfig();
+        renderSessions();
         btn.textContent = "Saved";
         setTimeout(() => { btn.textContent = "Save"; btn.removeAttribute("disabled"); }, 1500);
       } catch (e) {

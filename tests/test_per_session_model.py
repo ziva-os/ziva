@@ -353,3 +353,57 @@ def test_credentials_follow_model_name_via_provider_lookup(tmp_path: Path):
         asyncio.run(_run())
     finally:
         runtime_module._create_adapter = original
+
+
+def test_model_name_lookup_is_case_insensitive(tmp_path: Path):
+    """Regression: historical sessions persist ``model_name`` as it was
+    selected in the UI (e.g. ``"Kimi-K2.6"``), but the config may declare
+    the canonical case as ``"kimi-k2.6"``. A case-sensitive comparison
+    would refuse the turn with "Model … is not listed in any provider's
+    models" even though the model is configured. Verify the lookup
+    matches across the two casings.
+    """
+    from ziva_runtime.runtime import _find_provider_for_model
+
+    cfg = {
+        "model": {"name": "Kimi-K2.6"},  # UI / session-stored case
+        "providers": [
+            {
+                "name": "Kimi",
+                "api_type": "anthropic",
+                "api_key": "secret",
+                "base_url": "https://api.kimi.com/coding/",
+                "models": [
+                    # canonical (lowercase) — matches the deployed model
+                    {"name": "kimi-k2.6"},
+                    {"name": "kimi-k2.7"},
+                ],
+            },
+            {
+                "name": "MiniMax",
+                "api_type": "openai_compatible",
+                "api_key": "x",
+                "base_url": "https://api.minimaxi.com/v1",
+                "models": [{"name": "MiniMax-M3"}],
+            },
+        ],
+    }
+
+    provider = _find_provider_for_model(cfg)
+    assert provider is not None, (
+        "Expected case-insensitive match: session 'Kimi-K2.6' should "
+        "resolve to the 'Kimi' provider whose config has 'kimi-k2.6'."
+    )
+    assert provider["name"] == "Kimi"
+    # The returned provider's *own* name keeps its original casing
+    # (we only normalize the model lookup).
+    assert provider["api_type"] == "anthropic"
+    # And the inverse direction also works.
+    cfg2 = {"model": {"name": "kimi-k2.7"}, "providers": cfg["providers"]}
+    provider2 = _find_provider_for_model(cfg2)
+    assert provider2 is provider
+
+    # Sanity: an unknown model still returns None (not silently picks
+    # the wrong provider).
+    cfg3 = {"model": {"name": "totally-bogus"}, "providers": cfg["providers"]}
+    assert _find_provider_for_model(cfg3) is None

@@ -50,16 +50,31 @@ class _ThinkTagParser:
     """Streaming parser that splits provider text into main/reasoning.
 
     Some OpenAI-compatible providers (e.g. MiniMax) emit the model's
-    chain-of-thought wrapped in ``<think>...</think>`` tags inside the
-    normal ``content`` delta instead of using the native
-    ``reasoning_content`` field. This parser extracts that text and routes
-    it to ``reasoning_content`` so the frontend renders it in the thinking
-    card, leaving only the final answer in ``content``.
+    chain-of-thought wrapped in ``<think>...</think>`` or
+    ``<mm:think>...</mm:think>`` tags inside the normal ``content`` delta
+    instead of using the native ``reasoning_content`` field. This parser
+    extracts that text and routes it to ``reasoning_content`` so the
+    frontend renders it in the thinking card, leaving only the final answer
+    in ``content``.
     """
 
     def __init__(self) -> None:
         self._in_think = False
         self._buffer = ""
+        self._end_tag = "</think>"
+
+    def _detect_tag(self, text: str) -> tuple[str, str, int] | None:
+        """Find the earliest start tag and return (start_tag, end_tag, index)."""
+        candidates = [
+            ("<mm:think>", "</mm:think>"),
+            ("<think>", "</think>"),
+        ]
+        best: tuple[str, str, int] | None = None
+        for start_tag, end_tag in candidates:
+            idx = text.find(start_tag)
+            if idx != -1 and (best is None or idx < best[2]):
+                best = (start_tag, end_tag, idx)
+        return best
 
     def feed(self, text: str) -> tuple[str, str]:
         """Return (reasoning_content, main_content) for the incoming chunk."""
@@ -73,20 +88,22 @@ class _ThinkTagParser:
 
         while text:
             if self._in_think:
-                end = text.find("</think>")
+                end = text.find(self._end_tag)
                 if end == -1:
                     reasoning_parts.append(text)
                     return "".join(reasoning_parts), ""
                 reasoning_parts.append(text[:end])
-                text = text[end + len("</think>"):]
+                text = text[end + len(self._end_tag):]
                 self._in_think = False
             else:
-                start = text.find("<think>")
-                if start == -1:
+                detected = self._detect_tag(text)
+                if detected is None:
                     main_parts.append(text)
                     return "".join(reasoning_parts), "".join(main_parts)
+                start_tag, end_tag, start = detected
+                self._end_tag = end_tag
                 main_parts.append(text[:start])
-                text = text[start + len("<think>"):]
+                text = text[start + len(start_tag):]
                 self._in_think = True
 
         return "".join(reasoning_parts), "".join(main_parts)

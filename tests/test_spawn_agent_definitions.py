@@ -60,8 +60,9 @@ async def test_spawn_agent_uses_definition_defaults():
 
     assert result.text == "started"
     assert captured["child_messages"][0].role == "system"
-    assert captured["child_messages"][0].content == "You are explore."
+    assert "You are explore." in captured["child_messages"][0].content
     assert captured["child_messages"][1].role == "user"
+    assert captured["child_messages"][1].content == "find files"
     assert captured["child_ctx"].metadata["_allowed_tools"] == {"read_file"}
 
 
@@ -96,7 +97,10 @@ async def test_spawn_agent_call_time_overrides_definition():
         "background": False,
     }, ctx)
 
-    assert captured["child_messages"][0].content == "Override instructions."
+    assert captured["child_messages"][0].role == "system"
+    assert "Override instructions." in captured["child_messages"][0].content
+    assert captured["child_messages"][1].role == "user"
+    assert captured["child_messages"][1].content == "plan feature"
     assert captured["child_ctx"].metadata["_allowed_tools"] == {"read_file", "edit_file"}
 
 
@@ -122,5 +126,8 @@ async def test_spawn_agent_without_agent_uses_call_time_params():
         "background": False,
     }, ctx)
 
-    assert captured["child_messages"][0].content == "Custom instr."
+    assert captured["child_messages"][0].role == "system"
+    assert "Custom instr." in captured["child_messages"][0].content
+    assert captured["child_messages"][1].role == "user"
+    assert captured["child_messages"][1].content == "do work"
     assert captured["child_ctx"].metadata["_allowed_tools"] == {"search"}

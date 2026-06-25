@@ -1903,7 +1903,13 @@ class DesktopAPIServer:
         agent = self.runtime._background_agents.get(agent_id)
         if not agent:
             return web.json_response({"error": "not_found"}, status=404)
-        return web.json_response({"agent": agent})
+        # Whitelist serializable fields (same reason as list_background_agents:
+        # the stored dict holds an asyncio Task under "task" which json_response
+        # cannot serialize → would 500 with a non-JSON body).
+        safe_keys = ("agent_id", "call_id", "session_id", "task_desc",
+                     "status", "result", "error", "tools_used", "finished_at")
+        safe = {k: agent.get(k) for k in safe_keys}
+        return web.json_response({"agent": safe})
 
     async def cancel_background_agent(self, request: web.Request) -> web.Response:
         agent_id = request.match_info["agent_id"]
