@@ -5,7 +5,7 @@ class UpdatePlanTool:
     def spec(self):
         return {
             "name": "update_plan",
-            "description": "Update the task plan with step statuses",
+            "description": "Update the task plan with step statuses. Call this IMMEDIATELY whenever a step is completed or any step's status changes — keep the plan in sync as you work. Do not batch all updates until the end; update incrementally after each step.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -50,6 +50,11 @@ class UpdatePlanTool:
         if runtime:
             session = runtime._get_session(ctx.session_id)
             session.plan = validated
+            # Reset the stale-plan counter so plan_reminder stops nudging,
+            # and stamp the update time for diagnostics.
+            import time
+            session.plan_last_updated = time.time()
+            session.plan_tool_calls_since_update = 0
             # Persist to disk so plan survives server restart
             try:
                 from ziva_runtime.storage.file_storage import FileStorage

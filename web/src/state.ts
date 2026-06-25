@@ -26,6 +26,14 @@ export interface PendingAttachment {
   thumbUrl: string;
 }
 
+// A single queued message item (queue-based, supports multiple per session)
+export interface PendingItem {
+  id: string;
+  text: string;
+  retries: number;
+  images?: PendingAttachment[];
+}
+
 export interface AppState {
   sessions: Session[];
   activeSid: string | null;
@@ -35,7 +43,7 @@ export interface AppState {
   // its "is running" or queued-input state into the newly active
   // session. The render / input layer consults these by activeSid.
   runningSessions: Record<string, boolean>;
-  pendingMessages: Record<string, { text: string; retries: number; images?: PendingAttachment[] }>;
+  pendingMessages: Record<string, PendingItem[]>;
   // Per-session in-progress prompt content (textarea text + attached
   // images). Stashed on switchSession and restored when the user
   // comes back, so each session keeps its own draft.

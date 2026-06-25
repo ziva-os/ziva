@@ -21,6 +21,25 @@ _TOOL_ALIASES = {
 }
 
 
+def _summarize_tools(tool_names: list[str]) -> dict[str, int]:
+    """Group tool calls by name, e.g. ['grep','grep','read_file'] -> {'grep':2,'read_file':1}.
+
+    Shown to the user/agent grouped by tool name rather than in call order,
+    so a long run reads as "grep ×3, read_file ×5" instead of a flat list.
+    """
+    summary: dict[str, int] = {}
+    for n in tool_names:
+        summary[n] = summary.get(n, 0) + 1
+    return summary
+
+
+def _format_tools_summary(tool_names: list[str]) -> str:
+    """Human-readable grouped summary, e.g. 'grep ×2, read_file ×1'."""
+    if not tool_names:
+        return "none"
+    return ", ".join(f"{n} ×{c}" for n, c in _summarize_tools(tool_names).items())
+
+
 class SpawnAgentTool:
     """Spawn a sub-agent to handle a specific task independently."""
 
@@ -189,9 +208,10 @@ class SpawnAgentTool:
                 "background": False,
             })
 
+        tools_line = _format_tools_summary(tool_names)
         return ToolResult(
-            text=f"Agent completed ({tool_count} tools used)\n\n{result_content}",
-            metadata={"tools_used": tool_count, "tools": tool_names, "result": result_content},
+            text=f"Agent completed ({tool_count} tool call{'s' if tool_count != 1 else ''}: {tools_line})\n\n{result_content}",
+            metadata={"tools_used": tool_count, "tools": tool_names, "tools_summary": _summarize_tools(tool_names), "result": result_content},
         )
 
     async def _run_background(self, runtime, task, call_id, child_messages, child_ctx, session_id) -> ToolResult:
@@ -302,6 +322,7 @@ class SpawnAgentTool:
                         "status": "completed",
                         "tools_used": tool_count,
                         "tools": tool_names,
+                        "tools_summary": _summarize_tools(tool_names),
                         "result_length": len(result_content),
                         "result_preview": result_content[:500],
                         "background": True,

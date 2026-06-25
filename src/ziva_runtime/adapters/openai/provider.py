@@ -145,6 +145,7 @@ class OpenAIChatAdapter:
         api_key: str | None = None,
         capabilities: dict | None = None,
         options: dict | None = None,
+        default_max_tokens: int = 0,
     ):
         from openai import AsyncOpenAI
         self._base_url = base_url or os.environ.get("OPENAI_BASE_URL")
@@ -156,6 +157,12 @@ class OpenAIChatAdapter:
             self._api_key = "dummy"
         self._capabilities = capabilities or {}
         self._options = options or {}
+        # max_tokens to send on each request. OpenAI-compatible providers
+        # apply their own (often small, e.g. 4096) server-side default when
+        # the request omits max_tokens, which silently truncates long
+        # outputs with finish_reason=length. Sending an explicit large value
+        # avoids that. 0 = omit (let the provider decide).
+        self._default_max_tokens = int(default_max_tokens or 0)
         self._client = AsyncOpenAI(
             base_url=self._base_url, api_key=self._api_key, timeout=120.0
         )
@@ -179,8 +186,14 @@ class OpenAIChatAdapter:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
+        # o1/o3 reasoning models reject `max_tokens` (they use
+        # max_completion_tokens / reasoning_effort); skip it for them.
+        is_reasoning_model = model.startswith("o1") or model.startswith("o3")
+        if self._default_max_tokens and not is_reasoning_model:
+            kwargs["max_tokens"] = self._default_max_tokens
+
         if thinking_config and thinking_config.get("type") == "enabled":
-            if model.startswith("o1") or model.startswith("o3"):
+            if is_reasoning_model:
                 kwargs["reasoning_effort"] = thinking_config.get("mode", "medium")
 
         resp = await call_with_retry(self._client.chat.completions.create, **kwargs)
@@ -249,8 +262,13 @@ class OpenAIChatAdapter:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
+        # o1/o3 reasoning models reject `max_tokens`; skip it for them.
+        is_reasoning_model = model.startswith("o1") or model.startswith("o3")
+        if self._default_max_tokens and not is_reasoning_model:
+            kwargs["max_tokens"] = self._default_max_tokens
+
         if thinking_config and thinking_config.get("type") == "enabled":
-            if model.startswith("o1") or model.startswith("o3"):
+            if is_reasoning_model:
                 kwargs["reasoning_effort"] = thinking_config.get("mode", "medium")
 
         response = await call_with_retry(self._client.chat.completions.create, **kwargs)

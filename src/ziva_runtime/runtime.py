@@ -98,6 +98,7 @@ def _build_adapter(provider_cfg: dict, *, model_name: str, max_tokens: int) -> "
         api_key=provider_cfg.get("api_key") or None,
         capabilities=capabilities,
         options=provider_cfg.get("options") or {},
+        default_max_tokens=max_tokens,
     )
 
 
@@ -1002,6 +1003,17 @@ class Runtime:
                 parts.append("\n".join(skill_lines))
             effective_prompt = "\n\n".join(parts)
 
+            # When a plan exists, remind the model to keep it in sync.
+            _plan_session = self._get_session(session_id)
+            if _plan_session.plan:
+                effective_prompt += (
+                    "\n\n## Task Plan\n"
+                    "You have an active task plan. After completing each step — or whenever "
+                    "any step's status changes — call the `update_plan` tool immediately to "
+                    "sync it. Do not save up all updates for the end; keep the plan current "
+                    "as you work so progress stays visible."
+                )
+
             thinking_config = None
             # Capability lookup is parameterized on this turn's model
             # name (from the snapshotted model_cfg), NOT the runtime
@@ -1569,18 +1581,6 @@ class Runtime:
         return self._model_supports_image(
             self.config.get("model", {}).get("name", "")
         )
-        providers = self.config.get("providers") or []
-        for p in providers:
-            prov_vision = bool((p.get("capabilities") or {}).get("vision", True))
-            for m in p.get("models") or []:
-                if m.get("name") == model_name:
-                    m_caps = m.get("capabilities") or {}
-                    return bool(m_caps.get("vision", prov_vision))
-        # Model not found in any provider entry — default to True so
-        # the user gets a useful error from the provider (e.g.
-        # "model doesn't support image") rather than us silently
-        # rewriting their attachment to a useless text reference.
-        return True
 
     def _is_retryable_provider_error(self, exc: Exception) -> bool:
         """True if a provider error is worth a same-input retry.

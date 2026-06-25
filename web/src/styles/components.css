@@ -1636,10 +1636,10 @@ webview.browser-frame {
    after the current turn ends. */
 .pending-bar {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  gap: 6px;
   margin: 8px 10px 0;
-  padding: 6px 10px;
+  padding: 8px 10px;
   background: var(--accent-light);
   border: 1px solid var(--accent);
   border-radius: 8px;
@@ -1653,7 +1653,6 @@ webview.browser-frame {
   to { opacity: 1; transform: translateY(0); }
 }
 .pending-bar-label {
-  flex: 0 0 auto;
   font-weight: 600;
   font-size: 10.5px;
   letter-spacing: 0.04em;
@@ -1662,6 +1661,19 @@ webview.browser-frame {
   background: var(--surface);
   padding: 2px 6px;
   border-radius: 4px;
+  align-self: flex-start;
+}
+.pending-bar-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+}
+.pending-bar-num {
+  flex: 0 0 auto;
+  font-weight: 600;
+  color: var(--accent);
+  font-size: 11px;
 }
 .pending-bar-text {
   flex: 1 1 auto;
@@ -1673,6 +1685,19 @@ webview.browser-frame {
   user-select: none;
 }
 .pending-bar-text:hover { color: var(--accent); }
+.pending-bar-edit {
+  flex: 0 0 auto;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 6px;
+  font-family: inherit;
+  border-radius: 4px;
+  transition: color 0.12s, background 0.12s;
+}
+.pending-bar-edit:hover { color: var(--accent); background: var(--surface); }
 .pending-bar-clear {
   flex: 0 0 auto;
   background: transparent;
@@ -1698,7 +1723,9 @@ webview.browser-frame {
   object-fit: cover;
   border-radius: 4px;
   border: 1px solid var(--border);
+  cursor: pointer;
 }
+.pending-bar-thumb:hover { opacity: 0.85; }
 .ziva-composer:focus-within {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-light);
@@ -1908,14 +1935,16 @@ webview.browser-frame {
 .diff-file-content { font-family: var(--mono); font-size: 12px; }
 .diff-line {
   display: flex; min-height: 20px; line-height: 20px;
+  width: max-content; min-width: 100%;
 }
 .diff-linenum {
   width: 44px; min-width: 44px; text-align: right; padding-right: 8px;
   color: var(--muted); font-size: 11px; user-select: none; flex-shrink: 0;
   background: var(--surface-alt); border-right: 1px solid var(--line);
+  position: sticky; left: 0; z-index: 1;
 }
 .diff-line-content {
-  flex: 1; padding: 0 10px; white-space: pre; overflow-x: auto;
+  flex: 1; padding: 0 10px; white-space: pre;
 }
 .diff-line.add { background: rgba(129, 201, 149, 0.10); }
 .diff-line.add .diff-linenum { background: rgba(129, 201, 149, 0.15); }

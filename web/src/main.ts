@@ -66,9 +66,10 @@ function initLightbox() {
 
   document.addEventListener("click", (e) => {
     const target = e.target as HTMLElement;
-    if (target.tagName === "IMG" && target.closest(".msg-inner, .tool-output-image, .compact-dropped, .image-preview-item")) {
+    if (target.tagName === "IMG" && target.closest(".msg-inner, .tool-output-image, .compact-dropped, .image-preview-item, .pending-bar-thumb")) {
       const img = overlay.querySelector("img") as HTMLImageElement;
-      img.src = (target as HTMLImageElement).src;
+      // Prefer data-full-src if available (full resolution), otherwise use src
+      img.src = (target as HTMLImageElement).getAttribute("data-full-src") || (target as HTMLImageElement).src;
       overlay.style.display = "flex";
       e.preventDefault();
       e.stopPropagation();
@@ -160,21 +161,82 @@ function isSessionRunning(sid: string): boolean {
 }
 
 function getSessionPending(sid: string): string | null {
+  // Legacy compatibility: return the first item's text if any exist
   if (!sid) return null;
-  const entry = store.get().pendingMessages[sid];
-  return entry ? entry.text : null;
+  const queue = store.get().pendingMessages[sid];
+  return (queue && queue.length > 0) ? queue[0].text : null;
 }
 
 function setSessionPending(sid: string, text: string | null, retries: number = 0) {
+  // Legacy compatibility: replace the entire queue with a single item
   if (!sid) return;
   const { pendingMessages } = store.get();
   const next = { ...pendingMessages };
-  if (text == null) delete next[sid];
-  else {
-    // Preserve any queued images already stashed on this entry.
+  if (text == null) {
+    delete next[sid];
+  } else {
     const prev = pendingMessages[sid];
-    next[sid] = { text, retries, images: prev?.images };
+    const images = (prev && prev.length > 0) ? prev[0].images : undefined;
+    next[sid] = [{ id: generatePendingId(), text, retries, images }];
   }
+  store.set({ pendingMessages: next });
+}
+
+// Generate a stable ID for a pending item
+function generatePendingId(): string {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+// Enqueue a new pending message to the end of the queue
+function enqueuePending(sid: string, text: string, retries: number = 0, images?: PendingAttachment[]): string {
+  if (!sid) return "";
+  const { pendingMessages } = store.get();
+  const queue = pendingMessages[sid] || [];
+  const item: PendingItem = { id: generatePendingId(), text, retries, images };
+  const next = { ...pendingMessages, [sid]: [...queue, item] };
+  store.set({ pendingMessages: next });
+  return item.id;
+}
+
+// Get the current queue for a session
+function getPendingQueue(sid: string): PendingItem[] {
+  if (!sid) return [];
+  return store.get().pendingMessages[sid] || [];
+}
+
+// Update a specific pending item by ID
+function updatePendingItem(sid: string, id: string, patch: Partial<PendingItem>): void {
+  if (!sid) return;
+  const { pendingMessages } = store.get();
+  const queue = pendingMessages[sid];
+  if (!queue) return;
+  const next = { ...pendingMessages };
+  next[sid] = queue.map(item => item.id === id ? { ...item, ...patch } : item);
+  store.set({ pendingMessages: next });
+}
+
+// Remove a specific pending item by ID
+function removePendingItem(sid: string, id: string): void {
+  if (!sid) return;
+  const { pendingMessages } = store.get();
+  const queue = pendingMessages[sid];
+  if (!queue) return;
+  const next = { ...pendingMessages };
+  const filtered = queue.filter(item => item.id !== id);
+  if (filtered.length === 0) {
+    delete next[sid];
+  } else {
+    next[sid] = filtered;
+  }
+  store.set({ pendingMessages: next });
+}
+
+// Clear all pending items for a session
+function clearAllPending(sid: string): void {
+  if (!sid) return;
+  const { pendingMessages } = store.get();
+  const next = { ...pendingMessages };
+  delete next[sid];
   store.set({ pendingMessages: next });
 }
 
@@ -250,24 +312,30 @@ function setDraftText(sid: string, text: string): void {
   store.set({ promptDrafts: { ...promptDrafts, [sid]: { text, images: prev.images || [] } } });
 }
 function queuedImages(sid: string): PendingAttachment[] {
+  // Legacy compatibility: return images from the first item
   if (!sid) return [];
-  return store.get().pendingMessages[sid]?.images || [];
+  const queue = store.get().pendingMessages[sid];
+  return (queue && queue.length > 0) ? (queue[0].images || []) : [];
 }
 function setQueuedImages(sid: string, images: PendingAttachment[]): void {
+  // Legacy compatibility: update images on the first item
   if (!sid) return;
   const { pendingMessages } = store.get();
-  const prev = pendingMessages[sid] || { text: "", retries: 0 };
-  store.set({ pendingMessages: { ...pendingMessages, [sid]: { text: prev.text ?? "", retries: prev.retries ?? 0, images } } });
+  const queue = pendingMessages[sid];
+  if (!queue || queue.length === 0) return;
+  const next = { ...pendingMessages };
+  next[sid] = [{ ...queue[0], images }, ...queue.slice(1)];
+  store.set({ pendingMessages: next });
 }
 function clearQueuedImages(sid: string): void {
+  // Legacy compatibility: clear images from the first item
   if (!sid) return;
   const { pendingMessages } = store.get();
-  const prev = pendingMessages[sid];
-  if (!prev) return;
+  const queue = pendingMessages[sid];
+  if (!queue || queue.length === 0) return;
   const next = { ...pendingMessages };
-  // Drop only the images field, keep text/retries.
-  const { images: _drop, ...rest } = prev;
-  next[sid] = rest as { text: string; retries: number };
+  const { images: _drop, ...rest } = queue[0];
+  next[sid] = [{ ...rest, images: undefined }, ...queue.slice(1)];
   store.set({ pendingMessages: next });
 }
 
@@ -3316,7 +3384,9 @@ function appendToolCard(
   target: HTMLElement = (liveStreamTarget || $("messages")),
 ): HTMLElement {
   const card = document.createElement("div");
-  card.className = "tool-card" + (status === "running" ? " open" : "") + (isPruned ? " pruned" : "");
+  // spawn_agent cards should default to expanded (open) for both running and success states
+  const isOpen = status === "running" || toolName === "spawn_agent";
+  card.className = "tool-card" + (isOpen ? " open" : "") + (isPruned ? " pruned" : "");
   const statusClass = isPruned ? "pruned" : (status === "error" ? "error" : status === "running" ? "running" : "success");
   const statusText = isPruned ? "pruned" : (status === "error" ? "error" : status === "running" ? "running..." : "done");
   const abbrevArg = getAbbreviatedArg(args);
@@ -3330,10 +3400,19 @@ function appendToolCard(
     body += `<div class="section-label">Output</div>`;
     body += `<div class="section-content pruned-output">Output pruned to save context — re-run the tool to see fresh results.</div>`;
   } else if (output !== undefined) {
-    if (toolName === "spawn_agent" && typeof output === "object" && output !== null && (output as any).result) {
-      const resultText = String((output as any).result);
-      body += `<div class="section-label">Output</div>`;
-      body += `<div class="section-content"><pre>${esc(resultText)}</pre></div>`;
+    if (toolName === "spawn_agent") {
+      // Show the agent's completion text, which carries the grouped tools
+      // summary ("grep ×3, read_file ×5") on its first line. Read from _text
+      // (live) or the string output (replay — persisted content), so the
+      // tools summary survives a restart instead of vanishing with the
+      // non-persisted event metadata.
+      const outText = (typeof output === "object" && output !== null && (output as any)._text)
+        ? String((output as any)._text)
+        : (typeof output === "string" ? output : "");
+      if (outText) {
+        body += `<div class="section-label">Output</div>`;
+        body += `<div class="section-content"><pre>${esc(outText)}</pre></div>`;
+      }
     } else if (typeof output === "object" && output !== null && ((output as any).type === "image" || (output as any).image_url)) {
       // Tool returned an image — render it inline. Only explicit image
       // signals count (`type === "image"` set by the runtime when a tool
@@ -3948,8 +4027,12 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
           statusEl.textContent = status === "failed" ? "Failed" : status === "cancelled" ? "Cancelled" : "Done";
         }
         const toolsUsed = (ev as any).tools_used || 0;
+        const toolsSummary = (ev as any).tools_summary as Record<string, number> | undefined;
+        const toolsLine = toolsSummary && Object.keys(toolsSummary).length > 0
+          ? Object.entries(toolsSummary).map(([n, c]) => `${n} ×${c}`).join(" · ")
+          : `${toolsUsed} tool${toolsUsed === 1 ? "" : "s"} used`;
         const resultPreview = String((ev as any).result_preview || "");
-        let detail = `<div class="agent-card-meta">${toolsUsed} tools used</div>`;
+        let detail = `<div class="agent-card-meta">${esc(toolsLine)}</div>`;
         if (resultPreview) {
           detail += `<div class="agent-card-result">${renderMarkdown(resultPreview)}</div>`;
         }
@@ -3970,7 +4053,7 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
             <span class="agent-card-status ${status === 'failed' || status === 'cancelled' ? 'failed' : 'done'}">${status === 'failed' ? 'Failed' : status === 'cancelled' ? 'Cancelled' : 'Done'}</span>
           </div>
           <div class="agent-card-task">${esc(taskDesc)}</div>
-          <div class="agent-card-meta">${toolsUsed} tools used</div>
+          <div class="agent-card-meta">${esc(toolsLine)}</div>
           ${resultPreview ? `<div class="agent-card-result">${renderMarkdown(resultPreview)}</div>` : ''}
         `;
       }
@@ -4504,32 +4587,67 @@ function renderComposerPreviews(sid: string) {
 function renderComposerPending(sid: string) {
   const bar = composerPendingEl(sid);
   if (!bar) return;
-  const textEl = bar.querySelector(".pending-bar-text") as HTMLElement | null;
-  const pending = getSessionPending(sid);
-  const imgs = queuedImages(sid);
-  const oldThumbs = bar.querySelector(".pending-bar-images");
-  if (oldThumbs) oldThumbs.remove();
-  if (pending == null && imgs.length === 0) {
+  const queue = getPendingQueue(sid);
+  // Clear the entire pending bar content
+  bar.innerHTML = "";
+  if (queue.length === 0) {
     bar.hidden = true;
-    if (textEl) textEl.textContent = "";
     return;
   }
-  const preview = (pending || "").length > 80 ? (pending || "").slice(0, 80) + "…" : (pending || "");
-  if (textEl) { textEl.textContent = preview; textEl.title = pending || ""; }
   bar.hidden = false;
-  if (imgs.length > 0) {
-    const thumbContainer = document.createElement("span");
-    thumbContainer.className = "pending-bar-images";
-    imgs.forEach(img => {
-      const im = document.createElement("img");
-      im.src = img.thumbUrl;
-      im.alt = img.name;
-      im.className = "pending-bar-thumb";
-      thumbContainer.appendChild(im);
-    });
-    if (textEl) bar.insertBefore(thumbContainer, textEl);
-    else bar.appendChild(thumbContainer);
-  }
+  // Render a label + container for each item
+  const label = document.createElement("div");
+  label.className = "pending-bar-label";
+  label.textContent = "排队中";
+  bar.appendChild(label);
+  queue.forEach((item, index) => {
+    const itemEl = document.createElement("div");
+    itemEl.className = "pending-bar-item";
+    itemEl.setAttribute("data-pending-id", item.id);
+    const num = document.createElement("span");
+    num.className = "pending-bar-num";
+    // Use circled numbers ①②③④⑤⑥⑦⑧⑨⑩ or fallback to 1. 2. 3.
+    const circled = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫"];
+    num.textContent = circled[index] || `${index + 1}.`;
+    itemEl.appendChild(num);
+    // Images (if any)
+    if (item.images && item.images.length > 0) {
+      const thumbContainer = document.createElement("span");
+      thumbContainer.className = "pending-bar-images";
+      item.images.forEach(img => {
+        const im = document.createElement("img");
+        im.src = img.thumbUrl;
+        im.alt = img.name;
+        im.className = "pending-bar-thumb";
+        // Store full image URL for lightbox
+        im.setAttribute("data-full-src", attachmentUrl(img.path));
+        thumbContainer.appendChild(im);
+      });
+      itemEl.appendChild(thumbContainer);
+    }
+    const textPreview = document.createElement("span");
+    textPreview.className = "pending-bar-text";
+    const preview = item.text.length > 80 ? item.text.slice(0, 80) + "…" : item.text;
+    textPreview.textContent = preview;
+    textPreview.title = item.text;
+    itemEl.appendChild(textPreview);
+    // Edit button
+    const editBtn = document.createElement("button");
+    editBtn.className = "pending-bar-edit";
+    editBtn.textContent = "[编辑]";
+    editBtn.onclick = () => editComposerPending(sid, item.id);
+    itemEl.appendChild(editBtn);
+    // Remove button
+    const rmBtn = document.createElement("button");
+    rmBtn.className = "pending-bar-clear";
+    rmBtn.textContent = "✕";
+    rmBtn.onclick = () => {
+      removePendingItem(sid, item.id);
+      renderComposerPending(sid);
+    };
+    itemEl.appendChild(rmBtn);
+    bar.appendChild(itemEl);
+  });
 }
 
 // The single send path. Handles slash commands, optimistic render into the
@@ -4613,8 +4731,7 @@ function queueComposerMessage(sid: string) {
   const trimmed = text.trim();
   const imgs = draftImages(sid);
   if (!trimmed && imgs.length === 0) return;
-  setSessionPending(sid, text || "", 0);
-  if (imgs.length > 0) setQueuedImages(sid, imgs);
+  enqueuePending(sid, text || "", 0, imgs.length > 0 ? imgs : undefined);
   textarea.value = "";
   textarea.style.height = "auto";
   // Mirror sendComposerMessage: also clear the persisted draft so any later
@@ -4629,7 +4746,7 @@ function queueComposerMessage(sid: string) {
 }
 
 // Send a previously-queued message for a session (called by flushComposerQueue).
-async function sendComposerFromQueue(sid: string, text: string, images: PendingAttachment[], initialRetries: number = 0) {
+async function sendComposerFromQueue(sid: string, text: string, images: PendingAttachment[], initialRetries: number = 0, itemId?: string) {
   if (!text && images.length === 0) return;
   const messagesEl = sessionMessagesEl(sid);
   setSessionRunning(sid, true);
@@ -4649,20 +4766,25 @@ async function sendComposerFromQueue(sid: string, text: string, images: PendingA
     setComposerRunning(sid, false);
     if (messagesEl) removeTyping(messagesEl);
     if (optimisticEl) optimisticEl.remove();
-    const { pendingMessages } = store.get();
-    const currentRetries = Math.max(initialRetries, pendingMessages[sid]?.retries ?? 0);
-    const newRetries = currentRetries + 1;
+    const newRetries = initialRetries + 1;
     if (newRetries >= MAX_QUEUE_RETRIES) {
-      setSessionPending(sid, null);
-      clearQueuedImages(sid);
+      // Permanently failed - don't re-enqueue
       disposePendingImageThumbs(images);
-      renderComposerPending(sid);
       appendError(`Queued message permanently failed after ${MAX_QUEUE_RETRIES} attempts: ${e?.message || e}. Please re-type and send again.`, messagesEl || undefined);
       console.error(`Queued message exceeded max retries (${MAX_QUEUE_RETRIES}):`, e);
       return;
     }
-    setSessionPending(sid, text, newRetries);
-    if (images.length > 0) setQueuedImages(sid, [...images]);
+    // Re-enqueue with incremented retry count
+    const restoredId = itemId || generatePendingId();
+    enqueuePending(sid, text, newRetries, images.length > 0 ? images : undefined);
+    // Update the restored item's ID to match the original if provided
+    if (itemId) {
+      const queue = getPendingQueue(sid);
+      const lastIdx = queue.length - 1;
+      if (lastIdx >= 0 && queue[lastIdx].id !== itemId) {
+        updatePendingItem(sid, queue[lastIdx].id, { id: itemId });
+      }
+    }
     renderComposerPending(sid);
     console.error("Queued message send failed (will retry):", e);
   }
@@ -4672,17 +4794,16 @@ async function sendComposerFromQueue(sid: string, text: string, images: PendingA
 // guard needed: the queue is per-sid, so flushing session X always lands in
 // session X regardless of what is currently active.
 function flushComposerQueue(sid: string, delayMs: number) {
-  const { pendingMessages } = store.get();
-  const entry = pendingMessages[sid];
-  const text = entry?.text;
-  const retries = entry?.retries ?? 0;
-  const imgs = queuedImages(sid);
-  if (text == null && imgs.length === 0) return;
+  const queue = getPendingQueue(sid);
+  if (queue.length === 0) return;
+  // Take only the FIRST item from the queue (FIFO)
+  const first = queue[0];
+  if (!first) return;
   setTimeout(() => {
-    setSessionPending(sid, null);
-    if (imgs.length > 0) clearQueuedImages(sid);
+    // Remove the item we're about to send
+    removePendingItem(sid, first.id);
     renderComposerPending(sid);
-    sendComposerFromQueue(sid, text || "", imgs, retries);
+    sendComposerFromQueue(sid, first.text, first.images || [], first.retries, first.id);
   }, delayMs);
 }
 
@@ -4703,22 +4824,39 @@ function cancelComposerTurn(sid: string) {
 }
 
 function clearComposerPending(sid: string) {
-  disposePendingImageThumbs(queuedImages(sid));
-  setSessionPending(sid, null);
+  // Clear all pending items for this session
+  const queue = getPendingQueue(sid);
+  queue.forEach(item => {
+    if (item.images) disposePendingImageThumbs(item.images);
+  });
+  clearAllPending(sid);
   renderComposerPending(sid);
 }
 
-function editComposerPending(sid: string) {
-  const pending = getSessionPending(sid);
-  if (pending == null) return;
+function editComposerPending(sid: string, itemId?: string) {
+  // If itemId provided, edit that specific item; otherwise edit the first one (legacy)
+  const queue = getPendingQueue(sid);
+  if (queue.length === 0) return;
+  const targetId = itemId || queue[0].id;
+  const item = queue.find(i => i.id === targetId);
+  if (!item) return;
+  // Pull back into composer
   const ta = composerTextarea(sid);
   if (ta) {
-    ta.value = pending;
+    ta.value = item.text;
     ta.style.height = "auto";
     ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
   }
   const cc = composerCharCount(sid);
   if (cc && ta) cc.textContent = String(ta.value.length);
+  // Restore images to draft
+  if (item.images && item.images.length > 0) {
+    setDraftImages(sid, item.images);
+    renderComposerPreviews(sid);
+  }
+  // Remove from queue
+  removePendingItem(sid, targetId);
+  renderComposerPending(sid);
   // Sync the persisted draft with the textarea so a session switch /
   // remount between "click edit" and the next keystroke doesn't lose the
   // pulled-back text (the input event handler hasn't fired yet to keep

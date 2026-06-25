@@ -765,7 +765,10 @@ class DesktopAPIServer:
         try:
             while True:
                 event = await queue.get()
-                await resp.write(f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n".encode("utf-8"))
+                payload = await asyncio.to_thread(
+                    lambda: f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n".encode("utf-8")
+                )
+                await resp.write(payload)
         except (asyncio.CancelledError, ConnectionResetError):
             pass
         finally:
@@ -1697,8 +1700,13 @@ class DesktopAPIServer:
             return web.json_response({"error": "No workspace"}, status=400)
         base = Path(workspace).resolve()
         target = (base / rel_path).resolve()
-        # Security: ensure target is under workspace
-        if not str(target).startswith(str(base)):
+        # Security: ensure target is under workspace. Use relative_to
+        # rather than a str startswith check — the latter is bypassable
+        # when one path is a string prefix of another (e.g. workspace
+        # "/foo" vs target "/foobar").
+        try:
+            target.relative_to(base)
+        except ValueError:
             return web.json_response({"error": "Path outside workspace"}, status=403)
         if not target.is_file():
             return web.json_response({"error": "Not a file"}, status=404)

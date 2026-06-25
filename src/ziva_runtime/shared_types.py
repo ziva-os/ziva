@@ -152,3 +152,5 @@ class SessionState:
     model_name: str | None = None
     load_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     plan: list[dict] | None = None
+    plan_last_updated: float = 0.0
+    plan_tool_calls_since_update: int = 0
