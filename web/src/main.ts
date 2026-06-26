@@ -801,6 +801,14 @@ function renderBrowserTab(container: HTMLElement) {
   if (isElectron) {
     frame?.addEventListener("did-navigate", (e: any) => { urlInput.value = e.url; });
     frame?.addEventListener("did-navigate-in-page", (e: any) => { urlInput.value = e.url; });
+    // Open target=_blank / window.open links INSIDE the agent browser
+    // webview instead of handing them to the OS browser (the default with
+    // allowpopups).
+    frame?.addEventListener("new-window", (e: any) => {
+      try { e.preventDefault?.(); } catch {}
+      const url = e.url || e?.params?.url;
+      if (url) frame?.loadURL(url);
+    });
     (container.querySelector('[data-action="back"]') as HTMLElement).onclick = () => { try { frame?.goBack(); } catch {} };
     (container.querySelector('[data-action="forward"]') as HTMLElement).onclick = () => { try { frame?.goForward(); } catch {} };
     (container.querySelector('[data-action="reload"]') as HTMLElement).onclick = () => { try { frame?.reload(); } catch {} };

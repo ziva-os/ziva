@@ -84,7 +84,7 @@ function startPythonBackend(): Promise<void> {
   });
 }
 
-function createMainWindow() {
+async function createMainWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -100,6 +100,12 @@ function createMainWindow() {
       webviewTag: true,
     },
   });
+
+  // Honour the OS proxy for the main window AND every <webview> (they share
+  // the default session), so the Agent Browser can reach sites behind a
+  // system proxy. MUST be awaited before loadURL, otherwise the first
+  // navigation (and any webview created right after) misses the proxy.
+  await mainWindow.webContents.session.setProxy({ mode: "system" });
 
   mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
 
@@ -119,6 +125,25 @@ function createWindow() {
   // the agent shouldn't be able to navigate or inspect the chat
   // surface it's embedded in.
   cdpBridge = new CdpBridge({ port: CDP_PORT, host: "127.0.0.1" });
+  // When a CDP client (chrome-devtools-mcp) asks for a page but the Agent
+  // Browser tab isn't open, lazily create a standalone browser window so
+  // the agent has a page to drive instead of failing with "no page target".
+  cdpBridge.onEnsurePage = () => {
+    const win = new BrowserWindow({
+      width: 1000,
+      height: 700,
+      title: "Ziva Browser",
+      webPreferences: { contextIsolation: true, nodeIntegration: false },
+    });
+    win.loadURL("about:blank");
+    // Keep links inside this window (same behaviour as the Agent Browser
+    // webview). Proxy is already handled via the default session setProxy.
+    win.webContents.setWindowOpenHandler(({ url }) => {
+      if (url) win.webContents.loadURL(url);
+      return { action: "deny" };
+    });
+    cdpBridge!.addPage(win.webContents);
+  };
   cdpBridge.start().then(() => {
     const port = cdpBridge!.port;
     console.log(
@@ -148,6 +173,15 @@ ipcMain.handle("get-cdp-port", () => cdpBridge?.port ?? null);
 ipcMain.handle("register-cdp-page", (_event, wcId: number): string | null => {
   const wc = webContents.fromId(wcId);
   if (!wc || !cdpBridge) return null;
+  // Keep target=_blank / window.open links INSIDE the agent browser webview
+  // instead of handing them to the OS browser. (The renderer also attaches
+  // a 'new-window' listener, but this main-process handler is the reliable
+  // path — the webview 'new-window' DOM event fires inconsistently across
+  // Electron versions.)
+  wc.setWindowOpenHandler(({ url }) => {
+    if (url) wc.loadURL(url);
+    return { action: "deny" };
+  });
   return cdpBridge.addPage(wc, { type: "page" });
 });
 

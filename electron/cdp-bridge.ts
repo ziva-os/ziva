@@ -71,6 +71,11 @@ export class CdpBridge {
   private server: http.Server | null = null;
   private wss: WebSocketServer | null = null;
   private readonly pages: PageTarget[] = [];
+  /** Called when a client asks for page targets but none are registered
+   * (e.g. chrome-devtools-mcp connects before the Agent Browser tab is
+   * open). Lets the host lazily create a page so the agent has something
+   * to drive instead of failing with "no page target". */
+  onEnsurePage?: () => void;
   // sessionId -> session
   private readonly sessions: Map<string, AttachedSession> = new Map();
   // webContents.id -> WebSocket (for the direct /devtools/page endpoint)
@@ -215,9 +220,13 @@ export class CdpBridge {
     if (url === "/json/version") {
       res.end(
         JSON.stringify({
-          Browser: `Ziva/Electron (${process.versions.electron})`,
+          // chrome-devtools-mcp / Puppeteer check this to decide if the
+          // endpoint is a real Chrome. Electron IS Chromium, so report the
+          // real Chrome version — otherwise they ignore --browserUrl and
+          // launch an external Chrome.
+          Browser: `Chrome/${process.versions.chrome}`,
           "Protocol-Version": PROTOCOL_VERSION,
-          "User-Agent": `Ziva/Electron (${process.versions.electron})`,
+          "User-Agent": `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`,
           V8: process.versions.v8,
           "WebKit-Version": "537.36",
           webSocketDebuggerUrl: `ws://${this.host}:${this.actualPort}/devtools/browser`,
@@ -227,6 +236,12 @@ export class CdpBridge {
     }
 
     if (url === "/json/list" || url === "/json") {
+      // Lazily create a page if a client asks for targets but none are
+      // registered yet (Agent Browser tab not open). Without this,
+      // chrome-devtools-mcp sees an empty target list and fails.
+      if (this.pages.length === 0 && this.onEnsurePage) {
+        try { this.onEnsurePage(); } catch {}
+      }
       res.end(JSON.stringify(this.pages.map((p) => this.toPageInfo(p))));
       return;
     }

@@ -376,7 +376,12 @@
 }
 /* macOS Electron: leave room for traffic light buttons (close/minimize/maximize) */
 .electron-darwin .ziva-toolbar {
-  padding-left: 72px;
+  padding-left: 88px;
+}
+/* The sidebar header (top-left "Ziva" title) sits directly under the traffic
+   lights too — push it right so the title isn't covered. */
+.electron-darwin .sidebar-header {
+  padding-left: 88px;
 }
 .ziva-toolbar .toolbar-title {
   font-size: 12px;
