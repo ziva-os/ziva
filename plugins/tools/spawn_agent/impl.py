@@ -61,18 +61,9 @@ class SpawnAgentTool:
                         "type": "string",
                         "description": "Clear, specific description of what the sub-agent should accomplish",
                     },
-                    "instructions": {
-                        "type": "string",
-                        "description": "Optional extra instructions for the sub-agent (constraints, focus areas, style). Overrides the predefined agent's instructions when agent is set.",
-                    },
-                    "tools": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Optional whitelist of tool names the sub-agent can use. Overrides the predefined agent's tools when agent is set. If omitted and no agent is set, all tools except spawn_agent are available.",
-                    },
                     "background": {
                         "type": "boolean",
-                        "description": "If true, run the sub-agent in the background and return immediately with an agent_id. Overrides the predefined agent's background default when agent is set.",
+                        "description": "If true, run the sub-agent in the background and return immediately with an agent_id (result delivered via events; use get_agent_result to fetch). Defaults to the agent type's background setting.",
                     },
                 },
                 "required": ["agent", "task"],
@@ -110,18 +101,13 @@ class SpawnAgentTool:
             )
         agent_def = agents.get(agent_name) or {}
 
-        instructions = input_data.get("instructions", "").strip()
-        if not instructions and agent_def:
-            instructions = agent_def.get("instructions", "").strip()
-
-        tool_whitelist = input_data.get("tools")
-        if tool_whitelist is None and agent_def:
-            tool_whitelist = agent_def.get("tools")
-
-        background = input_data.get("background")
-        if background is None and agent_def:
-            background = bool(agent_def.get("background", False))
-        background = bool(background)
+        # Instructions and tools come ONLY from the predefined agent type —
+        # no call-time overrides (keeps agent types predictable, aligns with
+        # Claude Code's Task tool). background is a run-mode toggle, so it
+        # stays call-time overridable with the agent's default as fallback.
+        instructions = (agent_def.get("instructions", "") or "").strip()
+        tool_whitelist = agent_def.get("tools")
+        background = bool(input_data.get("background", agent_def.get("background", False)))
 
         # Build child agent messages. The sub-agent has its own system
         # prompt construction taken directly from the agent configuration

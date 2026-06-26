@@ -344,15 +344,6 @@ class OpenAIChatAdapter:
                     if hasattr(chunk.usage.completion_tokens_details, "reasoning_tokens"):
                         usage_dict["reasoning_tokens"] = chunk.usage.completion_tokens_details.reasoning_tokens
 
-            if finish_reason:
-                # TEMP diagnostic: why do sub-agent outputs truncate?
-                print(
-                    f"[chat_stream] model={model} max_tokens={self._default_max_tokens} "
-                    f"finish_reason={finish_reason} "
-                    f"completion_tokens={(usage_dict or {}).get('completion_tokens')} "
-                    f"reasoning_tokens={(usage_dict or {}).get('reasoning_tokens')}",
-                    flush=True,
-                )
             yield StreamDelta(
                 content=content,
                 reasoning_content=reasoning,

@@ -5376,15 +5376,14 @@ async function openProjectInSidebar(
   if (opts.thenSwitchTo) {
     await switchSession(opts.thenSwitchTo, { skipGitRefresh: true });
   } else {
-    // Ensure there's an active session + composer in the new workspace
-    // (matches load-time behavior). Without this an empty workspace would
-    // have no input box after #composerHost was cleared above.
-    const s = store.get();
-    if (s.sessions.length > 0) {
-      await switchSession(s.sessions[0].id, { skipGitRefresh: true });
-    } else {
-      await createSession();
-    }
+    // Always start the new workspace on a fresh empty session. Previously
+    // this jumped to sessions[0], but refreshSessions lists sessions across
+    // ALL recent workspaces — so sessions[0] could belong to a different
+    // project, leaking its conversation into the new workspace ("对话在两
+    // 个项目下都显示") or showing non-empty history right after switching
+    // ("切项目后显示非空白"). A new empty session belongs to the new
+    // workspace and gives the composer an anchor.
+    await createSession();
   }
 }
 

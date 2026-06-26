@@ -94,12 +94,14 @@ async def test_spawn_agent_uses_definition_defaults():
 
 
 @pytest.mark.asyncio
-async def test_spawn_agent_call_time_overrides_definition():
+async def test_spawn_agent_uses_definition_no_override():
+    """Instructions/tools come ONLY from the predefined agent — call-time
+    overrides (instructions/tools) were removed. background stays overridable."""
     tool = SpawnAgentTool()
     runtime = _make_runtime({
         "plan": {
             "instructions": "You are plan.",
-            "tools": ["read_file"],
+            "tools": ["read_file", "list"],
             "background": False,
         }
     })
@@ -109,21 +111,21 @@ async def test_spawn_agent_call_time_overrides_definition():
     async def fake_fg(runtime_, task, call_id, child_messages, child_ctx, session_id, child_sid):
         captured["child_messages"] = child_messages
         captured["child_ctx"] = child_ctx
-        captured["background"] = False
         return ToolResult(text="done")
 
     tool._run_foreground = fake_fg
 
-    result = await tool.run({
+    # Pass call-time instructions/tools — they must be IGNORED now; only the
+    # predefined agent definition should be used.
+    await tool.run({
         "agent": "plan",
         "task": "plan feature",
         "instructions": "Override instructions.",
-        "tools": ["read_file", "edit_file"],
+        "tools": ["edit_file"],
         "background": False,
     }, ctx)
 
     assert captured["child_messages"][0].role == "system"
-    assert "Override instructions." in captured["child_messages"][0].content
-    assert captured["child_messages"][1].role == "user"
+    assert captured["child_messages"][0].content == "You are plan."  # predefined, not override
     assert captured["child_messages"][1].content == "plan feature"
-    assert captured["child_ctx"].metadata["_allowed_tools"] == {"read_file", "edit_file"}
+    assert captured["child_ctx"].metadata["_allowed_tools"] == {"read_file", "list"}  # predefined tools, not override
