@@ -912,6 +912,29 @@ async function loadFileTreeForContainer(panelContainer: HTMLElement) {
   }
 }
 
+async function expandDir(item: HTMLElement, entry: any, depth: number, viewer: HTMLElement) {
+  // If the entry already has children (returned by an earlier fetch at or
+  // above this depth), render them directly. Otherwise lazy-load: the
+  // initial tree fetch is shallow (depth=2), so deeper directories arrive
+  // with no children — fetch this directory's subtree on first expand so
+  // the Files tab can reach any depth instead of stopping at depth 2.
+  if (entry.children && entry.children.length > 0) {
+    renderFileTreeAtIn(item, entry.children, depth + 1, viewer);
+    return;
+  }
+  try {
+    item.classList.add("loading");
+    const resp = await fetch("/api/files/tree?path=" + encodeURIComponent(entry.path) + "&depth=2");
+    if (resp.ok) {
+      const data = await resp.json();
+      entry.children = data.entries || [];
+      if (entry.children.length > 0) renderFileTreeAtIn(item, entry.children, depth + 1, viewer);
+    }
+  } catch { /* ignore lazy-load errors */ } finally {
+    item.classList.remove("loading");
+  }
+}
+
 function renderFileTreeIn(container: HTMLElement, entries: any[], depth: number, viewer: HTMLElement) {
   container.innerHTML = "";
   const sorted = [...entries].sort((a, b) => {
@@ -936,8 +959,8 @@ function renderFileTreeIn(container: HTMLElement, entries: any[], depth: number,
           next = next.nextElementSibling as HTMLElement;
           toRemove.remove();
         }
-        if (!expanded && entry.children) {
-          renderFileTreeAtIn(item, entry.children, depth + 1, viewer);
+        if (!expanded) {
+          expandDir(item, entry, depth, viewer);
         }
       } else {
         container.querySelectorAll(".files-tree-item.active").forEach(el => el.classList.remove("active"));
@@ -973,7 +996,7 @@ function renderFileTreeAtIn(afterEl: HTMLElement, entries: any[], depth: number,
           next = next.nextElementSibling as HTMLElement;
           toRemove.remove();
         }
-        if (!expanded && entry.children) renderFileTreeAtIn(item, entry.children, depth + 1, viewer);
+        if (!expanded) expandDir(item, entry, depth, viewer);
       } else {
         parent!.querySelectorAll(".files-tree-item.active").forEach(el => el.classList.remove("active"));
         item.classList.add("active");
@@ -3070,9 +3093,9 @@ function renderMessages(target: HTMLElement, msgs: any[]): void {
         if (imgUrl) output = { type: "image", image_url: imgUrl };
       }
 
-      let subagentTools: string[] | undefined;
+      let subagentTools: Record<string, number> | undefined;
       if (!isPruned && toolName === "spawn_agent" && typeof output === "object" && output !== null) {
-        subagentTools = (output as any).tools;
+        subagentTools = (output as any).tools_summary;
       }
 
       // ask_user is rendered as an answered question card, not a tool card.
@@ -3379,7 +3402,7 @@ function appendToolCard(
   args: Record<string, unknown>,
   status: string,
   output?: unknown,
-  subagentTools?: string[],
+  subagentTools?: Record<string, number>,
   isPruned: boolean = false,
   target: HTMLElement = (liveStreamTarget || $("messages")),
 ): HTMLElement {
@@ -3444,9 +3467,12 @@ function appendToolCard(
       }
     }
   }
-  if (subagentTools && subagentTools.length > 0) {
+  if (subagentTools && Object.keys(subagentTools).length > 0) {
+    const summary = Object.entries(subagentTools)
+      .map(([n, c]) => `${esc(n)} ×${c}`)
+      .join(", ");
     body += `<div class="section-label">used tools</div>`;
-    body += `<div class="section-content subagent-tools">${subagentTools.map((t) => `<div class="subagent-tool-item"><span>⚙ ${esc(t)}</span></div>`).join("")}</div>`;
+    body += `<div class="section-content subagent-tools"><span class="subagent-tool-summary">${summary}</span></div>`;
   }
 
   card.innerHTML = `
@@ -4189,10 +4215,10 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
       // is about to) answer it.
     } else {
       const status = ev.error_class ? "error" : "success";
-      let subagentTools: string[] | undefined;
+      let subagentTools: Record<string, number> | undefined;
       if (ev.tool === "spawn_agent") {
         const output = (ev.output || {}) as Record<string, unknown>;
-        subagentTools = output.tools as string[] | undefined;
+        subagentTools = output.tools_summary as Record<string, number> | undefined;
       }
       // Image tool_end events have type:"image" but no image_url (stripped
       // to keep SSE payloads small). Fetch the image from _hidden messages.
@@ -4270,11 +4296,15 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
       updateSendStopButton();
       refreshPlan();
       if ($("rightPanel").classList.contains("show")) refreshActiveReviewTabs();
-      // Codex-style: flush this session's queued prompt now that the turn
-      // has closed. flushComposerQueue is per-sid, so it always lands in
-      // the right session regardless of what's currently active.
-      flushComposerQueue(sid, 30);
     }
+    // Flush queued prompts now that this session's turn has closed. This
+    // is OUTSIDE the activeSid guard so a queued message still flushes if
+    // the user switched sessions while waiting. 200ms lets the server
+    // clear turn_task before the next createTurn — a shorter delay races
+    // the server's turn teardown and the queued createTurn comes back 429
+    // turn_already_running, which strands the rest of the queue (the
+    // failed createTurn fires no turn_end to flush the next item).
+    flushComposerQueue(sid, 200);
   } else if (t === "round_complete") {
     invalidateLiveStreamEl();
     const usage = ev.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
@@ -4334,6 +4364,7 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
     if (!sid || sid === activeSid) {
       if (wasRunning) {
         removeTyping();
+        invalidateLiveStreamEl();
         setActiveRunning(false);
         updateSendStopButton();
         if (t === "turn_failed") {
@@ -4600,16 +4631,10 @@ function renderComposerPending(sid: string) {
   label.className = "pending-bar-label";
   label.textContent = "排队中";
   bar.appendChild(label);
-  queue.forEach((item, index) => {
+  queue.forEach((item) => {
     const itemEl = document.createElement("div");
     itemEl.className = "pending-bar-item";
     itemEl.setAttribute("data-pending-id", item.id);
-    const num = document.createElement("span");
-    num.className = "pending-bar-num";
-    // Use circled numbers ①②③④⑤⑥⑦⑧⑨⑩ or fallback to 1. 2. 3.
-    const circled = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫"];
-    num.textContent = circled[index] || `${index + 1}.`;
-    itemEl.appendChild(num);
     // Images (if any)
     if (item.images && item.images.length > 0) {
       const thumbContainer = document.createElement("span");
@@ -4787,23 +4812,37 @@ async function sendComposerFromQueue(sid: string, text: string, images: PendingA
     }
     renderComposerPending(sid);
     console.error("Queued message send failed (will retry):", e);
+    // Re-flush shortly: the failed createTurn left this item in the queue
+    // with no running turn to fire a turn_end, so without a retry it would
+    // sit forever. 500ms lets the server settle after the failed attempt.
+    setTimeout(() => { flushComposerQueue(sid, 500); }, 500);
   }
 }
 
 // Flush a session's queued message after its turn closes. No active-session
 // guard needed: the queue is per-sid, so flushing session X always lands in
 // session X regardless of what is currently active.
+// Per-sid flush lock: turn_end / cancel / retry can all fire
+// flushComposerQueue concurrently; without a lock two flushes race two
+// createTurns into a 429 turn_already_running.
+const _flushingQueue: Record<string, boolean> = {};
 function flushComposerQueue(sid: string, delayMs: number) {
   const queue = getPendingQueue(sid);
   if (queue.length === 0) return;
+  if (_flushingQueue[sid]) return;  // a flush for this session is already in flight
+  _flushingQueue[sid] = true;
   // Take only the FIRST item from the queue (FIFO)
   const first = queue[0];
-  if (!first) return;
-  setTimeout(() => {
-    // Remove the item we're about to send
-    removePendingItem(sid, first.id);
-    renderComposerPending(sid);
-    sendComposerFromQueue(sid, first.text, first.images || [], first.retries, first.id);
+  if (!first) { _flushingQueue[sid] = false; return; }
+  setTimeout(async () => {
+    try {
+      // Remove the item we're about to send
+      removePendingItem(sid, first.id);
+      renderComposerPending(sid);
+      await sendComposerFromQueue(sid, first.text, first.images || [], first.retries, first.id);
+    } finally {
+      _flushingQueue[sid] = false;
+    }
   }, delayMs);
 }
 

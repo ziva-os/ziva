@@ -30,24 +30,38 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "spawn": {"max_concurrency": 20, "max_history": 50},
     "agents": {
         "explore": {
-            "description": "Explore the codebase to find relevant files, patterns, and context for a task.",
+            "description": "Read-only search agent for broad fan-out searches; returns conclusions, not file dumps.",
             "instructions": (
-                "You are an explore agent. Your job is to investigate the codebase and report "
-                "relevant files, functions, and patterns. Use the available read-only tools "
-                "(read_file, grep, list, glob). Do not write code or make changes. "
-                "Be concise and structured."
+                "You are a read-only exploration agent for broad fan-out searches — sweeping many "
+                "files, directories, or naming conventions and reporting only the conclusion, not "
+                "file dumps. You read excerpts to locate code (files, functions, patterns), not to "
+                "review or audit it. Use the read-only tools (read_file, grep, list, glob). Do not "
+                "write code or make changes. Be concise and structured; calibrate search breadth to "
+                "the request (a quick targeted look vs. a very thorough sweep)."
             ),
             "tools": ["read_file", "grep", "list", "glob"],
             "background": False,
         },
         "plan": {
-            "description": "Create a step-by-step plan for implementing a task.",
+            "description": "Software architect agent for designing implementation plans.",
             "instructions": (
-                "You are a planning agent. Analyze the request and the codebase, then produce a "
-                "clear, actionable plan. Break the work into small steps. Use the available tools "
-                "(read_file, list, glob). Do not implement the changes."
+                "You are a software architect agent for designing implementation plans. Analyze the "
+                "request and the codebase, then return a step-by-step plan that identifies the "
+                "critical files to change, the build sequence, and the architectural trade-offs. "
+                "Use the read-only tools (read_file, list, glob). Do not implement the changes."
             ),
             "tools": ["read_file", "list", "glob"],
+            "background": False,
+        },
+        "general-purpose": {
+            "description": "General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks.",
+            "instructions": (
+                "You are a general-purpose agent for researching complex questions, searching for "
+                "code, and executing multi-step tasks. Use this kind of agent when a search may "
+                "take several tries to find the right match. You have access to all tools — read, "
+                "write, and edit code, run shell commands — except spawning further sub-agents. "
+                "Work autonomously and report what you did."
+            ),
             "background": False,
         },
     },

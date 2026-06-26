@@ -512,6 +512,18 @@ class DesktopAPIServer:
                 # The cancel_token is stashed on the context for the streaming layer to
                 # observe; task.cancel() above is the primary cancellation path.
                 _, result, events = await self.runtime.chat_with_events(chat_messages, session_id=sid)
+                # chat_with_events already emitted turn_end. Clear turn_task
+                # IMMEDIATELY — before the message reload below — so a queued
+                # createTurn that the frontend flushes on turn_end doesn't 429
+                # against this still-not-done task. The reload reads the whole
+                # session JSONL and can outlast the frontend's flush delay,
+                # which previously stranded every queued message in 429 retries.
+                s = self.runtime._sessions.get(sid)
+                if s:
+                    if s.cancel_token is token:
+                        s.cancel_token = None
+                    if s.turn_task is task:
+                        s.turn_task = None
                 # Reload messages from disk since runtime.chat() persisted them via FileStorage
                 fresh_messages = []
                 for msg_data in FileStorage.get_messages(self._pid_for(sid), sid):
@@ -1666,12 +1678,30 @@ class DesktopAPIServer:
     # ---- Panel endpoints ----
 
     async def files_tree(self, req: web.Request) -> web.Response:
-        """Return directory tree for the current workspace."""
+        """Return directory tree for the current workspace.
+
+        Without `path`, scans the workspace root. With `path` (relative to
+        the workspace), scans that subtree only — used by the Files tab to
+        lazily expand directories deeper than the initial fetch depth, so the
+        tree can reach any depth instead of being capped at the request depth.
+        Paths in the response are always relative to the workspace root.
+        """
         workspace = self.runtime.workspace_root
         if not workspace or not Path(workspace).is_dir():
             return web.json_response({"entries": []})
         depth = min(int(req.query.get("depth", "2")), 5)
         base = Path(workspace).resolve()
+        scan_root = base
+        sub = (req.query.get("path") or "").strip()
+        if sub:
+            candidate = (base / sub).resolve()
+            try:
+                candidate.relative_to(base)
+            except ValueError:
+                return web.json_response({"error": "Path outside workspace"}, status=403)
+            if not candidate.is_dir():
+                return web.json_response({"entries": []})
+            scan_root = candidate
 
         def _scan(path: Path, d: int) -> list:
             items: list = []
@@ -1688,7 +1718,7 @@ class DesktopAPIServer:
                 pass
             return items
 
-        entries = _scan(base, depth)
+        entries = _scan(scan_root, depth)
         return web.json_response({"entries": entries})
 
     async def files_read(self, req: web.Request) -> web.Response:

@@ -124,9 +124,14 @@ class FileStorage:
                 continue
             with cls._lock(path, exclusive=False):
                 try:
-                    sessions.append(cls.read_json(path))
+                    data = cls.read_json(path)
                 except Exception:
-                    pass
+                    continue
+                # Hide sub-agent sessions — they belong to a parent turn and
+                # shouldn't surface as top-level conversations in the sidebar.
+                if data.get("is_subagent"):
+                    continue
+                sessions.append(data)
         return sorted(sessions, key=lambda x: x.get("time", {}).get("updated", 0), reverse=True)
 
     @classmethod

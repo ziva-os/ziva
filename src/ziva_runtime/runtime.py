@@ -1750,6 +1750,11 @@ class Runtime:
                 for tc in message.tool_calls
             ],
         }
+        # Tool messages get a stable id (= tool_call_id) so a background
+        # sub-agent's completion can update_message this row in the parent
+        # session later (rewrite "started" -> final summary).
+        if message.role == "tool" and message.tool_call_id:
+            record["id"] = message.tool_call_id
         if message.reasoning_content:
             record["reasoning_content"] = message.reasoning_content
         if message.reasoning_signature:

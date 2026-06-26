@@ -4,7 +4,7 @@ import asyncio
 import uuid
 from typing import Any, Dict
 
-from ziva_runtime.shared_types import ChatMessage, RuntimeContext, ToolResult
+from ziva_runtime.shared_types import ChatMessage, RuntimeContext, SessionState, ToolResult
 
 BLOCKED_TOOLS = {"spawn_agent", "get_agent_result", "cancel_agent"}
 
@@ -24,20 +24,14 @@ _TOOL_ALIASES = {
 def _summarize_tools(tool_names: list[str]) -> dict[str, int]:
     """Group tool calls by name, e.g. ['grep','grep','read_file'] -> {'grep':2,'read_file':1}.
 
-    Shown to the user/agent grouped by tool name rather than in call order,
-    so a long run reads as "grep ×3, read_file ×5" instead of a flat list.
+    Shown to the user (in the UI) grouped by tool name rather than in call
+    order, so a long run reads as "grep ×3, read_file ×5" instead of a flat
+    list.
     """
     summary: dict[str, int] = {}
     for n in tool_names:
         summary[n] = summary.get(n, 0) + 1
     return summary
-
-
-def _format_tools_summary(tool_names: list[str]) -> str:
-    """Human-readable grouped summary, e.g. 'grep ×2, read_file ×1'."""
-    if not tool_names:
-        return "none"
-    return ", ".join(f"{n} ×{c}" for n, c in _summarize_tools(tool_names).items())
 
 
 class SpawnAgentTool:
@@ -47,21 +41,21 @@ class SpawnAgentTool:
         return {
             "name": "spawn_agent",
             "description": (
-                "Spawn a sub-agent to handle a specific task. The sub-agent runs in its own "
-                "context with access to most tools (cannot spawn further sub-agents). "
-                "Use this for delegating focused work (e.g., searching, coding, analyzing) "
-                "to keep the main context clean. "
-                "When background=true, the agent runs asynchronously and this returns immediately "
-                "with an agent_id; the result will be available via the subagent_completed event. "
-                "You can reference a predefined agent from the config with the 'agent' parameter; "
-                "predefined agents provide default instructions, tool whitelist, and background mode."
+                "Spawn a sub-agent to handle a specific task independently. The sub-agent runs in its own "
+                "isolated session (its messages do not pollute this conversation) and returns only its "
+                "final result. 'agent' is REQUIRED and must be one of the fixed types: "
+                "explore (read-only investigation) / plan (produce an implementation plan) / "
+                "general-purpose (read/write/run, full tool access except spawning further sub-agents). "
+                "When background=true, the agent runs asynchronously and this returns immediately with "
+                "an agent_id; the result is delivered later and persisted so it survives restart."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "agent": {
                         "type": "string",
-                        "description": "Name of a predefined agent from config (e.g. 'explore', 'plan'). If provided, its instructions, tools, and background defaults are used.",
+                        "enum": ["explore", "plan", "general-purpose"],
+                        "description": "REQUIRED, one of the fixed agent types: 'explore' (read-only investigation), 'plan' (produce an implementation plan), 'general-purpose' (read/write/run, full tool access except spawning further sub-agents).",
                     },
                     "task": {
                         "type": "string",
@@ -81,7 +75,7 @@ class SpawnAgentTool:
                         "description": "If true, run the sub-agent in the background and return immediately with an agent_id. Overrides the predefined agent's background default when agent is set.",
                     },
                 },
-                "required": ["task"],
+                "required": ["agent", "task"],
             },
         }
 
@@ -101,14 +95,20 @@ class SpawnAgentTool:
         # Resolve predefined agent definition from config, allowing call-time overrides.
         config = getattr(runtime, "config", {}) or {}
         agents = config.get("agents", {})
+        # 'agent' is REQUIRED and must be one of the three fixed types.
+        _FIXED_AGENTS = ("explore", "plan", "general-purpose")
         agent_name = input_data.get("agent", "").strip()
-        agent_def = agents.get(agent_name) if agent_name else None
-        if agent_name and agent_def is None:
-            available = ", ".join(agents.keys()) if agents else "none"
+        if not agent_name:
             return ToolResult(
-                text=f"Error: unknown_agent\nUnknown agent '{agent_name}'. Available: {available}",
+                text=f"Error: missing_agent\n'agent' is required. Choose one of: {', '.join(_FIXED_AGENTS)}",
                 error=True,
             )
+        if agent_name not in _FIXED_AGENTS:
+            return ToolResult(
+                text=f"Error: unknown_agent\nUnknown agent '{agent_name}'. Choose one of: {', '.join(_FIXED_AGENTS)}",
+                error=True,
+            )
+        agent_def = agents.get(agent_name) or {}
 
         instructions = input_data.get("instructions", "").strip()
         if not instructions and agent_def:
@@ -135,10 +135,32 @@ class SpawnAgentTool:
 
         call_id = uuid.uuid4().hex[:12]
 
+        # Create an isolated child session: the sub-agent's messages live in
+        # their own JSONL (not the parent's), so the parent conversation
+        # stays clean and the sub-agent conversation persists separately.
+        # The parent keeps only this spawn_agent tool_call + a result summary.
+        child_sid = uuid.uuid4().hex
+        pid = runtime._resolve_project_id(ctx.session_id)
+        from ziva_runtime.storage.file_storage import FileStorage
+        import time as _time
+        _now = int(_time.time() * 1000)
+        FileStorage.create_session(pid, {
+            "id": child_sid,
+            "time": {"created": _now, "updated": _now},
+            "is_subagent": True,
+            "parent_session_id": ctx.session_id,
+            "subagent_call_id": call_id,
+            "agent_type": agent_name,
+        })
+        # Register a child SessionState under the parent's project_id so
+        # _resolve_project_id(child_sid) routes disk calls to the right pid.
+        runtime._sessions[child_sid] = SessionState(project_id=pid)
+
         child_meta: dict[str, Any] = {
             "_runtime": runtime,
             "_subagent": True,
             "_subagent_call_id": call_id,
+            "_spawn_tool_call_id": ctx.metadata.get("_tool_call_id"),
         }
         if tool_whitelist is not None:
             resolved = set()
@@ -147,25 +169,31 @@ class SpawnAgentTool:
             child_meta["_allowed_tools"] = resolved - BLOCKED_TOOLS
 
         child_ctx = RuntimeContext(
-            session_id=ctx.session_id,
+            session_id=child_sid,
             config=ctx.config,
             metadata=child_meta,
         )
 
         if background:
-            return await self._run_background(runtime, task, call_id, child_messages, child_ctx, ctx.session_id)
+            return await self._run_background(runtime, task, call_id, child_messages, child_ctx, ctx.session_id, child_sid)
 
         # ── Foreground (blocking) mode ──
-        return await self._run_foreground(runtime, task, call_id, child_messages, child_ctx, ctx.session_id)
+        return await self._run_foreground(runtime, task, call_id, child_messages, child_ctx, ctx.session_id, child_sid)
 
-    async def _run_foreground(self, runtime, task, call_id, child_messages, child_ctx, session_id) -> ToolResult:
-        """Synchronous sub-agent: blocks until completion."""
+    async def _run_foreground(self, runtime, task, call_id, child_messages, child_ctx, session_id, child_sid) -> ToolResult:
+        """Synchronous sub-agent: blocks until completion.
+
+        session_id is the PARENT session (event publish target, so the UI
+        sees the sub-agent card in the parent stream). child_ctx.session_id
+        is the child session where the sub-agent's messages are persisted.
+        """
         if runtime.event_bus:
             await runtime.event_bus.publish(session_id, {
                 "type": "subagent_start",
                 "call_id": call_id,
                 "task": task[:200],
                 "background": False,
+                "subagent_session_id": child_sid,
             })
 
         result_content = ""
@@ -173,7 +201,7 @@ class SpawnAgentTool:
         tool_names: list[str] = []
         try:
             async for event in runtime._run_model_tool_loop(
-                child_messages, session_id, child_ctx,
+                child_messages, child_ctx.session_id, child_ctx,
             ):
                 t = event.get("type")
                 if t == "model_response":
@@ -204,17 +232,18 @@ class SpawnAgentTool:
                 "call_id": call_id,
                 "task": task[:200],
                 "tools_used": tool_count,
+                "tools_summary": _summarize_tools(tool_names),
                 "result_length": len(result_content),
                 "background": False,
+                "subagent_session_id": child_sid,
             })
 
-        tools_line = _format_tools_summary(tool_names)
         return ToolResult(
-            text=f"Agent completed ({tool_count} tool call{'s' if tool_count != 1 else ''}: {tools_line})\n\n{result_content}",
-            metadata={"tools_used": tool_count, "tools": tool_names, "tools_summary": _summarize_tools(tool_names), "result": result_content},
+            text=result_content,
+            metadata={"tools_used": tool_count, "tools_summary": _summarize_tools(tool_names), "result": result_content, "subagent_session_id": child_sid},
         )
 
-    async def _run_background(self, runtime, task, call_id, child_messages, child_ctx, session_id) -> ToolResult:
+    async def _run_background(self, runtime, task, call_id, child_messages, child_ctx, session_id, child_sid) -> ToolResult:
         """Background sub-agent: returns immediately, runs via asyncio.create_task."""
         import time
 
@@ -224,6 +253,7 @@ class SpawnAgentTool:
             "agent_id": agent_id,
             "call_id": call_id,
             "session_id": session_id,
+            "child_session_id": child_sid,
             "task_desc": task[:200],
             "status": "running",
             "result": None,
@@ -240,6 +270,7 @@ class SpawnAgentTool:
                 "agent_id": agent_id,
                 "task": task[:200],
                 "background": True,
+                "subagent_session_id": child_sid,
             })
 
         async def _run():
@@ -253,7 +284,7 @@ class SpawnAgentTool:
                 tool_names: list[str] = []
                 try:
                     async for event in runtime._run_model_tool_loop(
-                        child_messages, session_id, child_ctx,
+                        child_messages, child_ctx.session_id, child_ctx,
                     ):
                         if runtime._background_agents.get(agent_id, {}).get("status") == "cancelled":
                             break
@@ -313,6 +344,22 @@ class SpawnAgentTool:
                 runtime._background_agents[agent_id]["tools_used"] = tool_count
                 runtime._background_agents[agent_id]["finished_at"] = time.time()
 
+                # Rewrite the parent session's spawn_agent tool message
+                # (currently "Background agent started ...") to the final
+                # summary, so the result survives a restart without the UI
+                # needing to read the child session.
+                _spawn_tc_id = child_ctx.metadata.get("_spawn_tool_call_id")
+                if _spawn_tc_id:
+                    from ziva_runtime.storage.file_storage import FileStorage as _FS
+                    _summary = result_content
+                    try:
+                        _FS.update_message(
+                            runtime._resolve_project_id(session_id),
+                            session_id, _spawn_tc_id, {"content": _summary},
+                        )
+                    except Exception:
+                        pass
+
                 if runtime.event_bus:
                     await runtime.event_bus.publish(session_id, {
                         "type": "subagent_end",
@@ -321,11 +368,11 @@ class SpawnAgentTool:
                         "task": task[:200],
                         "status": "completed",
                         "tools_used": tool_count,
-                        "tools": tool_names,
                         "tools_summary": _summarize_tools(tool_names),
                         "result_length": len(result_content),
                         "result_preview": result_content[:500],
                         "background": True,
+                        "subagent_session_id": child_sid,
                     })
 
         # Store the task reference on the tracker so cancel_agent can
@@ -336,5 +383,5 @@ class SpawnAgentTool:
 
         return ToolResult(
             text=f"Background agent started (id: {agent_id}). It will run independently and results will be delivered via events.",
-            metadata={"agent_id": agent_id, "status": "running", "background": True},
+            metadata={"agent_id": agent_id, "status": "running", "background": True, "subagent_session_id": child_sid},
         )

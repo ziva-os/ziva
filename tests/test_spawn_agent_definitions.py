@@ -11,6 +11,8 @@ def _make_runtime(agents=None):
     runtime = MagicMock()
     runtime.config = {"agents": agents or {}}
     runtime.event_bus = AsyncMock()
+    runtime._resolve_project_id.return_value = "test_pid"
+    runtime._sessions = {}
     return runtime
 
 
@@ -22,6 +24,18 @@ def _make_ctx(runtime):
     )
 
 
+@pytest.fixture(autouse=True)
+def _no_disk(monkeypatch):
+    # spawn_agent now creates an isolated child session on disk; stub it out
+    # so these unit tests don't touch the filesystem.
+    from ziva_runtime.storage import file_storage
+    monkeypatch.setattr(
+        file_storage.FileStorage,
+        "create_session",
+        classmethod(lambda cls, *a, **k: None),
+    )
+
+
 @pytest.mark.asyncio
 async def test_spawn_unknown_agent_returns_error():
     tool = SpawnAgentTool()
@@ -30,7 +44,19 @@ async def test_spawn_unknown_agent_returns_error():
     result = await tool.run({"agent": "missing", "task": "find files"}, ctx)
     assert result.error is True
     assert "unknown_agent" in result.text
+    # The fixed agent types are listed in the error.
     assert "explore" in result.text
+    assert "general-purpose" in result.text
+
+
+@pytest.mark.asyncio
+async def test_spawn_missing_agent_returns_error():
+    tool = SpawnAgentTool()
+    runtime = _make_runtime({})
+    ctx = _make_ctx(runtime)
+    result = await tool.run({"task": "find files"}, ctx)
+    assert result.error is True
+    assert "missing_agent" in result.text
 
 
 @pytest.mark.asyncio
@@ -45,13 +71,11 @@ async def test_spawn_agent_uses_definition_defaults():
     })
     ctx = _make_ctx(runtime)
 
-    # Patch the background runner so we can inspect the constructed context.
     captured = {}
-    original_bg = tool._run_background
-
-    async def fake_bg(runtime_, task, call_id, child_messages, child_ctx, session_id):
+    async def fake_bg(runtime_, task, call_id, child_messages, child_ctx, session_id, child_sid):
         captured["child_messages"] = child_messages
         captured["child_ctx"] = child_ctx
+        captured["child_sid"] = child_sid
         return ToolResult(text="started")
 
     tool._run_background = fake_bg
@@ -64,6 +88,9 @@ async def test_spawn_agent_uses_definition_defaults():
     assert captured["child_messages"][1].role == "user"
     assert captured["child_messages"][1].content == "find files"
     assert captured["child_ctx"].metadata["_allowed_tools"] == {"read_file"}
+    # child_ctx points at the isolated child session, not the parent.
+    assert captured["child_ctx"].session_id == captured["child_sid"]
+    assert captured["child_ctx"].session_id != "sid_1"
 
 
 @pytest.mark.asyncio
@@ -79,9 +106,7 @@ async def test_spawn_agent_call_time_overrides_definition():
     ctx = _make_ctx(runtime)
 
     captured = {}
-    original_fg = tool._run_foreground
-
-    async def fake_fg(runtime_, task, call_id, child_messages, child_ctx, session_id):
+    async def fake_fg(runtime_, task, call_id, child_messages, child_ctx, session_id, child_sid):
         captured["child_messages"] = child_messages
         captured["child_ctx"] = child_ctx
         captured["background"] = False
@@ -102,32 +127,3 @@ async def test_spawn_agent_call_time_overrides_definition():
     assert captured["child_messages"][1].role == "user"
     assert captured["child_messages"][1].content == "plan feature"
     assert captured["child_ctx"].metadata["_allowed_tools"] == {"read_file", "edit_file"}
-
-
-@pytest.mark.asyncio
-async def test_spawn_agent_without_agent_uses_call_time_params():
-    tool = SpawnAgentTool()
-    runtime = _make_runtime({})
-    ctx = _make_ctx(runtime)
-
-    captured = {}
-
-    async def fake_fg(runtime_, task, call_id, child_messages, child_ctx, session_id):
-        captured["child_messages"] = child_messages
-        captured["child_ctx"] = child_ctx
-        return ToolResult(text="done")
-
-    tool._run_foreground = fake_fg
-
-    result = await tool.run({
-        "task": "do work",
-        "instructions": "Custom instr.",
-        "tools": ["search"],
-        "background": False,
-    }, ctx)
-
-    assert captured["child_messages"][0].role == "system"
-    assert "Custom instr." in captured["child_messages"][0].content
-    assert captured["child_messages"][1].role == "user"
-    assert captured["child_messages"][1].content == "do work"
-    assert captured["child_ctx"].metadata["_allowed_tools"] == {"search"}
