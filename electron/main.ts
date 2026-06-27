@@ -6,10 +6,13 @@ import { CdpBridge } from "./cdp-bridge";
 let mainWindow: BrowserWindow | null = null;
 let pythonProcess: ChildProcess | null = null;
 let cdpBridge: CdpBridge | null = null;
+let chromeProcess: ChildProcess | null = null;
 const PORT = 4097;
-// chrome-devtools-mcp's --browser-url points here. Override with
-// ZIVA_CDP_PORT=<n> if 9222 is taken.
-const CDP_PORT = Number(process.env.ZIVA_CDP_PORT || 9222);
+// CDP bridge (for the Agent Browser <webview>) — moved off 9222 so the real
+// Chrome below can use 9222. Real Chrome = native speed, no Electron
+// debugger overhead.
+const CDP_PORT = Number(process.env.ZIVA_CDP_PORT || 9223);
+const CHROME_DEBUG_PORT = 9222;
 
 function getBackendCommand(): { cmd: string; args: string[]; env: NodeJS.ProcessEnv } {
   const isDev = !app.isPackaged;
@@ -78,6 +81,28 @@ function getBackendCommand(): { cmd: string; args: string[]; env: NodeJS.Process
     args: baseArgs,
     env,
   };
+}
+
+function spawnDebugChrome(): void {
+  const fs = require("fs");
+  const candidates = [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+  ];
+  const exe = candidates.find((p) => { try { return fs.existsSync(p); } catch { return false; } });
+  if (!exe) {
+    console.error("[chrome] Google Chrome not found — chrome-devtools-mcp will start its own");
+    return;
+  }
+  const profileDir = path.join(app.getPath("home"), ".ziva", "chrome-debug-profile");
+  chromeProcess = spawn(exe, [
+    `--remote-debugging-port=${CHROME_DEBUG_PORT}`,
+    `--user-data-dir=${profileDir}`,
+    "--no-first-run",
+    "--no-default-browser-check",
+  ], { detached: true, stdio: "ignore" });
+  chromeProcess.unref();
+  console.log(`[chrome] real Chrome started on port ${CHROME_DEBUG_PORT}`);
 }
 
 function startPythonBackend(): Promise<void> {
@@ -208,8 +233,9 @@ function createWindow() {
   // the agent has a page to drive instead of failing with "no page target".
   cdpBridge.onEnsurePage = () => {
     const win = new BrowserWindow({
-      width: 1000,
-      height: 700,
+      width: 1280,
+      height: 800,
+      show: false,
       title: "Ziva Browser",
       webPreferences: { contextIsolation: true, nodeIntegration: false },
     });
@@ -271,6 +297,7 @@ ipcMain.handle("unregister-cdp-page", (_event, targetId: string): boolean => {
 
 // App lifecycle
 app.whenReady().then(async () => {
+  spawnDebugChrome();
   createWindow();  // show the loading window immediately (not a blank screen)
   try {
     await startPythonBackend();
@@ -301,6 +328,10 @@ app.on("before-quit", () => {
   if (pythonProcess) {
     pythonProcess.kill("SIGTERM");
     pythonProcess = null;
+  }
+  if (chromeProcess) {
+    try { chromeProcess.kill("SIGTERM"); } catch {}
+    chromeProcess = null;
   }
   if (cdpBridge) {
     cdpBridge.stop();
