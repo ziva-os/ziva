@@ -64,7 +64,10 @@ class ShellTool:
         if not command:
             return ToolResult(text="Error: invalid_input\ncommand is required", error=True)
 
-        timeout = min(int(input_data.get("timeout", 30)), self.MAX_TIMEOUT)
+        # Timeout is enforced by the runtime executor (_execute_tool's single
+        # wait_for, driven by this tool's `timeout` parameter) — no inner
+        # wait_for here, which avoids a double-layered timeout where the
+        # executor's default would cut off a longer timeout the caller asked for.
         workdir = input_data.get("workdir", os.getcwd())
 
         try:
@@ -72,12 +75,12 @@ class ShellTool:
             env = self._load_env_vars(workdir)
 
             # Use zsh if available, otherwise bash, fallback to /bin/sh
-            shell = shutil.which("zsh") or shutil.which("bash")
-            if not shell:
-                shell = "/bin/sh"
+            shell_bin = shutil.which("zsh") or shutil.which("bash")
+            if not shell_bin:
+                shell_bin = "/bin/sh"
 
             proc = await asyncio.create_subprocess_exec(
-                shell, "-c", command,
+                shell_bin, "-c", command,
                 cwd=workdir,
                 env=env,
                 stdout=asyncio.subprocess.PIPE,
@@ -85,20 +88,17 @@ class ShellTool:
             )
 
             try:
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-                timed_out = False
+                stdout, stderr = await proc.communicate()
                 exit_code = proc.returncode if proc.returncode is not None else 0
-            except asyncio.TimeoutError:
+            except asyncio.CancelledError:
+                # Executor timeout or user cancel — kill the child so it
+                # doesn't outlive the tool call.
                 proc.kill()
                 try:
                     await proc.wait()
                 except Exception:
                     pass
-                return ToolResult(
-                    text=f"Exit code: -1\nError: Command timed out after {timeout} seconds",
-                    error=True,
-                    metadata={"exit_code": -1, "timed_out": True}
-                )
+                raise
 
             # Decode and clean stdout
             stdout_text = stdout.decode('utf-8', errors='replace') if stdout else ""

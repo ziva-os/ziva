@@ -98,7 +98,13 @@ class GlobTool:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=20)
+        try:
+            stdout, _stderr = await proc.communicate()
+        except asyncio.CancelledError:
+            proc.kill()
+            try: await proc.wait()
+            except Exception: pass
+            raise
 
         results = []
         for line in stdout.decode("utf-8", errors="ignore").splitlines():

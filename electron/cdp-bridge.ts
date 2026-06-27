@@ -349,7 +349,21 @@ export class CdpBridge {
 
   private async handleBrowserMessage(ws: WebSocket, msg: any) {
     // ---- Target domain ----
+    // chrome-devtools-mcp / Puppeteer call this right after connect. Electron
+    // has no browser contexts (no incognito), so report none — returning
+    // "Method not handled at browser level" breaks the whole handshake.
+    if (msg.method === "Target.getBrowserContexts") {
+      this.respond(ws, msg.id, { browserContextIds: [] });
+      return;
+    }
     if (msg.method === "Target.getTargets") {
+      // Puppeteer / chrome-devtools-mcp ask for targets over the WS (not
+      // the /json/list HTTP endpoint). Lazily create a page if none are
+      // registered, so the agent has something to drive without the user
+      // opening the Agent Browser tab first.
+      if (this.pages.length === 0 && this.onEnsurePage) {
+        try { this.onEnsurePage(); } catch {}
+      }
       this.respond(ws, msg.id, {
         targetInfos: this.pages.map((p) => ({
           targetId: p.id,
@@ -359,6 +373,22 @@ export class CdpBridge {
           attached: this.hasSessionFor(p.id),
         })),
       });
+      return;
+    }
+    // Puppeteer optionally enables auto-attach / target discovery. We don't
+    // auto-attach (the client attaches explicitly via attachToTarget), but
+    // must respond so the method isn't "not handled".
+    if (msg.method === "Target.setAutoAttach" || msg.method === "Target.setDiscoverTargets") {
+      this.respond(ws, msg.id, {});
+      return;
+    }
+    // chrome-devtools-mcp's new_page / navigate calls Target.createTarget to
+    // open a fresh page. Lazily create one via onEnsurePage and return its
+    // targetId (Puppeteer then attaches to it).
+    if (msg.method === "Target.createTarget") {
+      if (this.onEnsurePage) { try { this.onEnsurePage(); } catch {} }
+      const page = this.pages[this.pages.length - 1];
+      this.respond(ws, msg.id, { targetId: page?.id || "" });
       return;
     }
 

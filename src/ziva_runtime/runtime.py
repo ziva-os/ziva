@@ -613,6 +613,14 @@ class Runtime:
 
         # Workspace plugins
         plugin_paths = [workspace_root / Path(p) for p in config.get("plugin", {}).get("paths", ["./plugins"])]
+        # Packaged app (PyInstaller): the workspace won't have a plugins/
+        # dir, so also load the plugins bundled into the app bundle (shipped
+        # via PyInstaller datas to _MEIPASS/plugins).
+        import sys as _sys
+        if getattr(_sys, "frozen", False):
+            _bundled = Path(getattr(_sys, "_MEIPASS", Path(__file__).resolve().parent)) / "plugins"
+            if _bundled.is_dir() and _bundled not in plugin_paths:
+                plugin_paths.append(_bundled)
         load_plugins(plugin_paths, registry, config)
 
         # Skills live under their own `skill:` block. Scan
@@ -1496,7 +1504,17 @@ class Runtime:
                     # *and* harmful here. Keep it out of the way.
                     timeout = None
                 else:
-                    timeout = tool_timeouts.get(call.name, default_timeout)
+                    # Single source of truth for timeout: if the tool declares
+                    # a `timeout` parameter (e.g. shell), use the caller's
+                    # value (the tool no longer wraps its own wait_for, so the
+                    # executor is the only bound). Otherwise fall back to the
+                    # configured executor default (120s).
+                    props = ((spec.get("input_schema") or {}).get("properties") or {})
+                    if "timeout" in props:
+                        arg_to = call.arguments.get("timeout") if isinstance(call.arguments, dict) else None
+                        timeout = min(int(arg_to), 600) if isinstance(arg_to, (int, float)) and arg_to > 0 else default_timeout
+                    else:
+                        timeout = tool_timeouts.get(call.name, default_timeout)
                 try:
                     out = await asyncio.wait_for(tool.run(hook_result.get("arguments", call.arguments), ctx), timeout=timeout)
                 except asyncio.TimeoutError:

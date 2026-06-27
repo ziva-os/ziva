@@ -248,7 +248,13 @@ class GrepTool:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            try:
+                stdout, stderr = await proc.communicate()
+            except asyncio.CancelledError:
+                proc.kill()
+                try: await proc.wait()
+                except Exception: pass
+                raise
 
             if proc.returncode not in (0, 1):  # 0 = matches, 1 = no matches
                 return ToolResult(
@@ -316,7 +322,13 @@ class GrepTool:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+            try:
+                stdout, _ = await proc.communicate()
+            except asyncio.CancelledError:
+                proc.kill()
+                try: await proc.wait()
+                except Exception: pass
+                raise
 
             if proc.returncode not in (0, 1):
                 return ToolResult(text="Error: search_failed\ngrep search failed", error=True)

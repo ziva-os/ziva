@@ -13,14 +13,60 @@ const CDP_PORT = Number(process.env.ZIVA_CDP_PORT || 9222);
 
 function getBackendCommand(): { cmd: string; args: string[]; env: NodeJS.ProcessEnv } {
   const isDev = !app.isPackaged;
+  // Default workspace for the packaged app: the user's Documents folder, so
+  // sessions / repos live somewhere the user can browse in Finder instead of
+  // inside the read-only Ziva.app bundle. Falls back to HOME if Documents
+  // isn't available (very unusual). Dev mode keeps the old behavior of
+  // cwd-relative ".", which on `electron .` resolves to the ziva repo root
+  // and is what local development expects.
+  let workspaceArg: string | null = null;
+  if (!isDev) {
+    // Prefer the last-used workspace so reopening the app lands back in the
+    // project the user was working in — otherwise every launch defaults to
+    // the Documents folder, which shows up as a stray empty workspace in the
+    // sidebar. First launch (no recent workspaces yet) falls back to
+    // Documents, which is Finder-browsable and writable (unlike the app bundle).
+    try {
+      const fs = require("fs");
+      const recentPath = path.join(app.getPath("home"), ".ziva", "recent_workspaces.json");
+      const recent = JSON.parse(fs.readFileSync(recentPath, "utf8"));
+      if (Array.isArray(recent) && recent.length > 0 && fs.existsSync(recent[0])) {
+        workspaceArg = recent[0];
+      }
+    } catch {
+      // no recent_workspaces.json yet — first launch
+    }
+    if (!workspaceArg) {
+      try {
+        workspaceArg = app.getPath("documents") || app.getPath("home");
+      } catch {
+        workspaceArg = app.getPath("home");
+      }
+    }
+  }
   const baseArgs = ["desktop", "serve", "--port", String(PORT)];
+  if (workspaceArg) baseArgs.push("--workspace", workspaceArg);
+
+  // macOS GUI apps inherit a minimal PATH that omits shell-managed binaries
+  // (nvm's node/npx, uv's uvx, ~/.local/bin, /opt/homebrew/bin). The backend
+  // spawns MCP servers via `uvx`/`npx`, so merge in a login shell's PATH —
+  // otherwise MCP connect fails with "No such file or directory: 'uvx'/'npx'".
+  const env = { ...process.env };
+  try {
+    const cp = require("child_process");
+    const r = cp.spawnSync("zsh", ["-lic", "echo $PATH"], {
+      encoding: "utf8", timeout: 3000,
+    });
+    const shellPath = (r.stdout || "").trim();
+    if (shellPath) env.PATH = shellPath + ":" + (env.PATH || "");
+  } catch { /* zsh missing or slow — fall back to default PATH */ }
 
   if (isDev) {
     const projectRoot = path.resolve(__dirname, "..");
     return {
       cmd: "python3",
       args: ["-m", "ziva_runtime", ...baseArgs],
-      env: { ...process.env, PYTHONPATH: projectRoot },
+      env: { ...env, PYTHONPATH: projectRoot },
     };
   }
 
@@ -30,7 +76,7 @@ function getBackendCommand(): { cmd: string; args: string[]; env: NodeJS.Process
   return {
     cmd: backendPath,
     args: baseArgs,
-    env: { ...process.env },
+    env,
   };
 }
 
@@ -38,17 +84,38 @@ function startPythonBackend(): Promise<void> {
   return new Promise((resolve, reject) => {
     const { cmd, args, env } = getBackendCommand();
 
+    // Packaged: spawn from the user's home dir. `process.resourcesPath` (and
+    // therefore `Ziva.app/Contents`) is inside the read-only app bundle on
+    // macOS — many tools refuse to write there and the resulting CWD shows
+    // up in the UI as "Contents", which looks broken. Dev keeps the original
+    // behavior of running from the project root.
+    const cwd = app.isPackaged
+      ? (() => {
+          try { return app.getPath("home"); } catch { return app.getPath("temp"); }
+        })()
+      : path.resolve(__dirname, "..");
+
     pythonProcess = spawn(cmd, args, {
-      cwd: path.resolve(app.isPackaged ? process.resourcesPath : __dirname, ".."),
+      cwd,
       env,
       stdio: ["pipe", "pipe", "pipe"],
     });
 
     let started = false;
 
+    // Persist backend stdout/stderr to ~/.ziva/backend.log so issues like
+    // "could not get source code" (which masks the real traceback inside the
+    // frozen binary) can be diagnosed without a terminal attached.
+    const fs = require("fs");
+    const logPath = path.join(app.getPath("home"), ".ziva", "backend.log");
+    const appendLog = (line: string) => {
+      try { fs.appendFileSync(logPath, line); } catch { /* best-effort */ }
+    };
+
     pythonProcess.stdout?.on("data", (data: Buffer) => {
       const msg = data.toString();
       console.log("[ziva-backend]", msg.trim());
+      appendLog(msg);
       if (!started && (msg.includes("Running on") || msg.includes("started"))) {
         started = true;
         resolve();
@@ -58,6 +125,7 @@ function startPythonBackend(): Promise<void> {
     pythonProcess.stderr?.on("data", (data: Buffer) => {
       const msg = data.toString();
       console.log("[ziva-backend:err]", msg.trim());
+      appendLog("[err] " + msg);
       if (!started && (msg.includes("Running on") || msg.includes("started"))) {
         started = true;
         resolve();
@@ -74,13 +142,17 @@ function startPythonBackend(): Promise<void> {
       pythonProcess = null;
     });
 
-    // Fallback timeout: assume backend started after 5s
+    // Fallback: wait up to 60s for the "Running on" marker. The PyInstaller
+    // backend can take 10-20s to import on first launch (cold start); the
+    // old 5s fallback resolved before the server was up, so loadURL hit a
+    // dead port → the white screen on first open. 60s only fires if the
+    // backend truly hung.
     setTimeout(() => {
       if (!started) {
         started = true;
         resolve();
       }
-    }, 5000);
+    }, 60000);
   });
 }
 
@@ -107,7 +179,13 @@ async function createMainWindow() {
   // navigation (and any webview created right after) misses the proxy.
   await mainWindow.webContents.session.setProxy({ mode: "system" });
 
-  mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
+  // Show a loading screen immediately (data: URL needs no backend) so the
+  // window isn't blank while the PyInstaller backend cold-starts. The real
+  // UI is swapped in from app.whenReady once the backend is up.
+  const loadingHtml = "data:text/html;charset=utf-8," + encodeURIComponent(
+    "<html><body style='margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#1e1e1e;color:#aaa;font-family:-apple-system,system-ui,sans-serif'><div style='font-size:28px;font-weight:600'>Ziva</div><div style='color:#666;margin-top:10px;font-size:13px'>启动中…</div></body></html>"
+  );
+  mainWindow.loadURL(loadingHtml);
 
   mainWindow.on("closed", () => {
     mainWindow = null;
@@ -193,12 +271,18 @@ ipcMain.handle("unregister-cdp-page", (_event, targetId: string): boolean => {
 
 // App lifecycle
 app.whenReady().then(async () => {
+  createWindow();  // show the loading window immediately (not a blank screen)
   try {
     await startPythonBackend();
+    // Backend is up — swap the loading screen for the real UI.
+    const backendUrl = `http://127.0.0.1:${PORT}`;
+    mainWindow?.webContents.on("did-fail-load", () => {
+      setTimeout(() => mainWindow?.loadURL(backendUrl), 1000);
+    });
+    mainWindow?.loadURL(backendUrl);
   } catch (err) {
-    console.error("Failed to start backend, launching window anyway:", err);
+    console.error("Failed to start backend:", err);
   }
-  createWindow();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {

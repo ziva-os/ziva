@@ -47,3 +47,4 @@ weibo_snapshot.txt
 /screenshot-*.png
 /douyin_*.png
 .gstack/
+.build-venv/

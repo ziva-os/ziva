@@ -1603,8 +1603,10 @@ function disposePendingImageThumbs(arr: Array<{ thumbUrl?: string }>) {
     }
   }
   for (const sid in pendingMessages) {
-    for (const a of pendingMessages[sid]?.images || []) {
-      if (a?.thumbUrl) live.add(a.thumbUrl);
+    for (const item of pendingMessages[sid] || []) {
+      for (const a of item?.images || []) {
+        if (a?.thumbUrl) live.add(a.thumbUrl);
+      }
     }
   }
   for (const a of arr) {
@@ -4370,26 +4372,33 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
       store.set({ runningSessions: next });
     }
     if (!sid || sid === activeSid) {
+      // Always tear down the live-stream element + typing chip for the
+      // active session on cancel/fail — NOT gated on `wasRunning`.
+      // cancelComposerTurn sets runningSessions[sid]=false BEFORE
+      // turn_cancelled arrives, so gating on wasRunning would skip
+      // invalidateLiveStreamEl and the next queued message's assistant
+      // deltas flow into the cancelled turn's bubble ("first message
+      // appears after the answer").
+      removeTyping();
+      invalidateLiveStreamEl();
       if (wasRunning) {
-        removeTyping();
-        invalidateLiveStreamEl();
         setActiveRunning(false);
         updateSendStopButton();
         if (t === "turn_failed") {
           appendError("Turn failed");
         }
       }
-      // Flush this session's queued prompt now that the turn has closed
-      // (cancel / fail). This is the reliable flush path for stop: the
-      // server has confirmed the old turn is gone, so the queued createTurn
-      // won't race a still-running turn. cancelComposerTurn also flushes
-      // (immediate, 200ms) for responsiveness; flushComposerQueue clears
-      // the queue first, so a second call here is a safe no-op.
-      flushComposerQueue(sid, 30);
       // else: the user already replaced this turn via cancel→
       // sendFromQueue. A fresh turn_start has bumped runningSessions
       // back to true; don't tear that down.
     }
+    // Flush queued prompts now that this session's turn has closed (cancel /
+    // fail). OUTSIDE the activeSid guard (matches turn_end) so a queued
+    // message still flushes even if the user switched sessions. Runs after
+    // invalidateLiveStreamEl above (when active), so the next message's
+    // assistant stream lands in a fresh element. 200ms lets the server
+    // clear turn_task before the next createTurn.
+    flushComposerQueue(sid, 200);
   } else if (t === "automation_run") {
     // Refresh automation list when a run completes/fails
     const modal = $("automationModal");
@@ -4464,6 +4473,10 @@ function applyCompactionComplete(sid: string, successMsg: string): void {
   refreshSessionPreview(sid);
   setCompactToastState("success", successMsg, sid);
   setTimeout(() => hideCompactToast(), 3000);
+  // Re-render the pending-message bar: loadHistoryInto can re-mount the
+  // composer, leaving the pending bar empty even though the queue is still
+  // in state — queued messages appeared to vanish right after auto-compact.
+  renderComposerPending(sid);
 }
 
 async function runCompactFlow(sid: string, isPrune: boolean, messagesEl: HTMLElement | null): Promise<void> {
@@ -4860,14 +4873,14 @@ function cancelComposerTurn(sid: string) {
   setSessionRunning(sid, false);
   setComposerRunning(sid, false);
   renderSessions();
-  // Flush the queued message for THIS session (Codex-style). The per-sid
-  // flushComposerQueue reads `pendingMessages[sid]` directly, so this
-  // works regardless of whether `sid` is currently activeSid. The 200ms
-  // delay mirrors the legacy cancelTurn path: gives the server's
-  // `except asyncio.CancelledError` block time to finish its finally
-  // before a fresh createTurn lands — otherwise the new turn races the
-  // old finally's `s.turn_task = None` and ends up untracked.
-  flushComposerQueue(sid, 200);
+  // Don't flush here. The turn_cancelled SSE handler runs
+  // invalidateLiveStreamEl BEFORE its flush, so the next queued message's
+  // assistant stream lands in a fresh element. Flushing here (before
+  // invalidate) raced and let the new turn's deltas flow into the cancelled
+  // turn's assistant bubble → "first queued message appears after the
+  // answer". turn_cancelled only fires after the server confirmed the
+  // cancel, so flushing there is both ordered (invalidate first) and
+  // race-free (no 429).
 }
 
 function clearComposerPending(sid: string) {
