@@ -71,11 +71,6 @@ export class CdpBridge {
   private server: http.Server | null = null;
   private wss: WebSocketServer | null = null;
   private readonly pages: PageTarget[] = [];
-  /** Called when a client asks for page targets but none are registered
-   * (e.g. chrome-devtools-mcp connects before the Agent Browser tab is
-   * open). Lets the host lazily create a page so the agent has something
-   * to drive instead of failing with "no page target". */
-  onEnsurePage?: () => void;
   // sessionId -> session
   private readonly sessions: Map<string, AttachedSession> = new Map();
   // webContents.id -> WebSocket (for the direct /devtools/page endpoint)
@@ -236,12 +231,11 @@ export class CdpBridge {
     }
 
     if (url === "/json/list" || url === "/json") {
-      // Lazily create a page if a client asks for targets but none are
-      // registered yet (Agent Browser tab not open). Without this,
-      // chrome-devtools-mcp sees an empty target list and fails.
-      if (this.pages.length === 0 && this.onEnsurePage) {
-        try { this.onEnsurePage(); } catch {}
-      }
+      // If no Agent Browser tab is open, the list is empty and the agent
+      // gets a clear "no target" error from chrome-devtools-mcp. That's
+      // the intended contract: the user must open the Browser tab before
+      // the agent can drive it. (See registerWebviewWithCdp in
+      // web/src/main.ts for the webview-side wiring.)
       res.end(JSON.stringify(this.pages.map((p) => this.toPageInfo(p))));
       return;
     }
@@ -357,13 +351,12 @@ export class CdpBridge {
       return;
     }
     if (msg.method === "Target.getTargets") {
-      // Puppeteer / chrome-devtools-mcp ask for targets over the WS (not
-      // the /json/list HTTP endpoint). Lazily create a page if none are
-      // registered, so the agent has something to drive without the user
-      // opening the Agent Browser tab first.
-      if (this.pages.length === 0 && this.onEnsurePage) {
-        try { this.onEnsurePage(); } catch {}
-      }
+      // Puppeteer / chrome-devtools-mcp ask for targets over the WS
+      // (not the /json/list HTTP endpoint). If the Agent Browser tab
+      // isn't open, this returns an empty list — the client gets a
+      // clear "no target" error rather than silently switching to a
+      // hidden window. See the /json/list handler above for the
+      // matching contract.
       this.respond(ws, msg.id, {
         targetInfos: this.pages.map((p) => ({
           targetId: p.id,
@@ -383,10 +376,14 @@ export class CdpBridge {
       return;
     }
     // chrome-devtools-mcp's new_page / navigate calls Target.createTarget to
-    // open a fresh page. Lazily create one via onEnsurePage and return its
-    // targetId (Puppeteer then attaches to it).
+    // open a fresh page. We return the most recently registered page's
+    // targetId so the client can attach to it. If no page is registered
+    // (Browser tab never opened), we return an empty targetId and the
+    // client fails with a clear error — no silent fallback to a hidden
+    // window. To open a fresh page the user must first open the Agent
+    // Browser tab so a webview gets registered via
+    // registerWebviewWithCdp in the renderer.
     if (msg.method === "Target.createTarget") {
-      if (this.onEnsurePage) { try { this.onEnsurePage(); } catch {} }
       const page = this.pages[this.pages.length - 1];
       this.respond(ws, msg.id, { targetId: page?.id || "" });
       return;

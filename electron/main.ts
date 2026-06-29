@@ -204,6 +204,19 @@ async function createMainWindow() {
   // navigation (and any webview created right after) misses the proxy.
   await mainWindow.webContents.session.setProxy({ mode: "system" });
 
+  // Auto-grant the few permissions the renderer actually needs. Without
+  // this, navigator.mediaDevices.getUserMedia({ audio: true }) is denied
+  // silently on packaged builds and the mic button does nothing. We
+  // restrict the allowlist to "media" so the renderer can't quietly gain
+  // geolocation / notifications / midi / etc. — each of those is a
+  // separate prompt that should still surface to the user.
+  mainWindow.webContents.session.setPermissionRequestHandler(
+    (_webContents, permission, callback) => {
+      if (permission === "media") return callback(true);
+      return callback(false);
+    },
+  );
+
   // Show a loading screen immediately (data: URL needs no backend) so the
   // window isn't blank while the PyInstaller backend cold-starts. The real
   // UI is swapped in from app.whenReady once the backend is up.
@@ -228,26 +241,6 @@ function createWindow() {
   // the agent shouldn't be able to navigate or inspect the chat
   // surface it's embedded in.
   cdpBridge = new CdpBridge({ port: CDP_PORT, host: "127.0.0.1" });
-  // When a CDP client (chrome-devtools-mcp) asks for a page but the Agent
-  // Browser tab isn't open, lazily create a standalone browser window so
-  // the agent has a page to drive instead of failing with "no page target".
-  cdpBridge.onEnsurePage = () => {
-    const win = new BrowserWindow({
-      width: 1280,
-      height: 800,
-      show: false,
-      title: "Ziva Browser",
-      webPreferences: { contextIsolation: true, nodeIntegration: false },
-    });
-    win.loadURL("about:blank");
-    // Keep links inside this window (same behaviour as the Agent Browser
-    // webview). Proxy is already handled via the default session setProxy.
-    win.webContents.setWindowOpenHandler(({ url }) => {
-      if (url) win.webContents.loadURL(url);
-      return { action: "deny" };
-    });
-    cdpBridge!.addPage(win.webContents);
-  };
   cdpBridge.start().then(() => {
     const port = cdpBridge!.port;
     console.log(
@@ -269,6 +262,14 @@ ipcMain.handle("is-electron", () => true);
 
 ipcMain.handle("get-cdp-port", () => cdpBridge?.port ?? null);
 
+// Absolute path of the webview preload script. The renderer sets this
+// as <webview>.preload so the webview's pages can intercept <a> clicks
+// and forward them to the host (see electron/browser-preload.ts).
+// `__dirname` is the dist/ folder at runtime (built by tsc).
+ipcMain.handle("get-browser-preload-path", () =>
+  path.join(__dirname, "browser-preload.js")
+);
+
 // Register a webview's webContents as a CDP bridge target. The
 // renderer calls this from the Agent Browser tab's `did-attach`
 // handler. Returns the targetId the renderer should remember for
@@ -277,13 +278,15 @@ ipcMain.handle("get-cdp-port", () => cdpBridge?.port ?? null);
 ipcMain.handle("register-cdp-page", (_event, wcId: number): string | null => {
   const wc = webContents.fromId(wcId);
   if (!wc || !cdpBridge) return null;
-  // Keep target=_blank / window.open links INSIDE the agent browser webview
-  // instead of handing them to the OS browser. (The renderer also attaches
-  // a 'new-window' listener, but this main-process handler is the reliable
-  // path — the webview 'new-window' DOM event fires inconsistently across
-  // Electron versions.)
+  // Keep target=_blank / window.open links inside the agent browser
+  // webview instead of handing them to the OS browser. The main
+  // process is the reliable path (the webview 'new-window' DOM event
+  // fires inconsistently across Electron versions), so we forward the
+  // URL to the main window renderer via IPC and let it call
+  // openLinkInBrowser(url) — the same entry point the webview preload
+  // uses for normal <a> clicks. One handler, two paths.
   wc.setWindowOpenHandler(({ url }) => {
-    if (url) wc.loadURL(url);
+    if (url) mainWindow?.webContents.send("ziva:open-link-in-panel", url);
     return { action: "deny" };
   });
   return cdpBridge.addPage(wc, { type: "page" });

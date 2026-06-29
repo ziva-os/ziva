@@ -1,0 +1,842 @@
+diff --git a/web/src/main.ts b/web/src/main.ts
+index ee4e958..739bc9f 100644
+--- a/web/src/main.ts
++++ b/web/src/main.ts
+@@ -63,7 +63,7 @@ const store = new Store<AppState>({
+   pendingSessionImages: {},
+   compactingSessions: {},
+   questionPending: false,
+-  config: { model: "unknown", models: [], approval: "suggest", workspace: "", tools: [] },
++  config: { model: "unknown", models: [], modelDetails: [], approval: "suggest", workspace: "", tools: [], contextWindow: 200000 },
+   connected: false,
+   tokenUsage: null,
+   latencyMs: null,
+@@ -200,13 +200,6 @@ function init() {
+       </button>
+       <main class="ziva-center">
+         <div class="empty-state" id="emptyState">
+-          <div class="workspace-context show" id="workspaceContext">
+-            <span class="context-label">New conversation in</span>
+-            <span class="context-workspace" id="contextWorkspace">
+-              <span id="workspaceName">ziva</span>
+-              <span class="context-chevron">▾</span>
+-            </span>
+-          </div>
+         </div>
+         <div class="messages" id="messages" style="display:none"></div>
+         <div class="ziva-composer-wrapper" id="composerWrapper">
+@@ -245,8 +238,17 @@ function init() {
+               </div>
+             </div>
+           </div>
+-          <div class="composer-footer" id="composerFooter">
+-            <a id="linkEditor"><span class="footer-icon">&lt;&gt;</span> Open editor</a>
++          <div class="ziva-status-bar" id="statusBar">
++            <div class="status-item" id="contextWorkspace" title="Switch workspace">
++              <span class="status-icon"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-1.22-1.8A2 2 0 0 0 7.53 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg></span>
++              <span id="workspaceName">ziva</span>
++              <span class="status-chevron"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
++            </div>
++            <div class="status-item" id="gitBranchContext" title="Switch Git branch">
++              <span class="status-icon"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg></span>
++              <span id="gitBranchName">main</span>
++              <span class="status-chevron"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
++            </div>
+           </div>
+         </div>
+       </main>
+@@ -280,12 +282,13 @@ function init() {
+ function bindEvents() {
+   const promptEl = $("prompt");
+   promptEl.addEventListener("input", () => {
+-    promptEl.style.height = "auto";
+-    promptEl.style.height = Math.min(promptEl.scrollHeight, 160) + "px";
+-    const chars = promptEl.value.length;
++    const ta = promptEl as HTMLTextAreaElement;
++    ta.style.height = "auto";
++    ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
++    const chars = ta.value.length;
+     const tokens = Math.round(chars / 4);
+     $("charCount").textContent = chars > 0 ? `${chars}` : "";
+-    const text = promptEl.value;
++    const text = ta.value;
+     if (text.startsWith("/")) {
+       showSlashMenu(text);
+     } else {
+@@ -825,12 +828,9 @@ async function refreshConfig() {
+ }
+ 
+ function updateImageSupport() {
+-  const { config } = store.get();
+-  const details = config.modelDetails || [];
+-  const current = details.find((m: any) => m.name === config.model);
+-  const supportsImage = current?.supports_image ?? false;
++  // Always show the attach button — model capability check is done server-side
+   const attachBtn = $("btnAttach") as HTMLElement | null;
+-  if (attachBtn) attachBtn.style.display = supportsImage ? "" : "none";
++  if (attachBtn) attachBtn.style.display = "";
+ }
+ 
+ // ---- Sessions ----
+@@ -1030,7 +1030,7 @@ async function switchSession(sid: string) {
+   pendingTools.clear();
+   renderPendingBar();
+   await loadHistory(sid);
+-
++  await refreshGitBranch();
+   try {
+     const turns = await api.getTurns(sid);
+     const activeTurn = turns.find(t => t.status === "running");
+@@ -1065,6 +1065,7 @@ async function switchSession(sid: string) {
+       // The turn is still running — show the typing indicator so the
+       // user sees the session as active, not idle.
+       appendTyping();
++      scrollBottom();
+     } else {
+       // No active turn — clear stale running state from missed turn_end
+       const { runningSessions, sessions: curSessions } = store.get();
+@@ -1130,7 +1131,8 @@ async function loadHistory(sid: string) {
+ 
+   // Restore context ring from persisted usage
+   if (filteredData.last_usage?.prompt_tokens) {
+-    const pct = Math.min(filteredData.last_usage.prompt_tokens / 200000, 1);
++    const contextWindow = store.get().config.contextWindow || 200000;
++    const pct = Math.min(filteredData.last_usage.prompt_tokens / contextWindow, 1);
+     updateContextProgress(pct, filteredData.last_usage.prompt_tokens);
+   } else {
+     updateContextProgress(0, 0);
+@@ -1466,7 +1468,7 @@ function appendToolCard(
+     if (toolName === "spawn_agent" && typeof output === "object" && output !== null && (output as any).result) {
+       const resultText = String((output as any).result);
+       body += `<div class="section-label">Output</div>`;
+-      body += `<div class="section-content">${renderMarkdown(resultText)}</div>`;
++      body += `<div class="section-content"><pre>${esc(resultText)}</pre></div>`;
+     } else if (typeof output === "object" && output !== null && ((output as any).type === "image" || (output as any).image_url || (output as any).url)) {
+       // Tool returned an image — render it inline
+       const imgUrl = (output as any).image_url || (output as any).url || "";
+@@ -1484,7 +1486,7 @@ function appendToolCard(
+       if (typeof output === "object" && output !== null && (output as any)._text) {
+         outStr = String((output as any)._text);
+         body += `<div class="section-label">Output</div>`;
+-        body += `<div class="section-content">${renderMarkdown(outStr)}</div>`;
++        body += `<div class="section-content"><pre>${esc(outStr)}</pre></div>`;
+       } else {
+         outStr = typeof output === "string" ? output : JSON.stringify(output, null, 2);
+         body += `<div class="section-label">Output</div>`;
+@@ -1656,7 +1658,7 @@ function appendQuestionCard(question: string, rawOptions: unknown[], multiSelect
+     }
+     input?.focus();
+   } else {
+-    card.querySelector(".question-input")?.focus();
++    (card.querySelector(".question-input") as HTMLElement | null)?.focus();
+   }
+ 
+   const chatAboutBtn = card.querySelector(".question-chat-about") as HTMLElement;
+@@ -1923,18 +1925,25 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
+   // Skip all sub-agent events — they are shown in a collapsed card, not individually
+   if ((ev as any)._subagent) return;
+ 
++  const sid = (ev as any).session_id;
+   const t = ev.type as string;
++  const { activeSid, sessions } = store.get();
+ 
+   if (t === "turn_start") {
+-    setActiveRunning(true);
+-    const { sessions, activeSid } = store.get();
+-    const active = sessions.find(s => s.id === activeSid);
+-    if (active) {
+-      active.status = "running";
+-      store.set({ sessions: [...sessions] });
+-      renderSessions();
++    if (sid) {
++      const active = sessions.find(s => s.id === sid);
++      if (active) {
++        active.status = "running";
++        store.set({ sessions: [...sessions] });
++        renderSessions();
++      }
++    }
++    if (!sid || sid === activeSid) {
++      setActiveRunning(true);
++      appendTyping();
++      updateContextProgress(0, 0);
++      updateSendStopButton();
+     }
+-    updateSendStopButton();
+   } else if (t === "delta") {
+     removeTyping();
+     showEmptyState(false);
+@@ -2005,8 +2014,8 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
+       const status = ev.error_class ? "error" : "success";
+       let subagentTools: string[] | undefined;
+       if (ev.tool === "spawn_agent") {
+-        const output = ev.output || {};
+-        subagentTools = output.tools;
++        const output = (ev.output || {}) as Record<string, unknown>;
++        subagentTools = output.tools as string[] | undefined;
+       }
+       // Image tool_end events have type:"image" but no image_url (stripped
+       // to keep SSE payloads small). Fetch the image from _hidden messages.
+@@ -2043,74 +2052,100 @@ function handleEvent(ev: api.Event, updateScroll: boolean = true) {
+     // container and re-rendered from scratch on every turn — a jarring
+     // "flash" of the full conversation. We only refresh lightweight
+     // sidebar / context surfaces that don't drive the chat display.
+-    removeTyping();
+-    // Any question card still on screen is now abandoned — the round
+-    // closed without an answer (probably cancelled). Lock its inputs
+-    // so the user can't submit a reply that will land in a new turn.
+-    document.querySelectorAll(".question-card:not(.question-card-answered)").forEach((el) => {
+-      el.classList.add("question-card-cancelled");
+-      (el.querySelectorAll("input, button") as NodeListOf<HTMLElement>).forEach((b) => {
+-        b.disabled = true;
++    const { activeSid, sessions, runningSessions, pendingSessionImages } = store.get();
++    
++    if (sid) {
++      const active = sessions.find(s => s.id === sid);
++      if (active) active.status = "done";
++      const next = { ...runningSessions };
++      delete next[sid];
++      store.set({ sessions: [...sessions], runningSessions: next });
++      renderSessions();
++    }
++
++    if (!sid || sid === activeSid) {
++      removeTyping();
++      // Any question card still on screen is now abandoned — the round
++      // closed without an answer (probably cancelled). Lock its inputs
++      // so the user can't submit a reply that will land in a new turn.
++      document.querySelectorAll(".question-card:not(.question-card-answered)").forEach((el) => {
++        el.classList.add("question-card-cancelled");
++        (el.querySelectorAll("input, button") as NodeListOf<HTMLInputElement | HTMLButtonElement>).forEach((b) => {
++          b.disabled = true;
++        });
+       });
+-    });
+-    setActiveRunning(false);
+-    currentAssistantEl = null;
+-    updateSendStopButton();
+-    refreshPlan();
+-    refreshSessions();
+-    if ($("rightPanel").classList.contains("show")) refreshDiff();
+-    // Codex-style: flush this session's queued prompt now that the
+-    // turn has closed. Look up by the active sid (the SSE stream is
+-    // per-session, so we never flush another session's queue here).
+-    const pending = getActivePending();
+-    const { activeSid: flushSid, pendingSessionImages } = store.get();
+-    const queuedImages = flushSid ? (pendingSessionImages[flushSid] || []) : [];
+-    if (pending != null || queuedImages.length > 0) {
+-      const promptEl = $("prompt") as HTMLTextAreaElement;
+-      promptEl.value = pending || "";
+-      promptEl.style.height = "auto";
+-      promptEl.style.height = Math.min(promptEl.scrollHeight, 160) + "px";
+-      $("charCount").textContent = String(promptEl.value.length);
+-      // Restore queued images into the input
+-      if (queuedImages.length > 0) {
+-        pendingImages = [...queuedImages];
+-        renderImagePreviews();
+-      }
+-      // Clear session-level queue
+-      setActivePending(null);
+-      if (flushSid && pendingSessionImages[flushSid]) {
+-        const next = { ...pendingSessionImages };
+-        delete next[flushSid];
+-        store.set({ pendingSessionImages: next });
++      setActiveRunning(false);
++      currentAssistantEl = null;
++      updateSendStopButton();
++      refreshPlan();
++      if ($("rightPanel").classList.contains("show")) refreshDiff();
++      // Codex-style: flush this session's queued prompt now that the
++      // turn has closed. Look up by the active sid (the SSE stream is
++      // per-session, so we never flush another session's queue here).
++      const pending = getActivePending();
++      const queuedImages = activeSid ? (pendingSessionImages[activeSid] || []) : [];
++      if (pending != null || queuedImages.length > 0) {
++        const promptEl = $("prompt") as HTMLTextAreaElement;
++        promptEl.value = pending || "";
++        promptEl.style.height = "auto";
++        promptEl.style.height = Math.min(promptEl.scrollHeight, 160) + "px";
++        $("charCount").textContent = String(promptEl.value.length);
++        // Restore queued images into the input
++        if (queuedImages.length > 0) {
++          pendingImages = [...queuedImages];
++          renderImagePreviews();
++        }
++        // Clear session-level queue
++        setActivePending(null);
++        if (activeSid && pendingSessionImages[activeSid]) {
++          const next = { ...pendingSessionImages };
++          delete next[activeSid];
++          store.set({ pendingSessionImages: next });
++        }
++        renderPendingBar();
++        setTimeout(() => { sendMessage(); }, 30);
+       }
+-      renderPendingBar();
+-      setTimeout(() => { sendMessage(); }, 30);
+     }
+   } else if (t === "round_complete") {
+     currentAssistantEl = null;
+     const usage = ev.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
+     if (usage?.prompt_tokens) {
+-      const contextWindow = 200000;
++      const contextWindow = store.get().config.contextWindow || 200000;
+       const pct = Math.min(usage.prompt_tokens / contextWindow, 1);
+       updateContextProgress(pct, usage.prompt_tokens);
+     }
+   } else if (t === "status" && (ev as any).content === "compact") {
+-    setCompactToastState("loading", "Auto compacting...", sid);
++    const activeSid = store.get().activeSid;
++    if (activeSid) setCompactToastState("loading", "Auto compacting...", activeSid);
+   } else if (t === "context_compacted") {
+-    setCompactToastState("success", "Context compacted", sid);
+-    // Reload history to render the new collapse bar
+-    loadHistory(sid);
+-    setTimeout(() => hideCompactToast(), 3000);
++    const activeSid = store.get().activeSid;
++    if (activeSid) {
++      setCompactToastState("success", "Context compacted", activeSid);
++      // Reload history to render the new collapse bar
++      loadHistory(activeSid);
++      setTimeout(() => hideCompactToast(), 3000);
++    }
+   } else if (t === "doom_loop_detected") {
+     removeTyping();
+   } else if (t === "turn_error") {
+-    removeTyping();
+-    setActiveRunning(false);
+-    updateSendStopButton();
+-    appendError(ev.error as string || "Unknown error");
++    const { activeSid, sessions, runningSessions } = store.get();
++    if (sid) {
++      const active = sessions.find(s => s.id === sid);
++      if (active) active.status = "failed";
++      const next = { ...runningSessions };
++      delete next[sid];
++      store.set({ sessions: [...sessions], runningSessions: next });
++      renderSessions();
++    }
++    if (!sid || sid === activeSid) {
++      removeTyping();
++      setActiveRunning(false);
++      updateSendStopButton();
++      appendError(ev.error as string || "Unknown error");
++    }
+   }
+ 
+-  updateConnStatus(sse.isConnected(store.get().activeSid || ""));
++  updateConnStatus(sse.isConnected());
+ }
+ 
+ function updateConnStatus(connected: boolean) {
+@@ -2257,93 +2292,109 @@ async function cancelTurn() {
+ 
+ // ---- Send ----
+ async function sendMessage() {
+-  const text = ($("prompt") as HTMLTextAreaElement).value.trim();
++  const promptEl = $("prompt") as HTMLTextAreaElement;
++  const text = promptEl.value.trim();
+   if (!text && pendingImages.length === 0) return;
+-  if (!store.get().activeSid) await createSession();
+-  const sid = store.get().activeSid!;
+ 
+-  // Intercept /compact and /prune commands — both use the same toast UI,
+-  // just hit different endpoints. /prune is a cheap no-model operation;
+-  // /compact always calls the model to generate a summary.
+   const trimmedCmd = text.trim();
+-  if (trimmedCmd === "/compact" || trimmedCmd === "/prune") {
+-    ($("prompt") as HTMLTextAreaElement).value = "";
+-    ($("prompt") as HTMLTextAreaElement).style.height = "auto";
+-    $("charCount").textContent = "";
++  const isCommand = trimmedCmd.startsWith("/");
+ 
+-    const isPrune = trimmedCmd === "/prune";
+-    const loadingMsg = isPrune ? "Pruning tool outputs..." : "Compacting context...";
+-    const successMsg = isPrune ? "Tool outputs pruned" : "Context compacted successfully";
+-    const errorLabel = isPrune ? "Prune" : "Compaction";
++  // Hide prompt immediately for responsiveness
++  promptEl.value = "";
++  promptEl.style.height = "auto";
++  $("charCount").textContent = "";
+ 
+-    ensureCompactToast();
+-    setCompactToastState("loading", loadingMsg, sid);
++  try {
++    if (!store.get().activeSid) await createSession();
++    const sid = store.get().activeSid!;
++
++    // For regular chat messages, optimistically update UI immediately to feel responsive
++    if (!isCommand) {
++      setActiveRunning(true);
++      updateSendStopButton();
++    }
++
++    // Intercept /compact and /prune commands
++    if (trimmedCmd === "/compact" || trimmedCmd === "/prune") {
++      const isPrune = trimmedCmd === "/prune";
++      const loadingMsg = isPrune ? "Pruning tool outputs..." : "Compacting context...";
++      const successMsg = isPrune ? "Tool outputs pruned" : "Context compacted successfully";
++      const errorLabel = isPrune ? "Prune" : "Compaction";
++
++      ensureCompactToast();
++      setCompactToastState("loading", loadingMsg, sid);
+ 
+-    try {
+       const startTime = Date.now();
+       const result = isPrune
+         ? await api.pruneSession(sid)
+         : await api.compactSession(sid);
+-      // /prune is essentially instant; /compact may take seconds. The
+-      // minimum-display-threshold keeps the spinner visible long enough
+-      // to read on fast operations.
++      
+       const minMs = isPrune ? 300 : 600;
+       const elapsed = Date.now() - startTime;
+       if (elapsed < minMs) await new Promise(r => setTimeout(r, minMs - elapsed));
+ 
+       if (result.last_usage?.prompt_tokens !== undefined) {
+-        const contextWindow = 200000;
++        const contextWindow = store.get().config.contextWindow || 200000;
+         const pct = Math.min(result.last_usage.prompt_tokens / contextWindow, 1);
+         updateContextProgress(pct, result.last_usage.prompt_tokens);
+       }
+       await loadHistory(sid);
+       refreshSessionPreview(sid);
+ 
+-      // /compact can come back as a no-op when there's nothing to compress
+-      // (e.g. only 1 user message in the session, or the model returned
+-      // empty). Treat it as success but show a clear "nothing to compact"
+-      // message instead of pretending the context shrank.
+       if (!isPrune && (result as any).noop) {
+         setCompactToastState("success", "Nothing to compact — context is already minimal", sid);
+       } else {
+         setCompactToastState("success", successMsg, sid);
+       }
+       setTimeout(() => hideCompactToast(), 3000);
+-    } catch (e: any) {
+-      setCompactToastState("error", `${errorLabel} failed: ${e.message || "unknown error"}`, sid);
+-      setTimeout(() => hideCompactToast(), 5000);
++      return;
+     }
+-    return;
+-  }
+ 
+-  ($("prompt") as HTMLTextAreaElement).value = "";
+-  ($("prompt") as HTMLTextAreaElement).style.height = "auto";
+-  $("charCount").textContent = "";
++    // Intercept /automation command
++    if (trimmedCmd.startsWith("/automation ")) {
++      const prompt = trimmedCmd.slice("/automation ".length).trim();
++      const name = prompt.slice(0, 30) + (prompt.length > 30 ? "..." : "") || "Chat task";
++      ensureCompactToast();
++      setCompactToastState("loading", "Creating automation...", sid);
++      await api.createAutomation(name, prompt, 86400, "09:00:00");
++      setCompactToastState("success", `Automation "${name}" created (daily at 09:00)`, sid);
++      setTimeout(() => hideCompactToast(), 3000);
++      return;
++    }
+ 
+-  const { config } = store.get();
+-  const details = config.modelDetails || [];
+-  const currentModel = details.find((m: any) => m.name === config.model);
+-  const supportsImage = currentModel?.supports_image ?? false;
+-
+-  if (pendingImages.length > 0 && supportsImage) {
+-    const parts: unknown[] = [];
+-    if (text) parts.push({ type: "text", text });
+-    for (const img of pendingImages) {
+-      parts.push({ type: "image_url", image_url: { url: img.dataUrl } });
+-    }
+-    appendUserMsg(parts);
+-    pendingImages = [];
+-    renderImagePreviews();
+-    appendTyping();
+-    scrollBottom();
+-    await api.createTurn(sid, parts);
+-  } else {
+-    appendUserMsg(text);
+-    pendingImages = [];
+-    renderImagePreviews();
+-    appendTyping();
+-    scrollBottom();
+-    await api.createTurn(sid, text);
++    const { config } = store.get();
++    const details = config.modelDetails || [];
++    const currentModel = details.find((m: any) => m.name === config.model);
++    const supportsImage = currentModel?.supports_image ?? false;
++
++    if (pendingImages.length > 0 && supportsImage) {
++      const parts: unknown[] = [];
++      if (text) parts.push({ type: "text", text });
++      for (const img of pendingImages) {
++        parts.push({ type: "image_url", image_url: { url: img.dataUrl } });
++      }
++      appendUserMsg(parts);
++      pendingImages = [];
++      renderImagePreviews();
++      appendTyping();
++      scrollBottom();
++      await api.createTurn(sid, parts);
++    } else {
++      appendUserMsg(text);
++      pendingImages = [];
++      renderImagePreviews();
++      appendTyping();
++      scrollBottom();
++      await api.createTurn(sid, text);
++    }
++  } catch (e: any) {
++    if (!isCommand) {
++      setActiveRunning(false);
++      updateSendStopButton();
++      // Restore the text so the user doesn't lose their prompt if network fails
++      if (!promptEl.value) promptEl.value = text;
++    }
++    console.error("Failed to process message:", e);
+   }
+ }
+ 
+@@ -2356,6 +2407,196 @@ async function refreshPlan() {
+   } catch { /* plan UI removed */ }
+ }
+ 
++// ---- Project Picker ----
++async function refreshGitBranch() {
++  const { activeSid } = store.get();
++  if (!activeSid) return;
++  try {
++    const res = await api.getGitBranches(activeSid);
++    const gitBranchNameEl = $("gitBranchName") as HTMLElement;
++    if (gitBranchNameEl) {
++      gitBranchNameEl.textContent = res.current;
++    }
++  } catch (e) {
++    console.error("Failed to fetch git branch", e);
++  }
++}
++
++async function openGitBranchPicker(e: MouseEvent) {
++  const target = e.currentTarget as HTMLElement;
++  const { activeSid } = store.get();
++  if (!activeSid) {
++    console.warn("openGitBranchPicker: no active session");
++    return;
++  }
++  let res: { current: string; branches: string[] };
++  try {
++    res = await api.getGitBranches(activeSid);
++  } catch (err: any) {
++    console.error("Failed to load git branches:", err);
++    alert("Failed to load git branches: " + (err.message || "unknown error"));
++    return;
++  }
++  const current = res.current;
++  const branches = res.branches;
++
++  document.querySelectorAll(".popup-menu").forEach((p) => p.remove());
++
++  const popup = document.createElement("div");
++  popup.className = "popup-menu";
++
++  const rect = target.getBoundingClientRect();
++  popup.style.bottom = `${window.innerHeight - rect.top + 8}px`;
++  popup.style.left = `${rect.left}px`;
++
++  const searchBox = document.createElement("div");
++  searchBox.className = "popup-search-box";
++  searchBox.innerHTML = `<input type="text" placeholder="Search or create branch..." />`;
++  popup.appendChild(searchBox);
++
++  const listDiv = document.createElement("div");
++  listDiv.className = "popup-list";
++
++  const renderBranches = (filter: string) => {
++    listDiv.innerHTML = "";
++    const filtered = branches.filter((b: string) => b.toLowerCase().includes(filter.toLowerCase()));
++    filtered.forEach((b: string) => {
++      const el = document.createElement("div");
++      el.className = "popup-item";
++      el.innerHTML = `<span class="popup-icon">${b === current ? '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>' : ""}</span><span class="popup-text">${esc(b)}</span>`;
++      el.onclick = async () => {
++        popup.remove();
++        if (b !== current) {
++          try {
++            await api.gitCheckout(activeSid, b, false);
++            await refreshGitBranch();
++          } catch (err: any) {
++            alert("Failed to checkout branch: " + err.message);
++          }
++        }
++      };
++      listDiv.appendChild(el);
++    });
++
++    if (filter && !branches.includes(filter)) {
++      listDiv.innerHTML += `<div class="popup-divider"></div>`;
++      const createEl = document.createElement("div");
++      createEl.className = "popup-item";
++      createEl.innerHTML = `<span class="popup-icon"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg></span><span class="popup-text">Create & checkout: <b>${esc(filter)}</b></span>`;
++      createEl.onclick = async () => {
++        popup.remove();
++        try {
++          await api.gitCheckout(activeSid, filter, true);
++          await refreshGitBranch();
++        } catch (err: any) {
++          alert("Failed to create branch: " + err.message);
++        }
++      };
++      listDiv.appendChild(createEl);
++    }
++  };
++
++  renderBranches("");
++
++  const input = searchBox.querySelector("input")!;
++  input.oninput = (ev) => {
++    renderBranches((ev.target as HTMLInputElement).value.trim());
++  };
++
++  popup.appendChild(listDiv);
++  document.body.appendChild(popup);
++
++  setTimeout(() => {
++    const closer = (ev: MouseEvent) => {
++      if (!popup.contains(ev.target as Node)) {
++        popup.remove();
++        document.removeEventListener("click", closer);
++      }
++    };
++    document.addEventListener("click", closer);
++    input.focus();
++  }, 0);
++}
++
++async function openProjectPicker(e: MouseEvent) {
++  const target = e.currentTarget as HTMLElement;
++  const { config } = store.get();
++  const current = config.workspace || "";
++  let recent: string[] = [];
++  try {
++    const res = await api.getRecentWorkspaces();
++    recent = res.workspaces || [];
++  } catch (err) {}
++
++  document.querySelectorAll(".popup-menu").forEach((p) => p.remove());
++
++  const popup = document.createElement("div");
++  popup.className = "popup-menu";
++
++  const rect = target.getBoundingClientRect();
++  popup.style.bottom = `${window.innerHeight - rect.top + 8}px`;
++  popup.style.left = `${rect.left}px`;
++
++  const listDiv = document.createElement("div");
++  listDiv.className = "popup-list";
++
++  const currentName = current.split("/").pop() || "Project";
++  listDiv.innerHTML += `<div class="popup-item" style="opacity:0.6; pointer-events:none;"><span class="popup-icon"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span><span class="popup-text" title="${esc(current)}">${esc(currentName)}</span></div>`;
++
++  recent.filter((r) => r !== current).forEach((r) => {
++    const el = document.createElement("div");
++    el.className = "popup-item";
++    const name = r.split("/").pop() || r;
++    el.innerHTML = `<span class="popup-icon"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-1.22-1.8A2 2 0 0 0 7.53 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg></span><span class="popup-text" title="${esc(r)}">${esc(name)}</span>`;
++    el.onclick = async () => {
++      popup.remove();
++      try {
++        await api.switchWorkspace(r);
++        window.location.reload();
++      } catch (err: any) {
++        alert("Failed to switch workspace: " + err.message);
++      }
++    };
++    listDiv.appendChild(el);
++  });
++
++  if (recent.length > 0) {
++    listDiv.innerHTML += `<div class="popup-divider"></div>`;
++  }
++
++  const addBtn = document.createElement("div");
++  addBtn.className = "popup-item";
++  addBtn.innerHTML = `<span class="popup-icon"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg></span><span class="popup-text">Add new project</span>`;
++  addBtn.onclick = async () => {
++    popup.remove();
++    const res = await api.chooseSystemFolder();
++    if (res.path) {
++      try {
++        await api.switchWorkspace(res.path);
++        window.location.reload();
++      } catch (err: any) {
++        alert("Failed to switch workspace: " + err.message);
++      }
++    } else if (res.error && res.error !== "No folder selected") {
++      alert("Failed to choose folder: " + res.error);
++    }
++  };
++  listDiv.appendChild(addBtn);
++
++  popup.appendChild(listDiv);
++  document.body.appendChild(popup);
++
++  setTimeout(() => {
++    const closer = (ev: MouseEvent) => {
++      if (!popup.contains(ev.target as Node)) {
++        popup.remove();
++        document.removeEventListener("click", closer);
++      }
++    };
++    document.addEventListener("click", closer);
++  }, 0);
++}
++
+ // ---- Automations ----
+ // The "Scheduled Tasks" nav button opens a modal with a list of running
+ // automations (name, interval, last run, last result) and a "+ New
+@@ -2425,9 +2666,13 @@ async function loadAutomationsIntoModal() {
+             <option value="604800">Once a week</option>
+           </select>
+         </label>
++        <label class="automation-label">Time (HH:MM:SS)
++          <input type="time" class="automation-input" id="automationTimeInput" step="1" />
++        </label>
+       </div>
+       <div class="automation-form-actions">
+         <button class="automation-submit-btn" id="automationSubmitBtn">Create</button>
++        <button class="automation-submit-btn secondary" id="automationFromChatBtn" title="Fill prompt from last user message">From chat</button>
+         <span class="automation-form-status" id="automationFormStatus"></span>
+       </div>
+     </div>`;
+@@ -2448,11 +2693,34 @@ async function loadAutomationsIntoModal() {
+     };
+   });
+ 
++  // Wire "From chat" button — close modal, pre-fill composer with /automation command
++  (body.querySelector("#automationFromChatBtn") as HTMLElement).onclick = async () => {
++    const { activeSid } = store.get();
++    closeAutomationsModal();
++    if (!activeSid) return;
++    try {
++      const data = await api.getMessages(activeSid);
++      const msgs = data.messages || [];
++      const lastUser = [...msgs].reverse().find((m: any) => m.role === "user");
++      if (lastUser) {
++        const text = typeof lastUser.content === "string" ? lastUser.content : JSON.stringify(lastUser.content);
++        const promptEl = $("prompt") as HTMLTextAreaElement;
++        promptEl.value = `/automation ${text}`;
++        promptEl.style.height = "auto";
++        promptEl.style.height = Math.min(promptEl.scrollHeight, 160) + "px";
++        $("charCount").textContent = String(promptEl.value.length);
++        promptEl.focus();
++      }
++    } catch { /* ignore */ }
++  };
++
+   // Wire the form submit
+   (body.querySelector("#automationSubmitBtn") as HTMLElement).onclick = async () => {
+     const name = (body.querySelector("#automationNameInput") as HTMLInputElement).value.trim();
+     const prompt = (body.querySelector("#automationPromptInput") as HTMLTextAreaElement).value.trim();
+     const interval = parseInt((body.querySelector("#automationIntervalInput") as HTMLSelectElement).value, 10);
++    const timeVal = (body.querySelector("#automationTimeInput") as HTMLInputElement).value;
++    const scheduleTime = timeVal || undefined;
+     const statusEl = body.querySelector("#automationFormStatus") as HTMLElement;
+     if (!prompt) {
+       statusEl.textContent = "Prompt is required";
+@@ -2462,7 +2730,7 @@ async function loadAutomationsIntoModal() {
+     statusEl.textContent = "Creating...";
+     statusEl.className = "automation-form-status";
+     try {
+-      await api.createAutomation(name || "Untitled task", prompt, interval);
++      await api.createAutomation(name || "Untitled task", prompt, interval, scheduleTime);
+       statusEl.textContent = "Created";
+       statusEl.className = "automation-form-status success";
+       // Brief success flash, then re-render the list
+@@ -2476,6 +2744,7 @@ async function loadAutomationsIntoModal() {
+ 
+ function renderAutomationRow(a: api.Automation): string {
+   const intervalLabel = formatInterval(a.interval_seconds);
++  const scheduleLabel = a.schedule_time ? ` at ${esc(a.schedule_time)}` : "";
+   const lastRunLabel = a.last_run ? formatRelativeTime(Math.floor(a.last_run)) || "just now" : "never";
+   const lastResult = a.last_result
+     ? `<div class="automation-row-result" title="${esc(a.last_result)}">${esc(a.last_result.slice(0, 140))}${a.last_result.length > 140 ? "…" : ""}</div>`
+@@ -2485,7 +2754,7 @@ function renderAutomationRow(a: api.Automation): string {
+       <div class="automation-row-main">
+         <div class="automation-row-name">${esc(a.name)}</div>
+         <div class="automation-row-meta">
+-          <span class="automation-row-interval">⏰ ${esc(intervalLabel)}</span>
++          <span class="automation-row-interval">⏰ ${esc(intervalLabel)}${scheduleLabel}</span>
+           <span class="automation-row-lastrun">Last run: ${esc(lastRunLabel)}</span>
+           <span class="automation-row-status ${a.enabled ? "on" : "off"}">${a.enabled ? "● running" : "○ stopped"}</span>
+         </div>
+@@ -2606,11 +2875,27 @@ async function refreshMCPStatus() {
+ 
+ // ---- Status ----
+ async function refreshStatus() {
++  let workspace = "";
+   try {
+     const s = await api.getStatus();
+-    store.set({ config: { ...store.get().config, model: s.model, workspace: s.workspace, tools: s.tools, approval: s.approval_policy } });
++    workspace = s.workspace || "";
++    store.set({ config: { ...store.get().config, model: s.model, workspace: s.workspace, tools: s.tools, approval: s.approval_policy, contextWindow: s.context_window || 200000 } });
+     ($("approvalSelect") as HTMLSelectElement).value = s.approval_policy;
++    const wn = (s.workspace || "ziva").split("/").pop() || "Project";
++    const workspaceNameEl = $("workspaceName") as HTMLElement;
++    if (workspaceNameEl) workspaceNameEl.textContent = wn;
+   } catch { /* server not running */ }
++  // Always attach click handlers so they work even when getStatus fails (e.g. new session)
++  const contextWorkspaceEl = $("contextWorkspace") as HTMLElement;
++  if (contextWorkspaceEl) {
++    contextWorkspaceEl.style.cursor = "pointer";
++    contextWorkspaceEl.title = workspace;
++    contextWorkspaceEl.onclick = openProjectPicker;
++  }
++  const gitBranchContextEl = $("gitBranchContext") as HTMLElement;
++  if (gitBranchContextEl) {
++    gitBranchContextEl.onclick = openGitBranchPicker;
++  }
+ }
+ 
+ // ---- Slash Commands ----
+@@ -2836,6 +3121,22 @@ async function openSettingsModal() {
+           <!-- Model -->
+           <div class="settings-panel active" data-panel="model">
+             <div class="settings-panel-inner">
++              <div class="settings-section">
++                <div class="settings-section-title">Thinking Mode</div>
++                <div class="settings-desc">Configure reasoning effort for supported models (e.g., Claude 3.7 Sonnet).</div>
++                <div class="settings-row"><label class="settings-label">Mode</label>
++                  <select class="settings-select" id="s_thinking_mode">
++                    <option value="disabled" ${(cfg.model?.thinking_mode || "disabled") === "disabled" ? "selected" : ""}>Disabled</option>
++                    <option value="low" ${(cfg.model?.thinking_mode || "disabled") === "low" ? "selected" : ""}>Low</option>
++                    <option value="medium" ${(cfg.model?.thinking_mode || "disabled") === "medium" ? "selected" : ""}>Medium</option>
++                    <option value="high" ${(cfg.model?.thinking_mode || "disabled") === "high" ? "selected" : ""}>High</option>
++                  </select>
++                </div>
++                <div class="settings-row"><label class="settings-label">Budget Tokens</label>
++                  <input class="settings-input" id="s_thinking_budget" type="number" value="${cfg.model?.thinking_budget_tokens || 4000}" />
++                </div>
++              </div>
++              <div class="settings-section-title" style="margin-top:16px;margin-bottom:8px;">Providers</div>
+               <div id="sProvidersList">${providersHtml}</div>
+               <button class="settings-add-btn" id="addProviderBtn">+ Add Provider</button>
+             </div>
+@@ -2957,7 +3258,7 @@ async function openSettingsModal() {
+         const row = document.createElement("div");
+         row.className = "settings-hook-row";
+         row.innerHTML = `<input class="settings-input" data-hook="${ht}" data-hook-idx="${idx}" value="" placeholder="e.g. npm run lint" /><button class="settings-hook-remove" data-hook-remove="${ht}:${idx}" title="Remove">×</button>`;
+-        row.querySelector(".settings-hook-remove")!.onclick = () => row.remove();
++        (row.querySelector(".settings-hook-remove") as HTMLElement | null)!.onclick = () => row.remove();
+         list.appendChild(row);
+         row.querySelector("input")?.focus();
+       };
+@@ -3112,7 +3413,9 @@ async function openSettingsModal() {
+           defaultName = newProviders[0].models[0].name;
+         }
+         updated.providers = newProviders;
+-        updated.model = { name: defaultName || "" };
++        const tm = (backdrop.querySelector("#s_thinking_mode") as HTMLSelectElement)?.value || "disabled";
++        const tbt = parseInt((backdrop.querySelector("#s_thinking_budget") as HTMLInputElement)?.value || "4000", 10);
++        updated.model = { name: defaultName || "", thinking_mode: tm, thinking_budget_tokens: tbt };
+ 
+         // Approval
+         updated.approval = { ...updated.approval, policy: (backdrop.querySelector("#s_approval_policy") as HTMLSelectElement).value };

@@ -2,6 +2,11 @@ export interface RightPanelTab {
   id: string;
   type: "review" | "plan" | "terminal" | "browser" | "files" | "agent-browser";
   title: string;
+  // For browser tabs only: URL to load on creation. renderBrowserTab
+  // defers the loadURL call until the webview's `did-attach` event
+  // fires (the webContents isn't ready for loadURL any earlier —
+  // calling it synchronously after appendChild silently no-ops).
+  initialUrl?: string;
 }
 
 export interface Session {

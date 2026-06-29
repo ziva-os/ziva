@@ -77,6 +77,141 @@ function initLightbox() {
   });
 }
 
+// Intercept clicks on links inside messages and open them in the right-panel
+// browser instead of navigating the main window or opening a new tab.
+function initMessageLinkInterceptor() {
+  document.addEventListener("click", (e) => {
+    const target = e.target as HTMLElement;
+    const anchor = target.closest("a") as HTMLAnchorElement | null;
+    if (!anchor) return;
+    // Only intercept links inside message content areas
+    if (!anchor.closest(".msg-inner, .compact-dropped, .tool-card-body, .panel-content")) return;
+    const href = anchor.getAttribute("href");
+    if (!href) return;
+    // Skip anchor-only links, mailto, tel, javascript
+    if (href.startsWith("#") || href.startsWith("mailto:") || href.startsWith("tel:") || href.startsWith("javascript:")) return;
+    // Skip skill file links (handled by interceptSkillLinks)
+    if (anchor.classList.contains("skill-file-link")) return;
+    // For absolute http(s) links, open in right-panel browser
+    if (href.startsWith("http://") || href.startsWith("https://")) {
+      e.preventDefault();
+      e.stopPropagation();
+      openLinkInBrowser(href);
+      return;
+    }
+    // For relative links, resolve against current workspace if possible
+    if (!href.startsWith("/")) {
+      e.preventDefault();
+      e.stopPropagation();
+      // Try to resolve relative paths - for now skip as they need workspace context
+      console.log("Relative link clicked:", href);
+    }
+  });
+}
+
+// ---- Webview link bridge ----
+// Wires the Agent Browser <webview> to the renderer's `openLinkInBrowser`.
+// There are two paths that funnel through it:
+//   1. <a> clicks inside the webview (normal navigation). Intercepted by
+//      the webview preload (electron/browser-preload.ts) via
+//      ipcRenderer.sendToHost → webview element's `ipc-message` event
+//      (wired in renderBrowserTab below).
+//   2. target="_blank" / window.open. Intercepted by the main process
+//      setWindowOpenHandler → webContents.send("ziva:open-link-in-panel")
+//      → electronAPI.setOpenLinkInPanelHandler (set here).
+// The webview preload path is fetched once at startup and cached so
+// renderBrowserTab can set the <webview>.preload attribute synchronously
+// (Electron captures preload at attach time; setting it later is a no-op).
+let _browserPreloadPath: string | null = null;
+function initWebviewLinkBridge() {
+  const api = (window as any).electronAPI;
+  if (!api) return;
+  // browserPreloadPath is exposed synchronously by preload.ts, so the
+  // first tab open has no preload race. The async getBrowserPreloadPath
+  // is kept as a belt-and-braces fallback in case the sync value is
+  // somehow missing (e.g. a future build layout change).
+  if (typeof api.browserPreloadPath === "string") {
+    _browserPreloadPath = api.browserPreloadPath;
+  } else if (api.getBrowserPreloadPath) {
+    api.getBrowserPreloadPath().then((p: string) => { _browserPreloadPath = p; });
+  }
+  if (api.setOpenLinkInPanelHandler) {
+    api.setOpenLinkInPanelHandler((url: string) => openLinkInBrowser(url));
+  }
+}
+
+// Register the webview with the CDP bridge as a Target so chrome-devtools-mcp
+// can drive the user-visible webview directly. Without this, the bridge's
+// page list stays empty when chrome-devtools-mcp connects, which triggers the
+// main-process onEnsurePage fallback — that fallback cold-starts a separate
+// (hidden) BrowserWindow and operates that one, leaving the visible webview
+// as dead weight. Registering on `did-attach` (not appendChild) is required:
+// getWebContentsId() is only valid after the guest page is attached, and
+// passing a stale id to the main process makes it return null.
+function registerWebviewWithCdp(frame: any) {
+  frame.addEventListener(
+    "did-attach",
+    async () => {
+      try {
+        const wcId = frame.getWebContentsId?.();
+        if (typeof wcId !== "number") return;
+        const targetId: string | null = await (window as any).electronAPI.registerCdpPage(wcId);
+        if (!targetId) return;
+        frame._cdpTargetId = targetId;
+        // Tidy up on destroy so the bridge doesn't carry stale entries
+        // after the tab is closed.
+        frame.addEventListener(
+          "destroyed",
+          () => {
+            (window as any).electronAPI.unregisterCdpPage(targetId).catch(() => {});
+          },
+          { once: true },
+        );
+      } catch (err) {
+        console.error("[browser] registerWebviewWithCdp failed:", err);
+      }
+    },
+    { once: true },
+  );
+}
+
+function openLinkInBrowser(url: string) {
+  // Check if a browser tab already exists
+  const { rightPanelTabs } = store.get();
+  const existingBrowser = rightPanelTabs.find(t => t.type === "browser");
+  if (existingBrowser) {
+    // Activate existing browser tab and navigate
+    store.set({ activeRightTabId: existingBrowser.id, rightPanelOpen: true });
+    $("rightPanel").classList.add("show");
+    $("btnOpenRightPanel")?.classList.add("panel-open");
+    renderTabBar();
+    activateTab(existingBrowser.id);
+    // Navigate the existing browser to the new URL. The webview is
+    // always created synchronously by renderBrowserTab, so the frame
+    // is in the DOM by the time activateTab() returns.
+    const rp = $("rightPanel");
+    const content = rp.querySelector(`[data-tab-id="${existingBrowser.id}"]`) as HTMLElement;
+    if (content) {
+      const urlInput = content.querySelector(".browser-url-input") as HTMLInputElement;
+      const frame = content.querySelector("webview, iframe") as any;
+      if (urlInput && frame) {
+        urlInput.value = url;
+        const isElectron = !!(window as any).electronAPI;
+        if (isElectron) { if (frame) frame.loadURL(url); }
+        else { frame.src = "/api/proxy?url=" + encodeURIComponent(url); }
+      }
+    }
+  } else {
+    // No browser tab yet — open one with the URL as its initial payload.
+    // renderBrowserTab loads the URL via `did-attach` (the webContents
+    // isn't ready for loadURL any earlier than that — calling it
+    // synchronously after appendChild silently no-ops). Doing it inside
+    // renderBrowserTab avoids the old rAF/setTimeout race that lost
+    // navigations whenever the preload-path IPC roundtrip took >200ms.
+    openRightPanel("browser", undefined, url);
+  }
+}
+
 function previewText(content: unknown): string {
   if (typeof content === "string") return content.slice(0, 60);
   if (Array.isArray(content)) {
@@ -377,10 +512,11 @@ const panelTypes = [
 let _tabIdCounter = 0;
 function nextTabId(): string { return "tab_" + (++_tabIdCounter); }
 
-function openRightPanel(type: RightPanelTab["type"], title?: string) {
+function openRightPanel(type: RightPanelTab["type"], title?: string, initialUrl?: string) {
   const { rightPanelTabs } = store.get();
   const pt = panelTypes.find(p => p.type === type);
   const tab: RightPanelTab = { id: nextTabId(), type, title: title || (pt ? pt.label : type) };
+  if (initialUrl) tab.initialUrl = initialUrl;
   const tabs = [...rightPanelTabs, tab];
   store.set({ rightPanelTabs: tabs, activeRightTabId: tab.id, rightPanelOpen: true });
   $("rightPanel").classList.add("show");
@@ -638,7 +774,7 @@ function renderTabContent(tab: RightPanelTab, container: HTMLElement) {
     case "review": renderReviewTab(container); break;
     case "plan": renderPlanTab(container); break;
     case "terminal": renderTerminalTab(container); break;
-    case "browser": renderBrowserTab(container); break;
+    case "browser": renderBrowserTab(container, tab.initialUrl); break;
     case "files": renderFilesTab(container); break;
   }
 }
@@ -765,7 +901,7 @@ function renderTerminalTab(container: HTMLElement) {
   initTerminal(tabId);
 }
 
-function renderBrowserTab(container: HTMLElement) {
+function renderBrowserTab(container: HTMLElement, initialUrl?: string) {
   const isElectron = !!(window as any).electronAPI;
   container.innerHTML = `
     <div class="panel-content-header browser-header-bar">
@@ -781,13 +917,75 @@ function renderBrowserTab(container: HTMLElement) {
       <input type="text" class="browser-url-input" value="" placeholder="Enter URL..." />
       <button class="browser-go-btn">Go</button>
     </div>
-    <div class="panel-content-body">
-      ${isElectron
-        ? `<webview class="browser-frame" src="about:blank" allowpopups></webview>`
-        : `<iframe class="browser-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" src="about:blank"></iframe>`}
-    </div>`;
+    <div class="panel-content-body"></div>`;
+  // Create the frame programmatically so we can set the <webview>.preload
+  // attribute BEFORE the element is attached to the DOM. Electron captures
+  // the preload value at attach time — setting it later is a no-op, so
+  // we have to know the path synchronously when the element is created.
+  const body = container.querySelector(".panel-content-body") as HTMLElement;
+  let frame: any;
+  if (isElectron) {
+    frame = document.createElement("webview");
+    frame.className = "browser-frame";
+    frame.setAttribute("allowpopups", "");
+    if (_browserPreloadPath) {
+      frame.setAttribute("preload", _browserPreloadPath);
+      frame.setAttribute("src", "about:blank");
+      body.appendChild(frame);
+    } else {
+      // Preload path not ready yet (first browser tab opened before
+      // initWebviewLinkBridge's IPC roundtrip completed). Fetch, then
+      // attach — we cannot appendChild first or the empty preload value
+      // would be captured and the very first link click would be missed.
+      (window as any).electronAPI.getBrowserPreloadPath().then((p: string) => {
+        _browserPreloadPath = p;
+        frame.setAttribute("preload", p);
+        frame.setAttribute("src", "about:blank");
+        body.appendChild(frame);
+        registerWebviewWithCdp(frame);
+      });
+    }
+    // Common path: register synchronously so chrome-devtools-mcp sees this
+    // very webview as a Target the moment the tab is open. Without this,
+    // the agent's first page-target lookup hits an empty list and triggers
+    // the main-process onEnsurePage fallback, which cold-starts a separate
+    // (hidden) BrowserWindow and operates that one — leaving the user-visible
+    // webview as a decoration. The async-preload branch above calls the same
+    // helper right after appendChild for the same reason.
+    if (_browserPreloadPath) registerWebviewWithCdp(frame);
+    // Bridge from the webview preload: <a> clicks are forwarded via
+    // ipcRenderer.sendToHost and arrive on the host's webview element
+    // as an `ipc-message` event. Funnel them into the same handler
+    // used by target=_blank / window.open (via setOpenLinkInPanelHandler).
+    frame.addEventListener("ipc-message", (e: any) => {
+      if (e.channel === "ziva:open-link-in-panel" && e.args?.[0]) {
+        openLinkInBrowser(e.args[0]);
+      }
+    });
+    // If we have an initial URL, load it via did-attach. Calling
+    // loadURL synchronously after appendChild silently no-ops because
+    // the webContents isn't ready until the `did-attach` event fires —
+    // this is what made the old rAF/setTimeout dance unreliable on slow
+    // machines (the 200ms hard fallback wasn't always enough).
+    if (initialUrl) {
+      const urlInput0 = container.querySelector(".browser-url-input") as HTMLInputElement;
+      frame.addEventListener("did-attach", () => {
+        frame.loadURL(initialUrl);
+        if (urlInput0) urlInput0.value = initialUrl;
+      }, { once: true });
+    }
+  } else {
+    frame = document.createElement("iframe");
+    frame.className = "browser-frame";
+    frame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms allow-popups");
+    if (initialUrl) {
+      frame.src = "/api/proxy?url=" + encodeURIComponent(initialUrl);
+    } else {
+      frame.src = "about:blank";
+    }
+    body.appendChild(frame);
+  }
   const urlInput = container.querySelector(".browser-url-input") as HTMLInputElement;
-  const frame = container.querySelector(isElectron ? "webview" : "iframe") as any;
   const navigate = () => {
     let url = urlInput.value.trim();
     if (!url) return;
@@ -801,14 +999,12 @@ function renderBrowserTab(container: HTMLElement) {
   if (isElectron) {
     frame?.addEventListener("did-navigate", (e: any) => { urlInput.value = e.url; });
     frame?.addEventListener("did-navigate-in-page", (e: any) => { urlInput.value = e.url; });
-    // Open target=_blank / window.open links INSIDE the agent browser
-    // webview instead of handing them to the OS browser (the default with
-    // allowpopups).
-    frame?.addEventListener("new-window", (e: any) => {
-      try { e.preventDefault?.(); } catch {}
-      const url = e.url || e?.params?.url;
-      if (url) frame?.loadURL(url);
-    });
+    // target=_blank / window.open are forwarded by the main process
+    // (see electron/main.ts setWindowOpenHandler) and reach the renderer
+    // via electronAPI.setOpenLinkInPanelHandler. The local 'new-window'
+    // fallback is intentionally omitted — the main process is the
+    // reliable path and keeping a duplicate here risks double-handling
+    // and races with the IPC bridge.
     (container.querySelector('[data-action="back"]') as HTMLElement).onclick = () => { try { frame?.goBack(); } catch {} };
     (container.querySelector('[data-action="forward"]') as HTMLElement).onclick = () => { try { frame?.goForward(); } catch {} };
     (container.querySelector('[data-action="reload"]') as HTMLElement).onclick = () => { try { frame?.reload(); } catch {} };
@@ -1061,6 +1257,7 @@ function formatRelativeTime(ts?: number): string {
 // ---- DOM Bootstrap — Ziva layout ----
 function init() {
   initLightbox();
+  initMessageLinkInterceptor();
   if ((window as any).electronAPI && navigator.platform.toLowerCase().includes("mac")) {
     document.body.classList.add("electron-darwin");
   }
@@ -2989,8 +3186,14 @@ async function loadHistoryInto(sid: string, target: HTMLElement): Promise<boolea
   // the live chat (just visually scaled down by the wrapper's CSS).
   let prev = 0;
   for (const si of summaryIndices) {
-    const count = si - prev;
-    if (count > 0) appendCompactBoundary(sid, count, prev, si, target);
+    // Skip the previous summary message itself — it is the HEAD of the
+    // already-rendered tail (or the previous fold's boundary), not part of
+    // the range that should be folded AGAIN. Without this, summary N ends
+    // up inside the fold for summary N+1, and expanding the second boundary
+    // shows the raw summary text as a regular assistant message.
+    const foldStart = (prev > 0 && (fullMsgs[prev] as any)._compaction_summary) ? prev + 1 : prev;
+    const count = si - foldStart;
+    if (count > 0) appendCompactBoundary(sid, count, foldStart, si, target);
     prev = si;
   }
   // Expanded tail: everything after the last folded summary (or the whole
@@ -6713,6 +6916,7 @@ async function openSettingsModal() {
 }
 
 // ---- Bootstrap ----
+initWebviewLinkBridge();
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", init);
 } else {
