@@ -22,6 +22,26 @@ a = Analysis(
         # the workspace has no plugins/ dir. runtime.create loads these from
         # sys._MEIPASS/plugins when frozen.
         (str(PROJECT_ROOT / 'plugins'), 'plugins'),
+        # mlx (Apple Silicon ML framework) loads its Metal shader library at
+        # runtime via dlopen. The metallib ships in the mlx-metal wheel as
+        # `mlx/lib/mlx.metallib` (~125 MB) — PyInstaller's analysis doesn't
+        # pick it up because it's dlopen'd, not import'd. Without it, mlx
+        # fails with "Failed to load the default metallib".
+        (
+            str(Path('/Users/wangxinxin/code/ziva/.build-venv/lib/python3.11/site-packages/mlx/lib/mlx.metallib')),
+            'mlx/lib',
+        ),
+        # mlx_whisper's audio module loads mel_filters.npz at runtime via
+        # `os.path.join(os.path.dirname(__file__), "assets", ...)`. The
+        # assets/ dir also holds gpt2.tiktoken and multilingual.tiktoken
+        # which tiktoken needs to decode. PyInstaller's analysis doesn't
+        # copy these data files because they're opened via plain file I/O,
+        # not import machinery. Copying the whole assets/ dir mirrors the
+        # on-disk layout mlx_whisper expects.
+        (
+            str(Path('/Users/wangxinxin/code/ziva/.build-venv/lib/python3.11/site-packages/mlx_whisper/assets')),
+            'mlx_whisper/assets',
+        ),
     ],
     hiddenimports=[
         'ziva_runtime',
@@ -60,6 +80,49 @@ a = Analysis(
         'openai',
         'anthropic',
         'mcp',
+        # STT (voice input) on Apple Silicon. mlx_whisper's import graph
+        # is dynamic (lazy + multiprocessing), so PyInstaller's static
+        # analyzer misses it. Force-include the full transitive set so
+        # the bundled backend can actually transcribe audio. The package
+        # is only installed on darwin/arm64 (see pyproject.toml platform
+        # marker), so non-Mac builds simply skip this block — the
+        # `import mlx_whisper` inside speech_to_text only runs on Mac.
+        # NOTE: torch is NOT bundled. mlx_whisper's `transcribe()` runs
+        # entirely on mlx; torch_whisper.py is an unused CPU fallback
+        # that nothing imports. Bundling torch would also drag in
+        # torch.utils.tensorboard which SIGABRTs on this miniconda
+        # build env (PyInstaller's hook-torch then crashes mid-analysis).
+        'mlx_whisper',
+        'mlx',
+        'mlx.core',
+        'mlx.nn',
+        'mlx.optimizers',
+        'mlx.utils',
+        # mlx.core's nanobind extension does an in-binary `import mlx._reprlib_fix`
+        # at module init. The module is on disk but PyInstaller's analysis
+        # doesn't see the dynamic import inside the .so, so it's missing
+        # from the bundle and mlx.core fails to load with the cryptic
+        # "Encountered an error while initializing the extension."
+        'mlx._reprlib_fix',
+        'huggingface_hub',
+        'huggingface_hub.utils',
+        'tiktoken',
+        # tiktoken's C extension is loaded dynamically from tiktoken/registry.py
+        # via a dotted-name import (`tiktoken.tiktoken_ext` on PyPI naming
+        # collisions matter — we need both names). Without it, whisper's
+        # tokenizer init fails with `No module named 'tiktoken_ext'`.
+        'tiktoken_ext',
+        'tiktoken.tiktoken_ext',
+        'tiktoken.load',
+        # tiktoken_ext is a namespace package shipped as its own directory
+        # (site-packages/tiktoken_ext/openai_public.py) that holds the BPE
+        # tables tiktoken needs to encode/decode. It's discovered via
+        # pkgutil.iter_modules at runtime, so PyInstaller's static analysis
+        # doesn't see the import. Whisper's tokenizer init fails without it.
+        'tiktoken_ext.openai_public',
+        'numba',
+        'numba.core',
+        'more_itertools',
     ],
     hookspath=[],
     hooksconfig={},
@@ -75,11 +138,11 @@ a = Analysis(
     excludes=[
         'tkinter',
         'matplotlib',
-        'numpy',
-        'scipy',
         'PIL',
         'pytest',
         'torch',
+        'torchvision',
+        'torchaudio',
         'tensorflow',
         'jax',
         'cv2',
@@ -90,14 +153,14 @@ a = Analysis(
         'notebook',
         'sphinx',
         # ML/NLP libs present in the global (miniconda) env that ziva never
-        # imports. Excluding shrinks the bundle and avoids PyInstaller hook
-        # failures (e.g. transformers' tokenizers version check).
+        # imports directly. NOTE: numpy / scipy / huggingface_hub / tokenizers
+        # are NOT excluded — mlx_whisper (voice input on macOS) requires them,
+        # and on non-Mac builds mlx_whisper is never imported so the unused
+        # deps end up tree-shaken by PyInstaller's analysis.
         'transformers',
-        'tokenizers',
         'modelscope',
         'sentencepiece',
         'datasets',
-        'huggingface_hub',
         'accelerate',
         'diffusers',
         'soundfile',
