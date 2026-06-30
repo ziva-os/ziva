@@ -431,6 +431,7 @@ class DesktopAPIServer:
                         "time": s.get("time"),
                         "workspace": ws,
                         "name": s.get("name"),
+                        "model_name": s.get("model_name"),
                     })
             except Exception:
                 # Skip workspaces that are unreadable / missing storage

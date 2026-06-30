@@ -1028,18 +1028,48 @@ class Runtime:
             # config's model — a session pinned to a non-thinking model
             # via updateSession must not get a thinking block even if
             # the runtime default has thinking_mode: high.
-            thinking_capable = self._capabilities_for_model_name(
-                model_cfg.get("name", "")
-            ).get("thinking", False)
-            if (
-                model_cfg.get("thinking_mode")
-                and model_cfg.get("thinking_mode") != "disabled"
-                and thinking_capable
-            ):
+            #
+            # Thinking decision matrix (previously the rule was "missing
+            # caps → no thinking", which silently disabled thinking for
+            # any model entry that didn't explicitly set
+            # `capabilities.thinking: true` — kimi-k2.6 was the visible
+            # regression):
+            #
+            #   caps.thinking | thinking_mode    | thinking enabled?
+            #   --------------+------------------+------------------
+            #   False         | any              | NO   (cap is ceiling)
+            #   True/missing  | unset/disabled   | NO   (user opt-out)
+            #   True/missing  | low/medium/high  | YES  (user opt-in)
+            #
+            # `capabilities.thinking: false` is the only cap that can
+            # override user intent — it lets a provider/model declare
+            # "I do not support thinking", and that ceiling must be
+            # honored regardless of what the user toggled. Anything else
+            # (caps=True or caps missing) defers to the user: "I support
+            # thinking" is permissive, not coercive, and "no opinion"
+            # means "let the user decide". This matches the mental model
+            # users have when they flip the global thinking switch — the
+            # only way for a model to ignore that switch is to declare
+            # itself incapable.
+            caps = self._capabilities_for_model_name(model_cfg.get("name", ""))
+            caps_thinking = caps.get("thinking")
+            thinking_mode = model_cfg.get("thinking_mode")
+            user_wants_thinking = bool(thinking_mode) and thinking_mode != "disabled"
+            if caps_thinking is False:
+                thinking_capable = False
+            else:
+                # caps_thinking is True or missing — defer to the user.
+                thinking_capable = user_wants_thinking
+            if thinking_capable:
                 thinking_config = {
                     "type": "enabled",
                     "budget_tokens": int(model_cfg.get("thinking_budget_tokens", 4000)),
-                    "mode": model_cfg.get("thinking_mode", "medium"),
+                    # When the user opted in via thinking_mode, use that
+                    # value as the mode. When the capability authorized
+                    # thinking but the user disabled it (`disabled`),
+                    # fall back to "medium" so the model still gets a
+                    # reasonable default budget hint instead of "disabled".
+                    "mode": thinking_mode if user_wants_thinking else "medium",
                     "max_tokens": int(model_cfg.get("max_tokens", 16384)),
                 }
 
