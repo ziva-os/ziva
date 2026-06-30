@@ -11,6 +11,7 @@ import shlex
 import struct
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -141,6 +142,10 @@ class DesktopAPIServer:
         self.automations: Dict[str, Automation] = {}
         self._automation_tasks: Dict[str, asyncio.Task] = {}
         self._runner: web.AppRunner | None = None
+        # Set when STT warmup finishes (or fails). The frontend can poll
+        # /api/stt/status to render a "preparing voice input…" hint while
+        # the model is loading. None == unknown / not started yet.
+        self._stt_status: str = "idle"
         self._setup_app()
 
     def _pid_for(self, sid: str) -> str:
@@ -224,6 +229,7 @@ class DesktopAPIServer:
         self.app.router.add_get("/ws/terminal", self.terminal_ws)
         self.app.router.add_get("/api/proxy", self.proxy_url)
         self.app.router.add_post("/api/stt", self.speech_to_text)
+        self.app.router.add_get("/api/stt/status", self.stt_status)
         self.app.router.add_get("/api/agents", self.list_background_agents)
         self.app.router.add_get("/api/agents/{agent_id}", self.get_background_agent)
         self.app.router.add_post("/api/agents/{agent_id}/cancel", self.cancel_background_agent)
@@ -1650,6 +1656,85 @@ class DesktopAPIServer:
         await self._runner.setup()
         site = web.TCPSite(self._runner, host=host, port=port)
         await site.start()
+        # Kick off STT warmup in a background daemon thread. The first
+        # user-driven /api/stt call would otherwise pay a 5+ second cold
+        # start (import mlx_whisper + 461MB model load + Metal shader JIT
+        # + numba JIT). By starting warmup here, that cost overlaps with
+        # the user's normal app-launch idle time instead of being
+        # sandwiched between "stop talking" and "see transcribed text".
+        # Warmup failure is non-fatal — speech_to_text still works, it
+        # just takes a few seconds on the first request.
+        self._stt_status = "warming"
+        threading.Thread(
+            target=self._warmup_stt,
+            name="stt-warmup",
+            daemon=True,
+        ).start()
+
+    def _warmup_stt(self) -> None:
+        """Load the STT model in the background so the first user
+        transcription is fast. Runs in a daemon thread; exceptions are
+        logged but never re-raised.
+
+        Mirrors the model-resolution logic in speech_to_text so we
+        warm up the same model the user will hit. If the model isn't
+        on disk yet (will be downloaded on first real use), this is a
+        no-op — we'd rather not block startup on a multi-GB download.
+        """
+        try:
+            # Resolve the same model path speech_to_text would use.
+            models_dir = Path.home() / ".ziva" / "models"
+            stt_model = self.runtime.config.get("stt", {}).get(
+                "model", "whisper-small-mlx"
+            )
+            local_path = None
+            for candidate in [models_dir / stt_model, models_dir / "mlx-community" / stt_model]:
+                if candidate.exists() and (candidate / "weights.npz").exists():
+                    local_path = candidate
+                    break
+            if local_path is None:
+                # Model not downloaded yet — let the first real request
+                # trigger the download + warmup. That's the only way to
+                # know what the user actually wants.
+                self._stt_status = "needs_download"
+                return
+
+            # Imports here (not at module top) because mlx_whisper pulls
+            # in a heavy Metal/native stack that's only meaningful when
+            # we're actually going to run STT.
+            import imageio_ffmpeg
+            ffmpeg_dir = str(Path(imageio_ffmpeg.get_ffmpeg_exe()).parent)
+            os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
+
+            import mlx_whisper  # noqa: F401  — import alone warms Metal/native stack
+            # Force the model load + decoder warmup by transcribing a
+            # 1-second silent wav. This populates ModelHolder.model and
+            # JIT-compiles the Metal kernels.
+            import wave, tempfile
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                with wave.open(tmp, "wb") as w:
+                    w.setnchannels(1)
+                    w.setsampwidth(2)
+                    w.setframerate(16000)
+                    w.writeframes(b"\x00\x00" * 16000)  # 1s silence
+                tmp_path = tmp.name
+            try:
+                mlx_whisper.transcribe(
+                    tmp_path,
+                    path_or_hf_repo=str(local_path),
+                    language=None,
+                )
+                self._stt_status = "ready"
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+        except Exception as exc:
+            # Warmup is best-effort. Log so it shows up in backend.log
+            # (Electron's main.ts pipes stderr there) but don't crash.
+            logger.warning("STT warmup failed (first /api/stt will be slow): %s", exc)
+            self._stt_status = "error"
 
     async def stop(self) -> None:
         """Gracefully stop the server."""
@@ -1864,6 +1949,18 @@ class DesktopAPIServer:
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=502)
 
+    async def stt_status(self, request: web.Request) -> web.Response:
+        """Lightweight probe so the frontend can render a "preparing voice
+        input…" hint while the STT model is loading. Status values:
+          - idle             : warmup hasn't been kicked off yet
+          - warming         : background thread is loading the model
+          - ready           : model loaded, transcribe() will be fast
+          - needs_download  : model not on disk yet; first request will
+                              download + warm up (~minutes for 461 MB)
+          - error           : warmup raised; check backend.log
+        """
+        return web.json_response({"status": self._stt_status})
+
     async def speech_to_text(self, request: web.Request) -> web.Response:
         """Transcribe audio using mlx-whisper (Apple Silicon GPU-accelerated)."""
         import tempfile
@@ -1898,7 +1995,21 @@ class DesktopAPIServer:
                 tmp_path = tmp.name
 
             try:
+                # mlx_whisper.audio.load_audio() shells out to `ffmpeg` to
+                # decode the temp file. In the PyInstaller bundle the
+                # runtime PATH is /usr/bin:/bin:/usr/sbin:/sbin only —
+                # homebrew ffmpeg at /opt/homebrew/bin/ffmpeg isn't
+                # visible. imageio-ffmpeg ships a static ffmpeg binary
+                # inside its wheel, which PyInstaller's hook bundles into
+                # the executable; we prepend its directory to PATH so the
+                # subprocess picks it up. We do this even for .wav files
+                # because mlx_whisper normalises the audio through ffmpeg
+                # regardless of input format (resampling + channel layout).
+                import imageio_ffmpeg
                 import mlx_whisper
+                ffmpeg_dir = str(Path(imageio_ffmpeg.get_ffmpeg_exe()).parent)
+                os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
+
                 models_dir = Path.home() / ".ziva" / "models"
                 models_dir.mkdir(parents=True, exist_ok=True)
                 stt_model = self.runtime.config.get("stt", {}).get(
