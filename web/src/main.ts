@@ -928,6 +928,10 @@ function renderBrowserTab(container: HTMLElement, initialUrl?: string) {
     frame = document.createElement("webview");
     frame.className = "browser-frame";
     frame.setAttribute("allowpopups", "");
+    // Use the dedicated browser partition so the webview gets the session
+    // with explicit system-proxy settings (see electron/main.ts).
+    const partition = (window as any).electronAPI?.browserPartition || "persist:ziva-browser";
+    frame.setAttribute("partition", partition);
     if (_browserPreloadPath) {
       frame.setAttribute("preload", _browserPreloadPath);
       frame.setAttribute("src", "about:blank");

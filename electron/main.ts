@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, webContents } from "electron";
+import { app, BrowserWindow, ipcMain, webContents, session } from "electron";
 import * as path from "path";
 import { spawn, ChildProcess } from "child_process";
 import { CdpBridge } from "./cdp-bridge";
@@ -13,6 +13,10 @@ const PORT = 4097;
 // debugger overhead.
 const CDP_PORT = Number(process.env.ZIVA_CDP_PORT || 9223);
 const CHROME_DEBUG_PORT = 9222;
+// Dedicated session partition for the Agent Browser <webview>. This keeps
+// browser cookies/cache isolated from the main Ziva UI and lets us set a
+// system proxy explicitly on the session used by the webview.
+const BROWSER_PARTITION = "persist:ziva-browser";
 
 function getBackendCommand(): { cmd: string; args: string[]; env: NodeJS.ProcessEnv } {
   const isDev = !app.isPackaged;
@@ -202,7 +206,12 @@ async function createMainWindow() {
   // the default session), so the Agent Browser can reach sites behind a
   // system proxy. MUST be awaited before loadURL, otherwise the first
   // navigation (and any webview created right after) misses the proxy.
-  await mainWindow.webContents.session.setProxy({ mode: "system" });
+  const envProxy = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
+  if (envProxy) {
+    await mainWindow.webContents.session.setProxy({ proxyRules: envProxy });
+  } else {
+    await mainWindow.webContents.session.setProxy({ mode: "system" });
+  }
 
   // Auto-grant the few permissions the renderer actually needs. Without
   // this, navigator.mediaDevices.getUserMedia({ audio: true }) is denied
@@ -300,6 +309,23 @@ ipcMain.handle("unregister-cdp-page", (_event, targetId: string): boolean => {
 
 // App lifecycle
 app.whenReady().then(async () => {
+  // Set up a dedicated session for the Agent Browser webview and honour the
+  // system proxy there too. Some Electron builds don't propagate the default
+  // session's proxy settings to webviews reliably; setting it explicitly on
+  // the partition's session avoids that.
+  try {
+    const browserSession = session.fromPartition(BROWSER_PARTITION);
+    const envProxy = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
+    if (envProxy) {
+      await browserSession.setProxy({ proxyRules: envProxy });
+    } else {
+      await browserSession.setProxy({ mode: "system" });
+    }
+    console.log("[proxy] system proxy enabled for browser session");
+  } catch (err) {
+    console.error("[proxy] failed to set system proxy on browser session:", err);
+  }
+
   spawnDebugChrome();
   createWindow();  // show the loading window immediately (not a blank screen)
   try {

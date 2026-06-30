@@ -25,6 +25,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Webview preload path, async via main process. renderBrowserTab caches
   // this once at init and uses it to set <webview>.preload.
   getBrowserPreloadPath: () => ipcRenderer.invoke("get-browser-preload-path"),
+  // Partition to use for the Agent Browser webview so it gets the dedicated
+  // session with explicit system proxy settings.
+  browserPartition: "persist:ziva-browser",
   // Register a single renderer-side callback that handles every link
   // forwarded by the main process (target=_blank / window.open).
   setOpenLinkInPanelHandler: (cb: (url: string) => void) => {
