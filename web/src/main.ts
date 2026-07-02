@@ -7,7 +7,7 @@ import "@xterm/xterm/css/xterm.css";
 import * as api from "./api";
 import { SSEPool } from "./sse";
 import { renderMarkdown, addCopyButtons, highlightCode, extractThinking } from "./markdown";
-import { Store } from "./state";
+import { Store, store } from "./state";
 import type { AppState, PendingAttachment, RightPanelTab } from "./state";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -69,31 +69,6 @@ function previewText(content: unknown): string {
 }
 
 // ---- State ----
-const store = new Store<AppState>({
-  sessions: [],
-  activeSid: null,
-  // See `AppState` — keyed by session id so a background session
-  // running its own turn doesn't taint the active session's input
-  // and queue bar.
-  runningSessions: {},
-  pendingMessages: {},
-  promptDrafts: {},
-  compactingSessions: {},
-  questionPending: false,
-  config: { model: "unknown", models: [], modelDetails: [], approval: "suggest", workspace: "", tools: [], contextWindow: 200000 },
-  recentWorkspaces: [],
-  connected: false,
-  tokenUsage: null,
-  latencyMs: null,
-  sidebarOpen: true,
-  diffPanelOpen: false,
-  rightPanelOpen: false,
-  rightPanelTabs: [],
-  activeRightTabId: null,
-  theme: (document.documentElement.getAttribute("data-theme") as "dark" | "light") || "dark",
-  autoScroll: true,
-  splitSessions: [],
-});
 
 // ---- Per-session state helpers ----
 // Reading the running flag for the active session. Other sessions'

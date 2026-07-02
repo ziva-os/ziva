@@ -105,3 +105,30 @@ export class Store<T = AppState> {
     return () => { this.listeners.delete(fn); };
   }
 }
+
+// The singleton app store. Lives here (not in main.ts) so every module can
+// import it directly instead of receiving it via dependency injection.
+export const store = new Store<AppState>({
+  sessions: [],
+  activeSid: null,
+  // See `AppState` — keyed by session id so a background session running its
+  // own turn doesn't taint the active session's input and queue bar.
+  runningSessions: {},
+  pendingMessages: {},
+  promptDrafts: {},
+  compactingSessions: {},
+  questionPending: false,
+  config: { model: "unknown", models: [], modelDetails: [], approval: "suggest", workspace: "", tools: [], contextWindow: 200000 },
+  recentWorkspaces: [],
+  connected: false,
+  tokenUsage: null,
+  latencyMs: null,
+  sidebarOpen: true,
+  diffPanelOpen: false,
+  rightPanelOpen: false,
+  rightPanelTabs: [],
+  activeRightTabId: null,
+  theme: (document.documentElement.getAttribute("data-theme") as "dark" | "light") || "dark",
+  autoScroll: true,
+  splitSessions: [],
+});
