@@ -32,8 +32,8 @@ from typing import AsyncIterator, List
 
 import pytest
 
-from ziva_runtime.runtime import Runtime
-from ziva_runtime.shared_types import ChatMessage, StreamDelta
+from ziva.runtime import Runtime
+from ziva.shared_types import ChatMessage, StreamDelta
 
 
 class _ThinkingProbe:
@@ -49,7 +49,7 @@ class _ThinkingProbe:
         _ThinkingProbe.instances.append(self)
 
     async def chat(self, messages, model, system_prompt=None, tools=None, thinking_config=None):
-        from ziva_runtime.shared_types import ChatResult
+        from ziva.shared_types import ChatResult
         self.last_thinking_config = thinking_config
         return ChatResult(role="assistant", content="ok", model=model, usage={}, finish_reason="stop")
 
@@ -94,7 +94,7 @@ def _write_cfg(tmp_path: Path, *, default_model: str, model_entries: list, globa
 def _patch_create_adapter():
     """Force _create_adapter to return _ThinkingProbe so we can read off
     the thinking_config the runtime actually decided to send."""
-    from ziva_runtime import runtime as runtime_module
+    from ziva import runtime as runtime_module
 
     _ThinkingProbe.instances.clear()
     original = runtime_module._create_adapter
@@ -272,7 +272,7 @@ def test_per_session_thinking_opt_out_is_honored(tmp_path):
     must override the runtime default (matches the "Capability lookup
     is parameterized on this turn's model name" comment in runtime.py).
     """
-    from ziva_runtime.storage.file_storage import FileStorage
+    from ziva.storage.file_storage import FileStorage
 
     cfg = _write_cfg(
         tmp_path,

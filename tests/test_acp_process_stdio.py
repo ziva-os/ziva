@@ -16,7 +16,7 @@ def test_acp_stdio_process_roundtrip():
     payload = "\n".join(json.dumps(r) for r in reqs) + "\n"
 
     proc = subprocess.run(
-        ["python", "-m", "ziva_runtime.app.cli", "acp", "serve", "--workspace", "."],
+        ["python", "-m", "ziva.app.cli", "acp", "serve", "--workspace", "."],
         cwd=root,
         env=env,
         input=payload,

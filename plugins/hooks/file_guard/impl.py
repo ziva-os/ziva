@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from ziva_runtime.shared_types import RuntimeContext
+from ziva.shared_types import RuntimeContext
 
 _HINT = (
     "\nThe user has attached image(s) inline in this message. "

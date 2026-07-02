@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 
-from ziva_runtime.runtime import Runtime
+from ziva.runtime import Runtime
 
 
 def _fake_runtime(max_concurrency: int = 20, max_history: int = 50) -> Runtime:

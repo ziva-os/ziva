@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from ziva_runtime.config.loader import load_effective_config
+from ziva.config.loader import load_effective_config
 
 
 def test_config_merge_and_validate(tmp_path: Path):

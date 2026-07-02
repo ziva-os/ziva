@@ -3,7 +3,7 @@ import os
 import re
 import shutil
 
-from ziva_runtime.shared_types import ToolResult
+from ziva.shared_types import ToolResult
 
 
 # Matches Claude Code's Grep tool interface. Key behaviour:

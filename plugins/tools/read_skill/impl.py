@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict
 
-from ziva_runtime.shared_types import RuntimeContext, ToolResult
+from ziva.shared_types import RuntimeContext, ToolResult
 
 
 def _build_skill_index(config: Dict[str, Any]) -> list[dict]:

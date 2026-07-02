@@ -1,4 +1,4 @@
-from ziva_runtime.shared_types import ToolResult
+from ziva.shared_types import ToolResult
 
 
 class UpdatePlanTool:
@@ -57,7 +57,7 @@ class UpdatePlanTool:
             session.plan_tool_calls_since_update = 0
             # Persist to disk so plan survives server restart
             try:
-                from ziva_runtime.storage.file_storage import FileStorage
+                from ziva.storage.file_storage import FileStorage
                 FileStorage.update_session(runtime.project_id, ctx.session_id, {"plan": validated})
             except Exception:
                 pass

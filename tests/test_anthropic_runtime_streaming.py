@@ -26,9 +26,9 @@ from typing import AsyncIterator, List
 
 import pytest
 
-from ziva_runtime.runtime import Runtime
-from ziva_runtime.shared_types import ChatMessage, StreamDelta
-from ziva_runtime.storage.file_storage import FileStorage
+from ziva.runtime import Runtime
+from ziva.shared_types import ChatMessage, StreamDelta
+from ziva.storage.file_storage import FileStorage
 
 
 class _FakeAnthropicAdapter:
@@ -49,7 +49,7 @@ class _FakeAnthropicAdapter:
         self, messages, model, system_prompt=None, tools=None, thinking_config=None
     ):
         self.calls.append({"model": model, "thinking_config": thinking_config})
-        from ziva_runtime.shared_types import ChatResult
+        from ziva.shared_types import ChatResult
         return ChatResult(
             role="assistant",
             content="hi",
@@ -108,7 +108,7 @@ def thinking_runtime(tmp_path: Path):
     rt = Runtime.create(workspace_root=tmp_path, global_config_path=cfg)
     adapter = _FakeAnthropicAdapter()
     # Force _create_adapter to return our fake; bypasses the real Anthropic SDK.
-    from ziva_runtime import runtime as runtime_module
+    from ziva import runtime as runtime_module
     original = runtime_module._create_adapter
     runtime_module._create_adapter = lambda config: adapter
     try:
@@ -228,7 +228,7 @@ def test_get_messages_returns_reasoning_for_frontend_reload(thinking_runtime):
     # And after the compaction filter, the same message must survive
     # (no compaction happened here, but the filter must not drop the
     # reasoning field on a message that was the model's actual reply).
-    from ziva_runtime.session.compaction import _llm_context
+    from ziva.session.compaction import _llm_context
     visible = _llm_context(all_msgs)
     asst_visible = next(m for m in visible if m.get("role") == "assistant")
     assert asst_visible.get("reasoning_content") == "first thought more thought", (

@@ -4,7 +4,7 @@ import { resolve } from "path";
 export default defineConfig({
   root: ".",
   build: {
-    outDir: resolve(__dirname, "../src/ziva_runtime/transports/desktop_api/static"),
+    outDir: resolve(__dirname, "../src/ziva/transports/desktop_api/static"),
     emptyOutDir: true,
     rollupOptions: {
       input: resolve(__dirname, "index.html"),

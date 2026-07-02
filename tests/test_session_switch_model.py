@@ -1,8 +1,8 @@
 import asyncio
 from pathlib import Path
 
-from ziva_runtime.runtime import Runtime
-from ziva_runtime.shared_types import ChatMessage, ChatResult, StreamDelta
+from ziva.runtime import Runtime
+from ziva.shared_types import ChatMessage, ChatResult, StreamDelta
 
 
 class DelayedAdapter:
@@ -31,7 +31,7 @@ def test_switch_model_does_not_kill_background_session():
         rt = Runtime.create(workspace_root=root)
 
         # Monkey-patch _create_adapter so it never fails and returns our test adapter
-        from ziva_runtime import runtime as runtime_module
+        from ziva import runtime as runtime_module
         original_create_adapter = runtime_module._create_adapter
         runtime_module._create_adapter = lambda config: adapter_a
 

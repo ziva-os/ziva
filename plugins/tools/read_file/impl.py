@@ -2,7 +2,7 @@ import asyncio
 import base64
 from pathlib import Path
 
-from ziva_runtime.shared_types import ToolResult
+from ziva.shared_types import ToolResult
 
 IMAGE_EXTENSIONS = {
     ".png": "image/png",

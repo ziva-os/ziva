@@ -8,9 +8,9 @@ def _serve_desktop_process(port: int) -> None:
     import asyncio
     from pathlib import Path
 
-    from ziva_runtime.runtime import Runtime
-    from ziva_runtime.transports.desktop_api.server import DesktopAPIServer
-    from ziva_runtime.shared_types import ChatResult
+    from ziva.runtime import Runtime
+    from ziva.transports.desktop_api.server import DesktopAPIServer
+    from ziva.shared_types import ChatResult
 
     class FakeAdapter:
         async def chat(self, messages, model, system_prompt=None, tools=None):

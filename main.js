@@ -51,7 +51,7 @@ function getBackendCommand() {
         const projectRoot = path.resolve(__dirname, "..");
         return {
             cmd: "python3",
-            args: ["-m", "ziva_runtime", ...baseArgs],
+            args: ["-m", "ziva", ...baseArgs],
             env: { ...process.env, PYTHONPATH: projectRoot },
         };
     }

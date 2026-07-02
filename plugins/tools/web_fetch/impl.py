@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict
 
-from ziva_runtime.shared_types import ToolResult
+from ziva.shared_types import ToolResult
 
 
 class WebFetchTool:

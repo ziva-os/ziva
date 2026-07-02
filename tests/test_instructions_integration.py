@@ -1,6 +1,6 @@
 import asyncio
-from ziva_runtime.runtime import Runtime
-from ziva_runtime.shared_types import ChatMessage, ChatResult
+from ziva.runtime import Runtime
+from ziva.shared_types import ChatMessage, ChatResult
 
 
 class CaptureAdapter:

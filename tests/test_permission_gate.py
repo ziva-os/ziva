@@ -5,8 +5,8 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ziva_runtime.runtime import Runtime
-from ziva_runtime.shared_types import ChatMessage, ChatResult
+from ziva.runtime import Runtime
+from ziva.shared_types import ChatMessage, ChatResult
 
 class FakeAdapter:
     async def chat(self, messages, model, system_prompt=None, tools=None):

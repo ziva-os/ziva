@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from ziva_runtime.shared_types import RuntimeContext, ToolResult
+from ziva.shared_types import RuntimeContext, ToolResult
 
 # After this many tool calls without an `update_plan`, start nudging. The
 # reminder re-fires every _THRESHOLD calls (8, 16, 24, …) so a long task

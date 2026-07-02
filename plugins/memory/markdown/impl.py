@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List
 
-from ziva_runtime.shared_types import RuntimeContext
+from ziva.shared_types import RuntimeContext
 
 
 class MarkdownMemoryStore:

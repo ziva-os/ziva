@@ -1,8 +1,8 @@
 import asyncio
 
-from ziva_runtime.protocols.acp import ACPServer
-from ziva_runtime.runtime import Runtime
-from ziva_runtime.shared_types import ChatResult
+from ziva.protocols.acp import ACPServer
+from ziva.runtime import Runtime
+from ziva.shared_types import ChatResult
 
 
 class FakeAdapter:

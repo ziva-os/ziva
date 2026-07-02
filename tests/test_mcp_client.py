@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ziva_runtime.adapters.mcp.client import (
+from ziva.adapters.mcp.client import (
     MCPClient,
     MCPServerConfig,
     MCPToolWrapper,

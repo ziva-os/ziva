@@ -3,8 +3,8 @@ from pathlib import Path
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from ziva_runtime.runtime import Runtime
-from ziva_runtime.transports.desktop_api.server import DesktopAPIServer
+from ziva.runtime import Runtime
+from ziva.transports.desktop_api.server import DesktopAPIServer
 
 
 class FailingAdapter:

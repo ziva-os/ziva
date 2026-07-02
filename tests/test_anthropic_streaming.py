@@ -26,8 +26,8 @@ import asyncio
 from typing import Any, AsyncIterator, List
 from unittest.mock import AsyncMock, MagicMock
 
-from ziva_runtime.adapters.anthropic.provider import AnthropicChatAdapter
-from ziva_runtime.shared_types import ChatMessage, StreamDelta
+from ziva.adapters.anthropic.provider import AnthropicChatAdapter
+from ziva.shared_types import ChatMessage, StreamDelta
 
 
 # ---------------------------------------------------------------------------

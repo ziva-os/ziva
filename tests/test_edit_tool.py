@@ -1,7 +1,7 @@
 import asyncio
 
 from plugins.tools.edit.impl import EditTool
-from ziva_runtime.shared_types import RuntimeContext
+from ziva.shared_types import RuntimeContext
 
 
 def test_edit_single_replacement(tmp_path):

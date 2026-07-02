@@ -19,10 +19,10 @@ from unittest.mock import patch
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from ziva_runtime.runtime import Runtime
-from ziva_runtime.shared_types import ChatMessage, StreamDelta
-from ziva_runtime.storage.file_storage import FileStorage
-from ziva_runtime.transports.desktop_api.server import DesktopAPIServer
+from ziva.runtime import Runtime
+from ziva.shared_types import ChatMessage, StreamDelta
+from ziva.storage.file_storage import FileStorage
+from ziva.transports.desktop_api.server import DesktopAPIServer
 
 
 class _FakeAnthropicAdapter:
@@ -31,7 +31,7 @@ class _FakeAnthropicAdapter:
     response, not the SSE event stream shape."""
 
     async def chat(self, messages, model, system_prompt=None, tools=None, thinking_config=None):
-        from ziva_runtime.shared_types import ChatResult
+        from ziva.shared_types import ChatResult
         return ChatResult(role="assistant", content="ok", model=model, usage={}, finish_reason="stop")
 
     async def chat_stream(self, messages, model, system_prompt=None, tools=None, thinking_config=None):
@@ -70,7 +70,7 @@ def test_get_messages_endpoint_surfaces_reasoning_content(tmp_path):
         rt = Runtime.create(workspace_root=tmp_path, global_config_path=cfg)
 
         # Patch the adapter factory to return our fake before any turn runs.
-        from ziva_runtime import runtime as runtime_module
+        from ziva import runtime as runtime_module
         adapter = _FakeAnthropicAdapter()
         runtime_module._create_adapter = lambda config: adapter
 

@@ -3,43 +3,48 @@ requires = ["hatchling>=1.24.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "ziva-runtime"
+name = "ziva"
 version = "0.1.0"
-description = "Ziva runtime with extension API, OpenAI Agents adapter, and ACP protocol"
+description = "Ziva: a customizable LLM agent runtime and SDK (core library + optional desktop/CLI transports)"
 requires-python = ">=3.10"
+# Core runtime only — importing `ziva` and running `ziva.Agent` needs nothing
+# else. HTTP/SSE server, CLI/REPL, and on-device STT live in the extras below.
 dependencies = [
   "pyyaml>=6.0.1",
-  "aiohttp>=3.9.0",
-  "rich>=13.0.0",
-  "prompt_toolkit>=3.0.0",
   "openai>=1.30.0",
   "mcp>=1.0.0",
   "anthropic>=0.30.0",
-  # Voice input on macOS uses mlx-whisper for on-device GPU transcription.
-  # The marker keeps it out of non-Apple-Silicon installs (Linux/Intel
-  # Mac), where mlx-whisper won't work anyway. The PyInstaller bundle in
-  # ziva-backend.spec hiddenimports picks it up automatically when present
-  # in the build env.
-  #
-  # mlx_whisper.transcribe() shells out to `ffmpeg` to decode webm/wav/etc.
-  # The bundle has no $PATH at startup (only /usr/bin:/bin:/usr/sbin:/sbin),
-  # so a system ffmpeg at /opt/homebrew/bin/ffmpeg isn't visible. The fix is
-  # imageio-ffmpeg: it ships a static ffmpeg binary inside its wheel, and
-  # PyInstaller's hook-imageio-ffmpeg bundles that binary into the
-  # executable automatically. mlx_whisper doesn't know about it directly,
-  # so speech_to_text monkey-patches $PATH at call time (see server.py).
-  "mlx-whisper>=0.4.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
-  "imageio-ffmpeg>=0.5.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 
 [project.optional-dependencies]
+# Desktop app: the aiohttp HTTP/SSE server + macOS on-device STT.
+# Voice input uses mlx-whisper for on-device GPU transcription (Apple Silicon
+# only). mlx_whisper.transcribe() shells out to `ffmpeg`; the bundle has no
+# $PATH at startup, so imageio-ffmpeg ships a static ffmpeg and
+# speech_to_text monkey-patches $PATH at call time (see
+# transports/desktop_api/server.py). The PyInstaller bundle in
+# ziva-backend.spec picks these up automatically when present in the build env.
+desktop = [
+  "aiohttp>=3.9.0",
+  "mlx-whisper>=0.4.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+  "imageio-ffmpeg>=0.5.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
+# CLI / interactive REPL.
+cli = [
+  "rich>=13.0.0",
+  "prompt_toolkit>=3.0.0",
+]
+# Everything (the desktop app build installs this).
+all = ["ziva[desktop,cli]"]
 dev = [
   "pytest>=8.0.0",
   "pytest-asyncio>=0.23.0",
+  "ziva[desktop,cli]",
 ]
 
+
 [project.scripts]
-ziva = "ziva_runtime.app.cli:main"
+ziva = "ziva.app.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/ziva_runtime"]
+packages = ["src/ziva"]

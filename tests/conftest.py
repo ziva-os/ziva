@@ -1,7 +1,7 @@
 import pytest
 
-from ziva_runtime.runtime import Runtime
-from ziva_runtime.shared_types import ToolResult
+from ziva.runtime import Runtime
+from ziva.shared_types import ToolResult
 
 
 class _EchoTool:
@@ -30,7 +30,7 @@ def _reset_adapter_registry():
     registry, and subsequent tests get a stale cached instance even when
     they pass a different config — breaking test isolation.
     """
-    from ziva_runtime.runtime import _reset_adapter_registry
+    from ziva.runtime import _reset_adapter_registry
 
     _reset_adapter_registry()
     yield

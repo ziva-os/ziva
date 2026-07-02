@@ -1,7 +1,7 @@
 import asyncio
 
 from plugins.tools.grep.impl import GrepTool
-from ziva_runtime.shared_types import RuntimeContext
+from ziva.shared_types import RuntimeContext
 
 
 def test_grep_match_single_file(tmp_path):

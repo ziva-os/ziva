@@ -1,8 +1,8 @@
 import asyncio
 from pathlib import Path
 
-from ziva_runtime.runtime import Runtime
-from ziva_runtime.shared_types import ChatResult, ChatMessage
+from ziva.runtime import Runtime
+from ziva.shared_types import ChatResult, ChatMessage
 
 
 class FakeAdapter:

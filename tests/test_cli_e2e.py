@@ -3,8 +3,8 @@ import builtins
 import io
 import sys
 
-from ziva_runtime.app import cli
-from ziva_runtime.shared_types import ChatResult
+from ziva.app import cli
+from ziva.shared_types import ChatResult
 
 
 class FakeRuntime:

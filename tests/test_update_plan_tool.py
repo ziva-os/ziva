@@ -1,6 +1,6 @@
 import asyncio
 from plugins.tools.update_plan.impl import UpdatePlanTool
-from ziva_runtime.shared_types import RuntimeContext
+from ziva.shared_types import RuntimeContext
 
 
 def test_update_plan_basic():

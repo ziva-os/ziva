@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from ziva_runtime.config.loader import DEFAULT_CONFIG, validate_config
+from ziva.config.loader import DEFAULT_CONFIG, validate_config
 
 
 def _base() -> dict:

@@ -1,4 +1,4 @@
-from ziva_runtime.config.instructions import load_layered_instructions
+from ziva.config.instructions import load_layered_instructions
 
 
 def test_no_instruction_files(tmp_path):

@@ -14,7 +14,7 @@ from typing import Optional
 
 import pytest
 
-from ziva_runtime.adapters.retry import (
+from ziva.adapters.retry import (
     MAX_RETRIES,
     RETRYABLE_STATUS,
     _backoff_delay,

@@ -1,8 +1,8 @@
 import uuid
 from typing import Any, Dict
 
-from ziva_runtime.shared_types import RuntimeContext, ToolResult
-from ziva_runtime.storage.file_storage import FileStorage
+from ziva.shared_types import RuntimeContext, ToolResult
+from ziva.storage.file_storage import FileStorage
 
 
 class ManageScheduledTasksTool:

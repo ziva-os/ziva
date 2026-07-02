@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from ziva_runtime.config.loader import load_effective_config
+from ziva.config.loader import load_effective_config
 
 
 def test_max_rounds_zero_means_unlimited(tmp_path: Path):

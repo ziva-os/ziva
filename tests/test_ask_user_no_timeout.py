@@ -20,9 +20,9 @@ import asyncio
 from pathlib import Path
 from typing import Any, Dict
 
-from ziva_runtime.capabilities.registries import CapabilityRegistry
-from ziva_runtime.runtime import Runtime
-from ziva_runtime.shared_types import (
+from ziva.capabilities.registries import CapabilityRegistry
+from ziva.runtime import Runtime
+from ziva.shared_types import (
     RuntimeContext,
     ToolCall,
     ToolResult,

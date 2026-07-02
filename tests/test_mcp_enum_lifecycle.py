@@ -18,7 +18,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from ziva_runtime.shared_types import MCPConnectStatus, SessionState
+from ziva.shared_types import MCPConnectStatus, SessionState
 
 
 def test_default_session_starts_disconnected():

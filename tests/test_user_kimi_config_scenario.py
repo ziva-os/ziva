@@ -11,8 +11,8 @@ Anthropic-format endpoint → user's thinking card now renders.
 import asyncio
 from pathlib import Path
 
-from ziva_runtime.runtime import Runtime
-from ziva_runtime.shared_types import ChatMessage, StreamDelta
+from ziva.runtime import Runtime
+from ziva.shared_types import ChatMessage, StreamDelta
 
 
 # Mirrors the user's ~/.ziva/config.yaml structure: default model
@@ -58,7 +58,7 @@ class _ProbeAdapter:
         _ProbeAdapter.instances.append(self)
 
     async def chat(self, messages, model, system_prompt=None, tools=None, thinking_config=None):
-        from ziva_runtime.shared_types import ChatResult
+        from ziva.shared_types import ChatResult
         self.last_thinking_config = thinking_config
         return ChatResult(role="assistant", content="ok", model=model, usage={}, finish_reason="stop")
 
@@ -76,7 +76,7 @@ def test_user_config_enables_thinking_for_kimi_k26():
     layout (no `capabilities` block on the kimi models) and asserts
     that the runtime now passes a populated `thinking_config` through
     to the Anthropic adapter."""
-    from ziva_runtime import runtime as runtime_module
+    from ziva import runtime as runtime_module
 
     _ProbeAdapter.instances.clear()
 
@@ -123,8 +123,8 @@ def test_user_config_switches_session_to_kimi_k27_code_keeps_thinking():
     block). When the session is pinned to that model (the "kimi-k2.7-code
     reverts to default model after restart" scenario from issue #3),
     thinking should still be enabled."""
-    from ziva_runtime import runtime as runtime_module
-    from ziva_runtime.storage.file_storage import FileStorage
+    from ziva import runtime as runtime_module
+    from ziva.storage.file_storage import FileStorage
 
     _ProbeAdapter.instances.clear()
 

@@ -4,7 +4,7 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ziva_runtime.config.loader import load_effective_config, validate_config
+from ziva.config.loader import load_effective_config, validate_config
 
 
 def test_approval_defaults():

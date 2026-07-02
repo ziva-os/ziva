@@ -3,7 +3,7 @@ import os
 import re
 import shutil
 
-from ziva_runtime.shared_types import ToolResult
+from ziva.shared_types import ToolResult
 
 
 # ANSI escape code pattern - improved to handle OSC 133 sequences

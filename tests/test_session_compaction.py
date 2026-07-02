@@ -2,11 +2,11 @@ import asyncio
 import json
 from pathlib import Path
 
-from ziva_runtime.runtime import Runtime
-from ziva_runtime.shared_types import ChatMessage, ChatResult, StreamDelta, ToolCallItem
+from ziva.runtime import Runtime
+from ziva.shared_types import ChatMessage, ChatResult, StreamDelta, ToolCallItem
 
 def test_compaction_estimates_tokens():
-    from ziva_runtime.session.compaction import estimate_tokens
+    from ziva.session.compaction import estimate_tokens
 
     msgs = [
         ChatMessage(role="user", content="Hello world"),
@@ -22,7 +22,7 @@ def test_compaction_prunes_tool_messages():
     to a placeholder, so the UI can still render the tool call but the LLM
     doesn't see the full payload on the next turn.
     """
-    from ziva_runtime.session.compaction import prune
+    from ziva.session.compaction import prune
 
     msgs = [
         ChatMessage(role="user", content="first"),
@@ -48,7 +48,7 @@ def test_compaction_prunes_tool_messages():
 def test_compaction_noop_when_too_few_user_turns():
     """If the message list has <= keep_last_assistant_turns asst messages,
     compact_messages returns the same list (no-op)."""
-    from ziva_runtime.session.compaction import compact_messages
+    from ziva.session.compaction import compact_messages
 
     class MockAdapter:
         async def chat(self, messages, model, system_prompt=None, tools=None):
@@ -78,7 +78,7 @@ def test_compaction_keeps_recent_assistant_turns():
     case, the first kept asst is "orphan" (its user prompt is in the
     summary), but the model can still infer context from the summary.
     """
-    from ziva_runtime.session.compaction import compact_messages
+    from ziva.session.compaction import compact_messages
 
     class MockAdapter:
         async def chat(self, messages, model, system_prompt=None, tools=None):
@@ -121,7 +121,7 @@ def test_compaction_counts_assistant_turns_not_user_messages():
     K-th-to-last asst position — we do NOT walk back to the user prompt
     of the first kept asst (that would bloat the window by pulling in
     earlier cycles from the same user turn)."""
-    from ziva_runtime.session.compaction import compact_messages
+    from ziva.session.compaction import compact_messages
 
     class MockAdapter:
         async def chat(self, messages, model, system_prompt=None, tools=None):
@@ -177,7 +177,7 @@ def test_compaction_counts_assistant_turns_not_user_messages():
 def test_compaction_noop_when_too_few_assistant_turns():
     """If the message list has ≤ K asst messages, compact returns the
     same list (no-op) — there's nothing older to summarize."""
-    from ziva_runtime.session.compaction import compact_messages
+    from ziva.session.compaction import compact_messages
 
     class MockAdapter:
         async def chat(self, messages, model, system_prompt=None, tools=None):
@@ -204,7 +204,7 @@ def test_compaction_keeps_exactly_k_assistant_cycles_in_chain():
     """The tight-window guarantee: even if a single user turn produced
     many cycles, K=3 asst turns keeps exactly 3 cycles (not 3 user
     messages worth). The user prompt + earlier cycles go into the summary."""
-    from ziva_runtime.session.compaction import compact_messages
+    from ziva.session.compaction import compact_messages
 
     class MockAdapter:
         async def chat(self, messages, model, system_prompt=None, tools=None):
@@ -248,7 +248,7 @@ def test_compose_post_compact_on_disk_first_compact():
     """On the first compact, the on-disk layout after compact is
     [preserved_old, summary, ...to_keep] where preserved_old is everything
     before the K-th-from-last asst message in the (no-summary) on-disk."""
-    from ziva_runtime.session.compaction import (
+    from ziva.session.compaction import (
         compose_post_compact_on_disk, find_last_summary_idx, find_cutoff_in_llm_visible,
     )
 
@@ -304,7 +304,7 @@ def test_compose_post_compact_on_disk_second_compact():
     preserved_old alongside the original messages. New summary is
     inserted right before the new to_keep, leaving the older summary +
     intermediate messages intact."""
-    from ziva_runtime.session.compaction import (
+    from ziva.session.compaction import (
         compose_post_compact_on_disk, find_last_summary_idx, find_cutoff_in_llm_visible,
     )
 
@@ -368,7 +368,7 @@ def test_compose_post_compact_on_disk_second_compact():
 def test_compose_post_compact_on_disk_noop_when_too_few_assistant_turns():
     """If find_cutoff_in_llm_visible returns -1 (no split possible), the
     helper should just return current_on_disk + new_working as-is (no split)."""
-    from ziva_runtime.session.compaction import (
+    from ziva.session.compaction import (
         compose_post_compact_on_disk, find_last_summary_idx, find_cutoff_in_llm_visible,
     )
 

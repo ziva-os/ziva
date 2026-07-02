@@ -2,8 +2,8 @@ import asyncio
 import io
 import sys
 from pathlib import Path
-from ziva_runtime.runtime import Runtime
-from ziva_runtime.shared_types import ChatMessage, ChatResult
+from ziva.runtime import Runtime
+from ziva.shared_types import ChatMessage, ChatResult
 
 
 class FakeAdapter:
@@ -46,7 +46,7 @@ def _run_repl_commands(commands, approval="full-auto"):
 
 
 def _repl_loop_direct(runtime, approval_policy):
-    from ziva_runtime.app.cli import _repl_loop
+    from ziva.app.cli import _repl_loop
     return _repl_loop(runtime, approval_policy)
 
 
@@ -99,7 +99,7 @@ def test_slash_unknown():
 
 
 def test_repl_commands_parse():
-    from ziva_runtime.app.cli import build_parser
+    from ziva.app.cli import build_parser
     parser = build_parser()
     args = parser.parse_args(["repl", "--workspace", ".", "--approval", "full-auto"])
     assert args.command == "repl"
@@ -107,7 +107,7 @@ def test_repl_commands_parse():
 
 
 def test_run_with_events_streams_output():
-    from ziva_runtime.app.cli import _run_with_events
+    from ziva.app.cli import _run_with_events
 
     captured = io.StringIO()
     original_stdout = sys.stdout
@@ -127,7 +127,7 @@ def test_run_with_events_streams_output():
 
 
 def test_repl_quit():
-    from ziva_runtime.app.cli import _repl_loop
+    from ziva.app.cli import _repl_loop
 
     async def _go():
         root = Path(__file__).resolve().parents[1]
@@ -150,7 +150,7 @@ def test_repl_quit():
 
 
 def test_run_no_stream_flag():
-    from ziva_runtime.app.cli import build_parser
+    from ziva.app.cli import build_parser
     parser = build_parser()
     args = parser.parse_args(["run", "--no-stream", "hello"])
     assert args.no_stream is True

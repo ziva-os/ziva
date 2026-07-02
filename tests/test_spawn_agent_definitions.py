@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from plugins.tools.spawn_agent.impl import SpawnAgentTool
-from ziva_runtime.shared_types import RuntimeContext, ToolResult
+from ziva.shared_types import RuntimeContext, ToolResult
 
 
 def _make_runtime(agents=None):
@@ -28,7 +28,7 @@ def _make_ctx(runtime):
 def _no_disk(monkeypatch):
     # spawn_agent now creates an isolated child session on disk; stub it out
     # so these unit tests don't touch the filesystem.
-    from ziva_runtime.storage import file_storage
+    from ziva.storage import file_storage
     monkeypatch.setattr(
         file_storage.FileStorage,
         "create_session",

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from ziva_runtime.runtime import (
+from ziva.runtime import (
     _create_adapter,
     _reset_adapter_registry,
     _resolve_capabilities,
@@ -74,7 +74,7 @@ def test_anthropic_api_type_routes_to_anthropic_adapter():
     cfg = _config()
     cfg["providers"][0]["api_type"] = "anthropic"
     adapter = _create_adapter(cfg)
-    from ziva_runtime.adapters.anthropic.provider import AnthropicChatAdapter
+    from ziva.adapters.anthropic.provider import AnthropicChatAdapter
     assert isinstance(adapter, AnthropicChatAdapter)
 
 

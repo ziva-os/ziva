@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from ziva_runtime.plugins.manifest import load_manifest
+from ziva.plugins.manifest import load_manifest
 
 
 def test_manifest_invalid_type(tmp_path: Path):

@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from ziva_runtime.capabilities.registries import CapabilityRegistry
-from ziva_runtime.plugins.loader import load_plugins
+from ziva.capabilities.registries import CapabilityRegistry
+from ziva.plugins.loader import load_plugins
 
 
 def test_plugin_loading():

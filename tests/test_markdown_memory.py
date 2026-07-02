@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 from plugins.memory.markdown.impl import MarkdownMemoryStore
-from ziva_runtime.shared_types import RuntimeContext
+from ziva.shared_types import RuntimeContext
 
 def test_put_and_search(tmp_path):
     store = MarkdownMemoryStore(str(tmp_path))

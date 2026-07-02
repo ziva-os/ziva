@@ -1,7 +1,7 @@
 import asyncio
 
 from plugins.tools.read_file.impl import ReadFileTool
-from ziva_runtime.shared_types import RuntimeContext
+from ziva.shared_types import RuntimeContext
 
 
 def test_read_existing_file(tmp_path):

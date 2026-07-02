@@ -1,7 +1,7 @@
 import asyncio
 
 from plugins.tools.write_file.impl import WriteFileTool
-from ziva_runtime.shared_types import RuntimeContext
+from ziva.shared_types import RuntimeContext
 
 
 def test_write_new_file(tmp_path):

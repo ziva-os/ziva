@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict
 
-from ziva_runtime.shared_types import ToolResult
+from ziva.shared_types import ToolResult
 
 
 class GlobTool:

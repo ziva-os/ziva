@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Dict
 
-from ziva_runtime.shared_types import RuntimeContext, ToolResult
+from ziva.shared_types import RuntimeContext, ToolResult
 
 
 class GetAgentResultTool:

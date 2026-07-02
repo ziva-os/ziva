@@ -7,7 +7,7 @@ Verifies that:
 """
 from __future__ import annotations
 
-from ziva_runtime.shared_types import ChatMessage, StreamDelta
+from ziva.shared_types import ChatMessage, StreamDelta
 
 
 def test_stream_delta_has_reasoning_content_field():

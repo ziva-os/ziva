@@ -6,11 +6,11 @@ from unittest.mock import patch
 from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase, unittest_run_loop
 
-from ziva_runtime import runtime as runtime_mod
-from ziva_runtime.runtime import Runtime
-from ziva_runtime.shared_types import ChatMessage, ChatResult, StreamDelta
-from ziva_runtime.storage.file_storage import FileStorage
-from ziva_runtime.transports.desktop_api.server import DesktopAPIServer
+from ziva import runtime as runtime_mod
+from ziva.runtime import Runtime
+from ziva.shared_types import ChatMessage, ChatResult, StreamDelta
+from ziva.storage.file_storage import FileStorage
+from ziva.transports.desktop_api.server import DesktopAPIServer
 
 
 class FakeAdapter:

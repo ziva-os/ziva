@@ -3,12 +3,12 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from ziva_runtime.capabilities.registries import CapabilityRegistry
-from ziva_runtime.config.loader import load_effective_config
-from ziva_runtime.plugins.loader import load_plugins
-from ziva_runtime.protocols.acp import ACPServer
-from ziva_runtime.runtime import Runtime
-from ziva_runtime.shared_types import ChatResult, ChatMessage
+from ziva.capabilities.registries import CapabilityRegistry
+from ziva.config.loader import load_effective_config
+from ziva.plugins.loader import load_plugins
+from ziva.protocols.acp import ACPServer
+from ziva.runtime import Runtime
+from ziva.shared_types import ChatResult, ChatMessage
 
 
 class FakeAdapter:

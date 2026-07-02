@@ -15,10 +15,10 @@ import asyncio
 import json
 from pathlib import Path
 
-from ziva_runtime import runtime as runtime_module
-from ziva_runtime.runtime import Runtime
-from ziva_runtime.shared_types import ChatMessage, ChatResult, StreamDelta
-from ziva_runtime.storage.file_storage import FileStorage
+from ziva import runtime as runtime_module
+from ziva.runtime import Runtime
+from ziva.shared_types import ChatMessage, ChatResult, StreamDelta
+from ziva.storage.file_storage import FileStorage
 
 
 class StubAdapter:
@@ -245,7 +245,7 @@ def test_session_switches_openai_to_anthropic_end_to_end(tmp_path: Path):
 
     def fake_create(config):
         # Record the provider the adapter would be built for.
-        from ziva_runtime.runtime import _find_provider_for_model
+        from ziva.runtime import _find_provider_for_model
         provider = _find_provider_for_model(config)
         model_name = config.get("model", {}).get("name", "")
         built_with.append((model_name, provider.get("name") if provider else None))
@@ -311,7 +311,7 @@ def test_credentials_follow_model_name_via_provider_lookup(tmp_path: Path):
     observed_keys: list = []
 
     def fake_create(config):
-        from ziva_runtime.runtime import _find_provider_for_model
+        from ziva.runtime import _find_provider_for_model
         provider = _find_provider_for_model(config)
         key = (
             provider.get("api_type"),
@@ -363,7 +363,7 @@ def test_model_name_lookup_is_case_insensitive(tmp_path: Path):
     models" even though the model is configured. Verify the lookup
     matches across the two casings.
     """
-    from ziva_runtime.runtime import _find_provider_for_model
+    from ziva.runtime import _find_provider_for_model
 
     cfg = {
         "model": {"name": "Kimi-K2.6"},  # UI / session-stored case

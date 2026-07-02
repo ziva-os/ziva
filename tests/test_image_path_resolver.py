@@ -31,8 +31,8 @@ import os
 import tempfile
 from pathlib import Path
 
-from ziva_runtime.runtime import Runtime, _resolve_image_paths
-from ziva_runtime.shared_types import ChatMessage
+from ziva.runtime import Runtime, _resolve_image_paths
+from ziva.shared_types import ChatMessage
 
 
 def test_path_to_data_url():

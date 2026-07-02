@@ -1,6 +1,6 @@
 import asyncio
 from plugins.tools.apply_patch.impl import ApplyPatchTool
-from ziva_runtime.shared_types import RuntimeContext
+from ziva.shared_types import RuntimeContext
 
 
 def test_add_file(tmp_path):

@@ -4,7 +4,7 @@ import asyncio
 import uuid
 from typing import Any, Dict
 
-from ziva_runtime.shared_types import ChatMessage, RuntimeContext, SessionState, ToolResult
+from ziva.shared_types import ChatMessage, RuntimeContext, SessionState, ToolResult
 
 BLOCKED_TOOLS = {"spawn_agent", "get_agent_result", "cancel_agent"}
 
@@ -127,7 +127,7 @@ class SpawnAgentTool:
         # The parent keeps only this spawn_agent tool_call + a result summary.
         child_sid = uuid.uuid4().hex
         pid = runtime._resolve_project_id(ctx.session_id)
-        from ziva_runtime.storage.file_storage import FileStorage
+        from ziva.storage.file_storage import FileStorage
         import time as _time
         _now = int(_time.time() * 1000)
         FileStorage.create_session(pid, {
@@ -336,7 +336,7 @@ class SpawnAgentTool:
                 # needing to read the child session.
                 _spawn_tc_id = child_ctx.metadata.get("_spawn_tool_call_id")
                 if _spawn_tc_id:
-                    from ziva_runtime.storage.file_storage import FileStorage as _FS
+                    from ziva.storage.file_storage import FileStorage as _FS
                     _summary = result_content
                     try:
                         _FS.update_message(

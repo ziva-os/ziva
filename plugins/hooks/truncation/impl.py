@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict
 
-from ziva_runtime.shared_types import RuntimeContext, ToolResult
+from ziva.shared_types import RuntimeContext, ToolResult
 
 _TOOL_LIMITS: dict[str, int] = {
     "shell": 30_000,

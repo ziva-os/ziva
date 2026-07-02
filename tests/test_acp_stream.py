@@ -1,9 +1,9 @@
 import asyncio
 from pathlib import Path
 
-from ziva_runtime.protocols.acp import ACPServer
-from ziva_runtime.runtime import Runtime
-from ziva_runtime.shared_types import ChatResult, ToolCallItem
+from ziva.protocols.acp import ACPServer
+from ziva.runtime import Runtime
+from ziva.shared_types import ChatResult, ToolCallItem
 
 
 class LoopAdapter:

@@ -3,9 +3,9 @@ from pathlib import Path
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from ziva_runtime.runtime import Runtime
-from ziva_runtime.shared_types import ChatMessage, ChatResult, StreamDelta
-from ziva_runtime.transports.desktop_api.server import DesktopAPIServer
+from ziva.runtime import Runtime
+from ziva.shared_types import ChatMessage, ChatResult, StreamDelta
+from ziva.transports.desktop_api.server import DesktopAPIServer
 
 
 class SlowAdapter:
@@ -35,7 +35,7 @@ def test_switch_session_does_not_kill_background():
         await client.start_server()
 
         # Monkey-patch _create_adapter to always return our test adapter
-        from ziva_runtime import runtime as runtime_module
+        from ziva import runtime as runtime_module
         runtime_module._create_adapter = lambda config: adapter
 
         try:

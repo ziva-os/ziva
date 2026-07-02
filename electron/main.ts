@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, webContents, session } from "electron";
+import { app, BrowserWindow, ipcMain, webContents, session, shell } from "electron";
 import * as path from "path";
 import { spawn, ChildProcess } from "child_process";
 import { CdpBridge } from "./cdp-bridge";
@@ -6,13 +6,11 @@ import { CdpBridge } from "./cdp-bridge";
 let mainWindow: BrowserWindow | null = null;
 let pythonProcess: ChildProcess | null = null;
 let cdpBridge: CdpBridge | null = null;
-let chromeProcess: ChildProcess | null = null;
 const PORT = 4097;
-// CDP bridge (for the Agent Browser <webview>) — moved off 9222 so the real
-// Chrome below can use 9222. Real Chrome = native speed, no Electron
-// debugger overhead.
+// CDP bridge exposing the in-app browser-shell <webview> tabs as CDP targets
+// for chrome-devtools-mcp (the agent drives them here). The Ziva tab is plain
+// renderer DOM and is intentionally NOT exposed.
 const CDP_PORT = Number(process.env.ZIVA_CDP_PORT || 9223);
-const CHROME_DEBUG_PORT = 9222;
 // Dedicated session partition for the Agent Browser <webview>. This keeps
 // browser cookies/cache isolated from the main Ziva UI and lets us set a
 // system proxy explicitly on the session used by the webview.
@@ -72,7 +70,7 @@ function getBackendCommand(): { cmd: string; args: string[]; env: NodeJS.Process
     const projectRoot = path.resolve(__dirname, "..");
     return {
       cmd: "python3",
-      args: ["-m", "ziva_runtime", ...baseArgs],
+      args: ["-m", "ziva", ...baseArgs],
       env: { ...env, PYTHONPATH: projectRoot },
     };
   }
@@ -87,27 +85,10 @@ function getBackendCommand(): { cmd: string; args: string[]; env: NodeJS.Process
   };
 }
 
-function spawnDebugChrome(): void {
-  const fs = require("fs");
-  const candidates = [
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/Applications/Chromium.app/Contents/MacOS/Chromium",
-  ];
-  const exe = candidates.find((p) => { try { return fs.existsSync(p); } catch { return false; } });
-  if (!exe) {
-    console.error("[chrome] Google Chrome not found — chrome-devtools-mcp will start its own");
-    return;
-  }
-  const profileDir = path.join(app.getPath("home"), ".ziva", "chrome-debug-profile");
-  chromeProcess = spawn(exe, [
-    `--remote-debugging-port=${CHROME_DEBUG_PORT}`,
-    `--user-data-dir=${profileDir}`,
-    "--no-first-run",
-    "--no-default-browser-check",
-  ], { detached: true, stdio: "ignore" });
-  chromeProcess.unref();
-  console.log(`[chrome] real Chrome started on port ${CHROME_DEBUG_PORT}`);
-}
+// Note: the app no longer spawns a separate "debug" Chrome. The browser is
+// fused into the app itself — web tabs are in-app <webview>s exposed to
+// chrome-devtools-mcp via the CDP bridge on CDP_PORT (9223). Point
+// chrome-devtools-mcp at --browser-url=http://127.0.0.1:9223.
 
 function startPythonBackend(): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -269,6 +250,14 @@ ipcMain.handle("get-backend-url", () => `http://127.0.0.1:${PORT}`);
 
 ipcMain.handle("is-electron", () => true);
 
+// Open a URL in the user's external (system default) browser. The in-app
+// embedded browser panel was removed, so links the user clicks now delegate
+// to the OS browser via shell.openExternal rather than an in-app <webview>.
+ipcMain.handle("open-external", (_event, url: string) => {
+  if (typeof url !== "string" || !/^https?:\/\//i.test(url)) return;
+  shell.openExternal(url);
+});
+
 ipcMain.handle("get-cdp-port", () => cdpBridge?.port ?? null);
 
 // Absolute path of the webview preload script. The renderer sets this
@@ -326,7 +315,6 @@ app.whenReady().then(async () => {
     console.error("[proxy] failed to set system proxy on browser session:", err);
   }
 
-  spawnDebugChrome();
   createWindow();  // show the loading window immediately (not a blank screen)
   try {
     await startPythonBackend();
@@ -357,10 +345,6 @@ app.on("before-quit", () => {
   if (pythonProcess) {
     pythonProcess.kill("SIGTERM");
     pythonProcess = null;
-  }
-  if (chromeProcess) {
-    try { chromeProcess.kill("SIGTERM"); } catch {}
-    chromeProcess = null;
   }
   if (cdpBridge) {
     cdpBridge.stop();

@@ -14,6 +14,10 @@ ipcRenderer.on("ziva:open-link-in-panel", (_event, url: string) => {
 contextBridge.exposeInMainWorld("electronAPI", {
   getBackendUrl: () => ipcRenderer.invoke("get-backend-url"),
   isElectron: () => ipcRenderer.invoke("is-electron"),
+  // Open a URL in the user's external (system default) browser. Used now that
+  // the in-app embedded browser panel has been removed — clicked links go to
+  // the user's browser instead of an in-app <webview>.
+  openExternal: (url: string) => ipcRenderer.invoke("open-external", url),
   // CDP bridge: the renderer registers the Agent Browser webview as a
   // target, and asks the main process for the port chrome-devtools-mcp
   // should be configured with.

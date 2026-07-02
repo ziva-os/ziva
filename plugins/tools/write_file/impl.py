@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 from plugins.tools._shared.diff_utils import create_diff
-from ziva_runtime.shared_types import ToolResult
+from ziva.shared_types import ToolResult
 
 
 class WriteFileTool:

@@ -50,13 +50,13 @@ ACP errors include JSON-RPC error + classification:
 ## Commands
 ```bash
 # single prompt
-PYTHONPATH=src python -m ziva_runtime.app.cli run "hello"
+PYTHONPATH=src python -m ziva.app.cli run "hello"
 
 # ACP server over stdio
-PYTHONPATH=src python -m ziva_runtime.app.cli acp serve
+PYTHONPATH=src python -m ziva.app.cli acp serve
 
 # desktop backend API (HTTP + SSE + minimal UI)
-PYTHONPATH=src python -m ziva_runtime.app.cli desktop serve --host 127.0.0.1 --port 4097
+PYTHONPATH=src python -m ziva.app.cli desktop serve --host 127.0.0.1 --port 4097
 # then open http://127.0.0.1:4097/
 ```
 

@@ -2,7 +2,7 @@ import os
 import re
 from pathlib import Path
 
-from ziva_runtime.shared_types import ToolResult
+from ziva.shared_types import ToolResult
 
 
 def levenshtein(a: str, b: str) -> int:

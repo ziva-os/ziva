@@ -4,7 +4,7 @@ import hashlib
 import json
 from typing import Any, Dict
 
-from ziva_runtime.shared_types import RuntimeContext, ToolResult
+from ziva.shared_types import RuntimeContext, ToolResult
 
 _THRESHOLD = 3
 

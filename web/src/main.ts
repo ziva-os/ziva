@@ -2,6 +2,7 @@ import "./styles/base.css";
 import "./styles/theme-dark.css";
 import "./styles/theme-light.css";
 import "./styles/components.css";
+import "./styles/browser-shell.css";
 import "@xterm/xterm/css/xterm.css";
 import * as api from "./api";
 import { SSEPool } from "./sse";
@@ -11,37 +12,9 @@ import type { AppState, PendingAttachment, RightPanelTab } from "./state";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import Prism from "prismjs";
-
-// ---- Helpers ----
-function esc(s: string): string {
-  const d = document.createElement("span");
-  d.textContent = s;
-  return d.innerHTML;
-}
-
-// Drag a vertical resizer to resize a pane's width. `side` = which side the
-// target pane sits on relative to the handle: a "left" pane grows when the
-// handle is dragged right, a "right" pane grows when dragged left. Width is
-// not persisted (per product decision — resets on reopen).
-function bindResizer(handle: HTMLElement, target: HTMLElement, side: "left" | "right", min = 120, max = 600): void {
-  handle.addEventListener("mousedown", (e: MouseEvent) => {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startW = target.offsetWidth;
-    const dir = side === "left" ? 1 : -1;
-    target.style.maxWidth = "none"; // clear any CSS max-width cap so drag wins
-    const onMove = (ev: MouseEvent) => {
-      const w = Math.max(min, Math.min(max, startW + dir * (ev.clientX - startX)));
-      target.style.width = w + "px";
-    };
-    const onUp = () => {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    };
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  });
-}
+import { $, esc, bindResizer } from "./dom";
+import { openLinkInBrowser, initMessageLinkInterceptor } from "./links";
+import { initBrowserShell, openInBrowserTab } from "./browser-shell";
 
 // Strip <think>...</think> blocks (and any unclosed <think>…EOF) from
 // automation outputs. The model's chain-of-thought is internal noise;
@@ -77,140 +50,6 @@ function initLightbox() {
   });
 }
 
-// Intercept clicks on links inside messages and open them in the right-panel
-// browser instead of navigating the main window or opening a new tab.
-function initMessageLinkInterceptor() {
-  document.addEventListener("click", (e) => {
-    const target = e.target as HTMLElement;
-    const anchor = target.closest("a") as HTMLAnchorElement | null;
-    if (!anchor) return;
-    // Only intercept links inside message content areas
-    if (!anchor.closest(".msg-inner, .compact-dropped, .tool-card-body, .panel-content")) return;
-    const href = anchor.getAttribute("href");
-    if (!href) return;
-    // Skip anchor-only links, mailto, tel, javascript
-    if (href.startsWith("#") || href.startsWith("mailto:") || href.startsWith("tel:") || href.startsWith("javascript:")) return;
-    // Skip skill file links (handled by interceptSkillLinks)
-    if (anchor.classList.contains("skill-file-link")) return;
-    // For absolute http(s) links, open in right-panel browser
-    if (href.startsWith("http://") || href.startsWith("https://")) {
-      e.preventDefault();
-      e.stopPropagation();
-      openLinkInBrowser(href);
-      return;
-    }
-    // For relative links, resolve against current workspace if possible
-    if (!href.startsWith("/")) {
-      e.preventDefault();
-      e.stopPropagation();
-      // Try to resolve relative paths - for now skip as they need workspace context
-      console.log("Relative link clicked:", href);
-    }
-  });
-}
-
-// ---- Webview link bridge ----
-// Wires the Agent Browser <webview> to the renderer's `openLinkInBrowser`.
-// There are two paths that funnel through it:
-//   1. <a> clicks inside the webview (normal navigation). Intercepted by
-//      the webview preload (electron/browser-preload.ts) via
-//      ipcRenderer.sendToHost → webview element's `ipc-message` event
-//      (wired in renderBrowserTab below).
-//   2. target="_blank" / window.open. Intercepted by the main process
-//      setWindowOpenHandler → webContents.send("ziva:open-link-in-panel")
-//      → electronAPI.setOpenLinkInPanelHandler (set here).
-// The webview preload path is fetched once at startup and cached so
-// renderBrowserTab can set the <webview>.preload attribute synchronously
-// (Electron captures preload at attach time; setting it later is a no-op).
-let _browserPreloadPath: string | null = null;
-function initWebviewLinkBridge() {
-  const api = (window as any).electronAPI;
-  if (!api) return;
-  // browserPreloadPath is exposed synchronously by preload.ts, so the
-  // first tab open has no preload race. The async getBrowserPreloadPath
-  // is kept as a belt-and-braces fallback in case the sync value is
-  // somehow missing (e.g. a future build layout change).
-  if (typeof api.browserPreloadPath === "string") {
-    _browserPreloadPath = api.browserPreloadPath;
-  } else if (api.getBrowserPreloadPath) {
-    api.getBrowserPreloadPath().then((p: string) => { _browserPreloadPath = p; });
-  }
-  if (api.setOpenLinkInPanelHandler) {
-    api.setOpenLinkInPanelHandler((url: string) => openLinkInBrowser(url));
-  }
-}
-
-// Register the webview with the CDP bridge as a Target so chrome-devtools-mcp
-// can drive the user-visible webview directly. Without this, the bridge's
-// page list stays empty when chrome-devtools-mcp connects, which triggers the
-// main-process onEnsurePage fallback — that fallback cold-starts a separate
-// (hidden) BrowserWindow and operates that one, leaving the visible webview
-// as dead weight. Registering on `did-attach` (not appendChild) is required:
-// getWebContentsId() is only valid after the guest page is attached, and
-// passing a stale id to the main process makes it return null.
-function registerWebviewWithCdp(frame: any) {
-  frame.addEventListener(
-    "did-attach",
-    async () => {
-      try {
-        const wcId = frame.getWebContentsId?.();
-        if (typeof wcId !== "number") return;
-        const targetId: string | null = await (window as any).electronAPI.registerCdpPage(wcId);
-        if (!targetId) return;
-        frame._cdpTargetId = targetId;
-        // Tidy up on destroy so the bridge doesn't carry stale entries
-        // after the tab is closed.
-        frame.addEventListener(
-          "destroyed",
-          () => {
-            (window as any).electronAPI.unregisterCdpPage(targetId).catch(() => {});
-          },
-          { once: true },
-        );
-      } catch (err) {
-        console.error("[browser] registerWebviewWithCdp failed:", err);
-      }
-    },
-    { once: true },
-  );
-}
-
-function openLinkInBrowser(url: string) {
-  // Check if a browser tab already exists
-  const { rightPanelTabs } = store.get();
-  const existingBrowser = rightPanelTabs.find(t => t.type === "browser");
-  if (existingBrowser) {
-    // Activate existing browser tab and navigate
-    store.set({ activeRightTabId: existingBrowser.id, rightPanelOpen: true });
-    $("rightPanel").classList.add("show");
-    $("btnOpenRightPanel")?.classList.add("panel-open");
-    renderTabBar();
-    activateTab(existingBrowser.id);
-    // Navigate the existing browser to the new URL. The webview is
-    // always created synchronously by renderBrowserTab, so the frame
-    // is in the DOM by the time activateTab() returns.
-    const rp = $("rightPanel");
-    const content = rp.querySelector(`[data-tab-id="${existingBrowser.id}"]`) as HTMLElement;
-    if (content) {
-      const urlInput = content.querySelector(".browser-url-input") as HTMLInputElement;
-      const frame = content.querySelector("webview, iframe") as any;
-      if (urlInput && frame) {
-        urlInput.value = url;
-        const isElectron = !!(window as any).electronAPI;
-        if (isElectron) { if (frame) frame.loadURL(url); }
-        else { frame.src = "/api/proxy?url=" + encodeURIComponent(url); }
-      }
-    }
-  } else {
-    // No browser tab yet — open one with the URL as its initial payload.
-    // renderBrowserTab loads the URL via `did-attach` (the webContents
-    // isn't ready for loadURL any earlier than that — calling it
-    // synchronously after appendChild silently no-ops). Doing it inside
-    // renderBrowserTab avoids the old rAF/setTimeout race that lost
-    // navigations whenever the preload-path IPC roundtrip took >200ms.
-    openRightPanel("browser", undefined, url);
-  }
-}
 
 function previewText(content: unknown): string {
   if (typeof content === "string") return content.slice(0, 60);
@@ -224,8 +63,6 @@ function previewText(content: unknown): string {
   }
   return String(content).slice(0, 60);
 }
-
-const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 // ---- State ----
 const store = new Store<AppState>({
@@ -505,7 +342,6 @@ const panelTypes = [
   { type: "review", label: "Code Review", icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>' },
   { type: "plan", label: "Plan", icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>' },
   { type: "terminal", label: "Terminal", icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>' },
-  { type: "browser", label: "Browser", icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>' },
   { type: "files", label: "Files", icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>' },
 ] as const;
 
@@ -774,7 +610,6 @@ function renderTabContent(tab: RightPanelTab, container: HTMLElement) {
     case "review": renderReviewTab(container); break;
     case "plan": renderPlanTab(container); break;
     case "terminal": renderTerminalTab(container); break;
-    case "browser": renderBrowserTab(container, tab.initialUrl); break;
     case "files": renderFilesTab(container); break;
   }
 }
@@ -899,160 +734,6 @@ function renderTerminalTab(container: HTMLElement) {
       <div id="terminalContainer_${tabId}" class="terminal-container"></div>
     </div>`;
   initTerminal(tabId);
-}
-
-function renderBrowserTab(container: HTMLElement, initialUrl?: string) {
-  const isElectron = !!(window as any).electronAPI;
-  container.innerHTML = `
-    <div class="panel-content-header browser-header-bar">
-      <button class="browser-nav-btn" data-action="back" title="Back">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
-      </button>
-      <button class="browser-nav-btn" data-action="forward" title="Forward">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
-      </button>
-      <button class="browser-nav-btn" data-action="reload" title="Reload">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-      </button>
-      <input type="text" class="browser-url-input" value="" placeholder="Enter URL..." />
-      <button class="browser-go-btn">Go</button>
-    </div>
-    <div class="panel-content-body"></div>`;
-  // Create the frame programmatically so we can set the <webview>.preload
-  // attribute BEFORE the element is attached to the DOM. Electron captures
-  // the preload value at attach time — setting it later is a no-op, so
-  // we have to know the path synchronously when the element is created.
-  const body = container.querySelector(".panel-content-body") as HTMLElement;
-  let frame: any;
-  if (isElectron) {
-    frame = document.createElement("webview");
-    frame.className = "browser-frame";
-    frame.setAttribute("allowpopups", "");
-    // Use the dedicated browser partition so the webview gets the session
-    // with explicit system-proxy settings (see electron/main.ts).
-    const partition = (window as any).electronAPI?.browserPartition || "persist:ziva-browser";
-    frame.setAttribute("partition", partition);
-    if (_browserPreloadPath) {
-      frame.setAttribute("preload", _browserPreloadPath);
-      frame.setAttribute("src", "about:blank");
-      body.appendChild(frame);
-    } else {
-      // Preload path not ready yet (first browser tab opened before
-      // initWebviewLinkBridge's IPC roundtrip completed). Fetch, then
-      // attach — we cannot appendChild first or the empty preload value
-      // would be captured and the very first link click would be missed.
-      (window as any).electronAPI.getBrowserPreloadPath().then((p: string) => {
-        _browserPreloadPath = p;
-        frame.setAttribute("preload", p);
-        frame.setAttribute("src", "about:blank");
-        body.appendChild(frame);
-        registerWebviewWithCdp(frame);
-      });
-    }
-    // Common path: register synchronously so chrome-devtools-mcp sees this
-    // very webview as a Target the moment the tab is open. Without this,
-    // the agent's first page-target lookup hits an empty list and triggers
-    // the main-process onEnsurePage fallback, which cold-starts a separate
-    // (hidden) BrowserWindow and operates that one — leaving the user-visible
-    // webview as a decoration. The async-preload branch above calls the same
-    // helper right after appendChild for the same reason.
-    if (_browserPreloadPath) registerWebviewWithCdp(frame);
-    // Bridge from the webview preload: <a> clicks are forwarded via
-    // ipcRenderer.sendToHost and arrive on the host's webview element
-    // as an `ipc-message` event. Funnel them into the same handler
-    // used by target=_blank / window.open (via setOpenLinkInPanelHandler).
-    frame.addEventListener("ipc-message", (e: any) => {
-      if (e.channel === "ziva:open-link-in-panel" && e.args?.[0]) {
-        openLinkInBrowser(e.args[0]);
-      }
-    });
-    // If we have an initial URL, load it via did-attach. Calling
-    // loadURL synchronously after appendChild silently no-ops because
-    // the webContents isn't ready until the `did-attach` event fires —
-    // this is what made the old rAF/setTimeout dance unreliable on slow
-    // machines (the 200ms hard fallback wasn't always enough).
-    if (initialUrl) {
-      const urlInput0 = container.querySelector(".browser-url-input") as HTMLInputElement;
-      frame.addEventListener("did-attach", () => {
-        frame.loadURL(initialUrl);
-        if (urlInput0) urlInput0.value = initialUrl;
-      }, { once: true });
-    }
-  } else {
-    frame = document.createElement("iframe");
-    frame.className = "browser-frame";
-    frame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms allow-popups");
-    if (initialUrl) {
-      frame.src = "/api/proxy?url=" + encodeURIComponent(initialUrl);
-    } else {
-      frame.src = "about:blank";
-    }
-    body.appendChild(frame);
-  }
-  const urlInput = container.querySelector(".browser-url-input") as HTMLInputElement;
-  const navigate = () => {
-    let url = urlInput.value.trim();
-    if (!url) return;
-    if (!/^https?:\/\//i.test(url)) url = "https://" + url;
-    urlInput.value = url;
-    if (isElectron) { if (frame) frame.loadURL(url); }
-    else { frame.src = "/api/proxy?url=" + encodeURIComponent(url); }
-  };
-  (container.querySelector(".browser-go-btn") as HTMLElement).onclick = navigate;
-  urlInput.addEventListener("keydown", (e: KeyboardEvent) => { if (e.key === "Enter") navigate(); });
-  if (isElectron) {
-    frame?.addEventListener("did-navigate", (e: any) => { urlInput.value = e.url; });
-    frame?.addEventListener("did-navigate-in-page", (e: any) => { urlInput.value = e.url; });
-    // target=_blank / window.open are forwarded by the main process
-    // (see electron/main.ts setWindowOpenHandler) and reach the renderer
-    // via electronAPI.setOpenLinkInPanelHandler. The local 'new-window'
-    // fallback is intentionally omitted — the main process is the
-    // reliable path and keeping a duplicate here risks double-handling
-    // and races with the IPC bridge.
-    (container.querySelector('[data-action="back"]') as HTMLElement).onclick = () => { try { frame?.goBack(); } catch {} };
-    (container.querySelector('[data-action="forward"]') as HTMLElement).onclick = () => { try { frame?.goForward(); } catch {} };
-    (container.querySelector('[data-action="reload"]') as HTMLElement).onclick = () => { try { frame?.reload(); } catch {} };
-    // Right-click on selected text → send to chat input with context
-    frame?.addEventListener("context-menu", (e: any) => {
-      const selected = (e.selectionText || "").trim();
-      if (!selected) return;
-      const menu = document.createElement("div");
-      menu.className = "panel-dropdown add-tab-menu";
-      menu.style.position = "fixed";
-      const rect = { left: e.params?.x || 100, top: e.params?.y || 100 };
-      // Use screen coordinates from the event
-      menu.style.top = Math.max(4, rect.top) + "px";
-      menu.style.left = Math.max(4, rect.left) + "px";
-      const item = document.createElement("div");
-      item.className = "panel-dropdown-item";
-      item.textContent = selected.length > 50 ? `Send to chat: "${selected.slice(0, 50)}..."` : `Send to chat: "${selected}"`;
-      item.onclick = (ev) => {
-        ev.stopPropagation();
-        menu.remove();
-        const pageUrl = urlInput.value || "";
-        const title = frame?.getTitle?.() || "";
-        let snippet = `[Browser selection]\nURL: ${pageUrl}`;
-        if (title) snippet += `\nTitle: ${title}`;
-        snippet += `\n\n${selected}`;
-        const input = $("chatInput") as HTMLTextAreaElement;
-        if (input) {
-          input.value = snippet;
-          input.focus();
-          input.dispatchEvent(new Event("input"));
-        }
-      };
-      menu.appendChild(item);
-      document.body.appendChild(menu);
-      const closeMenu = (ev: MouseEvent) => {
-        if (!menu.contains(ev.target as Node)) { menu.remove(); document.removeEventListener("click", closeMenu, true); }
-      };
-      setTimeout(() => document.addEventListener("click", closeMenu, true), 10);
-    });
-  } else {
-    (container.querySelector('[data-action="back"]') as HTMLElement).onclick = () => { try { frame.contentWindow?.history.back(); } catch {} };
-    (container.querySelector('[data-action="forward"]') as HTMLElement).onclick = () => { try { frame.contentWindow?.history.forward(); } catch {} };
-    (container.querySelector('[data-action="reload"]') as HTMLElement).onclick = () => { try { frame.contentWindow?.location.reload(); } catch { frame.src = frame.src; } };
-  }
 }
 
 function renderFilesTab(container: HTMLElement) {
@@ -1370,6 +1051,7 @@ function init() {
       </aside>
     </div>`;
 
+  initBrowserShell();
   bindEvents();
   refreshStatus();
   refreshMCPStatus();
@@ -6920,7 +6602,6 @@ async function openSettingsModal() {
 }
 
 // ---- Bootstrap ----
-initWebviewLinkBridge();
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", init);
 } else {
