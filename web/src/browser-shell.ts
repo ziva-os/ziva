@@ -88,6 +88,33 @@ export function initBrowserShell(): void {
   if (ea?.setOpenLinkInPanelHandler) {
     ea.setOpenLinkInPanelHandler((url: string) => openInBrowserTab(url));
   }
+
+  // Browser-style keyboard shortcuts. Cmd/Ctrl+T new tab, Cmd/Ctrl+W close
+  // active web tab (never the pinned Ziva tab), Cmd/Ctrl+L focus the URL bar,
+  // Cmd/Ctrl+1..8 switch to tab N, Cmd/Ctrl+9 last tab.
+  document.addEventListener("keydown", (e: KeyboardEvent) => {
+    const mod = e.metaKey || e.ctrlKey;
+    if (!mod) return;
+    const k = e.key.toLowerCase();
+    if (k === "t") { e.preventDefault(); createWebTab(); focusUrlBar(); }
+    else if (k === "w") { e.preventDefault(); closeTab(activeTabId); }
+    else if (k === "l") { e.preventDefault(); focusUrlBar(); }
+    else if (/^[1-9]$/.test(k)) {
+      const idx = Number(k) - 1;
+      const list = tabs;
+      const target = idx === 8 ? list[list.length - 1] : list[idx];
+      if (target) { e.preventDefault(); activateTab(target.id); }
+    }
+  });
+}
+
+function focusUrlBar(): void {
+  // Defer one tick so renderToolbar() from a just-created tab has run.
+  requestAnimationFrame(() => {
+    const input = toolbar?.querySelector(".bt-url") as HTMLInputElement | null;
+    input?.focus();
+    input?.select();
+  });
 }
 
 /** Open a URL in a web tab: reuse a tab already on that URL, else make a new one. */
@@ -112,6 +139,7 @@ function createWebTab(url?: string): void {
   if (webViews) webViews.appendChild(tab.el);
   tabs.push(tab);
   activateTab(tab.id);
+  focusUrlBar();
 }
 
 function navigateWebTab(tab: BrowserTab, url: string): void {
