@@ -19,6 +19,8 @@ import { closeAllFullpageOverlays } from "./modals";
 import { openSkillsBrowser, closeSkillViewer } from "./modals/skills";
 import { openSettingsModal, setSettingsDeps } from "./modals/settings";
 import { openAutomationsModal, closeAutomationsModal, loadAutomationsIntoModal, setAutomationsDeps } from "./modals/automations";
+import { formatRelativeTime } from "./format";
+import { refreshStatus, refreshMCPStatus, updateConnStatus, setStatusDeps } from "./status";
 
 // Strip <think>...</think> blocks (and any unclosed <think>…EOF) from
 // automation outputs. The model's chain-of-thought is internal noise;
@@ -903,20 +905,6 @@ async function loadFileContentIn(viewer: HTMLElement, path: string) {
 }
 
 // ---- Relative time formatting ----
-function formatRelativeTime(ts?: number): string {
-  if (!ts) return "";
-  const now = Date.now();
-  const diff = now - ts;
-  const mins = Math.floor(diff / 60000);
-  const hours = Math.floor(diff / 3600000);
-  const days = Math.floor(diff / 86400000);
-  if (mins < 1) return "now";
-  if (mins < 60) return `${mins}m`;
-  if (hours < 24) return `${hours}h`;
-  if (days < 7) return `${days}d`;
-  if (days < 30) return `${Math.floor(days / 7)}w`;
-  return `${Math.floor(days / 30)}mo`;
-}
 
 // ---- DOM Bootstrap — Ziva layout ----
 function init() {
@@ -925,6 +913,7 @@ function init() {
   // these at module-load would hit the temporal dead zone and crash init.
   setSettingsDeps({ refreshConfig });
   setAutomationsDeps({ store, composerTextarea, formatRelativeTime });
+  setStatusDeps({ composerApprovalSelect, openProjectPicker, openGitBranchPicker });
   initLightbox();
   initMessageLinkInterceptor();
   if ((window as any).electronAPI && navigator.platform.toLowerCase().includes("mac")) {
@@ -3987,9 +3976,6 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
   } finally { liveStreamSid = null; liveStreamTarget = null; }
 }
 
-function updateConnStatus(connected: boolean) {
-  store.set({ connected });
-}
 
 // Legacy alias — the unified composer button is driven by setComposerRunning.
 function updateSendStopButton() {
@@ -5164,46 +5150,6 @@ function getFileIconColor(path: string): string {
 }
 
 // ---- MCP Status ----
-async function refreshMCPStatus() {
-  try {
-    const status = await api.getMCPStatus();
-    if (status.servers.length > 0) {
-      ($("mcpStatus") as HTMLElement).style.display = "flex";
-      $("mcpDetail").textContent = `${status.servers.length} server${status.servers.length > 1 ? "s" : ""}, ${status.tools.length} tools`;
-    } else {
-      ($("mcpStatus") as HTMLElement).style.display = "none";
-    }
-  } catch {
-    ($("mcpStatus") as HTMLElement).style.display = "none";
-  }
-}
-
-// ---- Status ----
-async function refreshStatus() {
-  let workspace = "";
-  try {
-    const s = await api.getStatus();
-    workspace = s.workspace || "";
-    store.set({ config: { ...store.get().config, model: s.model, workspace: s.workspace, tools: s.tools, approval: s.approval_policy, contextWindow: s.context_window || 200000 } });
-    // Sync the active composer's approval dropdown to the session's policy.
-    const approvalSel = composerApprovalSelect(store.get().activeSid || "");
-    if (approvalSel) approvalSel.value = s.approval_policy;
-    const wn = (s.workspace || "ziva").split("/").pop() || "Project";
-    const workspaceNameEl = $("workspaceName") as HTMLElement;
-    if (workspaceNameEl) workspaceNameEl.textContent = wn;
-  } catch { /* server not running */ }
-  // Always attach click handlers so they work even when getStatus fails (e.g. new session)
-  const contextWorkspaceEl = $("contextWorkspace") as HTMLElement;
-  if (contextWorkspaceEl) {
-    contextWorkspaceEl.style.cursor = "pointer";
-    contextWorkspaceEl.title = workspace;
-    contextWorkspaceEl.onclick = openProjectPicker;
-  }
-  const gitBranchContextEl = $("gitBranchContext") as HTMLElement;
-  if (gitBranchContextEl) {
-    gitBranchContextEl.onclick = openGitBranchPicker;
-  }
-}
 
 // ---- Settings modal ----
 // ---- Bootstrap ----
