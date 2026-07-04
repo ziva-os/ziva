@@ -445,8 +445,9 @@ export class CdpBridge {
             },
           })
         );
-        this.respond(ws, msg.id, { targetId: page?.id || "" });
-      })();
+      }
+      this.respond(ws, msg.id, { targetId: page?.id || "" });
+    })();
       return;
     }
 
