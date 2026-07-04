@@ -409,9 +409,6 @@ export class CdpBridge {
     // registerWebviewWithCdp in the renderer.
     if (msg.method === "Target.createTarget") {
       const page = this.pages[this.pages.length - 1];
-      if (page && msg.params?.url && msg.params.url !== "about:blank") {
-        page.webContents.loadURL(msg.params.url).catch(() => {});
-      }
       this.respond(ws, msg.id, { targetId: page?.id || "" });
       return;
     }
