@@ -3179,10 +3179,16 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
     //
     // Clear the cancellingSids marker so a subsequent turn_start on
     // the same sid isn't dropped by routeSSEEvent's tail filter.
+    const isCancelling = sid ? isSidCancelling(sid) : false;
     if (sid) clearSidCancelled(sid);
     const { activeSid, runningSessions } = store.get();
     const wasRunning = sid ? !!runningSessions[sid] : false;
-    if (sid) {
+    
+    // If we were cancelling AND wasRunning is still true, it means a NEW turn 
+    // has already started (via flushComposerQueue) and we shouldn't clobber it!
+    const shouldClobber = !(isCancelling && wasRunning);
+
+    if (sid && shouldClobber) {
       const next = { ...runningSessions };
       delete next[sid];
       store.set({ runningSessions: next });
@@ -3195,9 +3201,9 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
       // invalidateLiveStreamEl and the next queued message's assistant
       // deltas flow into the cancelled turn's bubble ("first message
       // appears after the answer").
-      removeTyping();
-      invalidateLiveStreamEl();
-      if (wasRunning) {
+      if (shouldClobber) removeTyping();
+      if (shouldClobber) invalidateLiveStreamEl();
+      if (wasRunning && shouldClobber) {
         setActiveRunning(false);
         updateSendStopButton();
         if (t === "turn_failed") {
@@ -3207,11 +3213,10 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
       // Any tool cards that were still in the running state are now
       // abandoned. Mark them cancelled so they don't show "running..."
       // forever.
-      streamCtx(sid).pendingTools.forEach((card) => updateToolCardStatus(card, "cancelled"));
-      streamCtx(sid).pendingTools.clear();
-      // else: the user already replaced this turn via cancel →
-      // flushComposerQueue → createTurn. A fresh turn_start has bumped
-      // runningSessions back to true; don't tear that down.
+      if (shouldClobber) {
+        streamCtx(sid).pendingTools.forEach((card) => updateToolCardStatus(card, "cancelled"));
+        streamCtx(sid).pendingTools.clear();
+      }
     }
     // Flush queued prompts now that this session's turn has closed (cancel /
     // fail). OUTSIDE the activeSid guard (matches turn_end) so a queued
@@ -3219,7 +3224,9 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
     // invalidateLiveStreamEl above (when active), so the next message's
     // assistant stream lands in a fresh element. 200ms lets the server
     // clear turn_task before the next createTurn.
-    flushComposerQueue(sid, 200);
+    if (shouldClobber) {
+      flushComposerQueue(sid, 200);
+    }
   } else if (t === "automation_run") {
     // Refresh automation list when a run completes/fails
     const modal = $("automationModal");
