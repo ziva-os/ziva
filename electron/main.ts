@@ -274,7 +274,7 @@ function createWindow() {
   cdpBridge.onEnsurePage = async () => {
     if (!mainWindow) return;
     const oldLen = cdpBridge!.pageCount;
-    mainWindow.webContents.send("ziva:browser-new-tab", "about:blank");
+    mainWindow.webContents.send("ziva:browser-new-tab", "about:blank?t=" + Date.now());
     // Wait for the renderer to call browser-create-tab which increments pageCount
     for (let i = 0; i < 50; i++) {
       if (cdpBridge!.pageCount > oldLen) break;

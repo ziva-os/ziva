@@ -528,6 +528,16 @@ export class CdpBridge {
           innerMsg.method,
           innerMsg.params || {},
         );
+        if (innerMsg.method === "Page.getFrameTree" && result?.frameTree?.frame?.id) {
+          const target = this.pages.find((p) => p.webContents === sess.webContents);
+          if (target) target.mainFrameId = result.frameTree.frame.id;
+        } else if (innerMsg.method === "Page.navigate" && result?.loaderId) {
+          const target = this.pages.find((p) => p.webContents === sess.webContents);
+          if (target) {
+            target.latestLoaderId = result.loaderId;
+            if (result.frameId) target.mainFrameId = result.frameId;
+          }
+        }
         if (sess.flatten) {
           // Modern (Puppeteer) shape: embed inner result in the outer's
           // response. The outer's id and the inner's id are linked 1:1
