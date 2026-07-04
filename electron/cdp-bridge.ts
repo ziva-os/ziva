@@ -408,7 +408,28 @@ export class CdpBridge {
     // Browser tab so a webview gets registered via
     // registerWebviewWithCdp in the renderer.
     if (msg.method === "Target.createTarget") {
+      if (this.onEnsurePage) {
+        try {
+          this.onEnsurePage();
+        } catch {}
+      }
       const page = this.pages[this.pages.length - 1];
+      if (page && ws.readyState === WebSocket.OPEN) {
+        ws.send(
+          JSON.stringify({
+            method: "Target.targetCreated",
+            params: {
+              targetInfo: {
+                targetId: page.id,
+                type: page.type,
+                title: page.title,
+                url: page.url,
+                attached: this.hasSessionFor(page.id),
+              },
+            },
+          })
+        );
+      }
       this.respond(ws, msg.id, { targetId: page?.id || "" });
       return;
     }
