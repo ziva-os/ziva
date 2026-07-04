@@ -78,11 +78,11 @@ export function initBrowserShell(): void {
   // Main → renderer events: target=_blank in a page → new tab; nav/title sync.
   ea?.onBrowserNewTab?.((url: string) => openInBrowserTab(url));
   ea?.onBrowserNav?.((e: { id: string; url: string }) => {
-    const t = tabs.find(x => x.id === e.id);
+    const t = tabs.find(x => (x as any).mainId === e.id);
     if (t) { t.url = e.url; t.title = prettyHost(e.url); if (t.id === activeTabId) renderOmnibox(); renderTabstrip(); }
   });
   ea?.onBrowserTitle?.((e: { id: string; title: string }) => {
-    const t = tabs.find(x => x.id === e.id);
+    const t = tabs.find(x => (x as any).mainId === e.id);
     if (t && e.title) { t.title = e.title; renderTabstrip(); }
   });
 
