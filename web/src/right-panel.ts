@@ -665,7 +665,7 @@ async function loadFileContentIn(viewer: HTMLElement, path: string) {
   }
 }
 
-const FILE_MUTATING_TOOLS = new Set<string>([
+export const FILE_MUTATING_TOOLS = new Set<string>([
   "write_file",
   "edit_file",
   "shell",        // can mutate via redirection, rm, mv, sed, etc.

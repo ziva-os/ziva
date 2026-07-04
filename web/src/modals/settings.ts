@@ -2,6 +2,7 @@
 
 import * as api from "../api";
 import { esc } from "../dom";
+import { closeSettingsModal, renderSessions } from "../main";
 import { closeAllFullpageOverlays } from "../modals";
 
 // refreshConfig() lives in main.ts; injected at init to avoid a circular import.

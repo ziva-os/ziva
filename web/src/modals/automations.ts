@@ -1,6 +1,7 @@
 /** Automations modal + detail — extracted verbatim from main.ts. */
 
 import * as api from "../api";
+import { stripThinking } from "../main";
 import { esc } from "../dom";
 import { closeAllFullpageOverlays } from "../modals";
 import type { AppState, Store } from "../state";

@@ -12,6 +12,9 @@ ELECTRON_DIR="$PROJECT_ROOT/electron"
 export ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
 export ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/
 
+# 设置 chrome-devtools-mcp 默认的 CDP 端口
+export ZIVA_CDP_PORT=9222
+
 # 用专用 venv 打包，隔离全局环境——避免全局 miniconda 里的 transformers /
 # modelscope 等 ML 包被 PyInstaller 扫进来（它们的 hook 还会卡 tokenizers
 # 版本）。venv 只装 ziva 的 pyproject 依赖 + pyinstaller。

@@ -7,7 +7,7 @@ let mainWindow: BrowserWindow | null = null;
 let pythonProcess: ChildProcess | null = null;
 let cdpBridge: CdpBridge | null = null;
 const PORT = 4097;
-const CDP_PORT = Number(process.env.ZIVA_CDP_PORT || 9223);
+const CDP_PORT = Number(process.env.ZIVA_CDP_PORT || 9222);
 
 // ---- Embedded Chromium browser (WebContentsView) ----
 // Each web tab is a real native Chromium view (WebContentsView), managed by the
@@ -122,8 +122,8 @@ function getBackendCommand(): { cmd: string; args: string[]; env: NodeJS.Process
 
 // Note: the app no longer spawns a separate "debug" Chrome. The browser is
 // fused into the app itself — web tabs are in-app <webview>s exposed to
-// chrome-devtools-mcp via the CDP bridge on CDP_PORT (9223). Point
-// chrome-devtools-mcp at --browser-url=http://127.0.0.1:9223.
+// chrome-devtools-mcp via the CDP bridge on CDP_PORT (9222). Point
+// chrome-devtools-mcp at --browser-url=http://127.0.0.1:9222.
 
 function startPythonBackend(): Promise<void> {
   return new Promise((resolve, reject) => {

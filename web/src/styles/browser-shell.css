@@ -14,8 +14,8 @@
 
 /* In browser-shell mode the ziva-layout's own toolbar is redundant — the
    browser tab strip + omnibox IS the chrome. Hide it so the Ziva tab shows
-   clean chat content (sidebar + messages + composer) like a web page. */
-.browser-shell .ziva-toolbar { display: none !important; }
+   clean chat content (sidebar + messages + composer) like a web page.
+   Update: The right panel toggle is in the toolbar, so we keep it visible! */
 
 /* ---- tab strip ---- */
 .browser-tabstrip {

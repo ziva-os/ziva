@@ -68,19 +68,12 @@ export function initBrowserShell(): void {
   renderOmnibox();
   applyActive();
 
-  // Report the web-area rectangle to the main process so it can position the
-  // native WebContentsView over it. Re-report on any size change.
-  const report = () => {
-    if (!webArea || !ea?.browserSetArea) return;
-    const r = webArea.getBoundingClientRect();
-    if (r.width > 0 && r.height > 0) ea.browserSetArea({ x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) });
-  };
   if (typeof ResizeObserver !== "undefined") {
-    const ro = new ResizeObserver(report);
+    const ro = new ResizeObserver(reportBrowserArea);
     ro.observe(webArea);
   }
-  window.addEventListener("resize", report);
-  setTimeout(report, 100);
+  window.addEventListener("resize", reportBrowserArea);
+  setTimeout(reportBrowserArea, 100);
 
   // Main → renderer events: target=_blank in a page → new tab; nav/title sync.
   ea?.onBrowserNewTab?.((url: string) => openInBrowserTab(url));
@@ -176,6 +169,7 @@ function applyActive(): void {
   const isWeb = active?.type === "web";
   if (zivaLayout) zivaLayout.style.display = isWeb ? "none" : "";
   if (webArea) webArea.style.display = isWeb ? "" : "none";
+  requestAnimationFrame(reportBrowserArea);
 }
 
 function navigateActive(url: string): void {
@@ -187,7 +181,7 @@ function navigateActive(url: string): void {
     const mainId = (active as any).mainId;
     if (mainId && ea?.browserNavigate) ea.browserNavigate(mainId, url);
   } else if (active.el) {
-    active.el.src = "/api/proxy?url=" + encodeURIComponent(url);
+    (active.el as HTMLIFrameElement).src = "/api/proxy?url=" + encodeURIComponent(url);
   }
   renderTabstrip();
 }
@@ -200,9 +194,11 @@ function navActive(kind: "back" | "forward" | "reload"): void {
     if (mainId && ea?.browserNav) ea.browserNav(mainId, kind);
   } else if (active.el) {
     try {
-      if (kind === "back") active.el.contentWindow?.history.back();
-      else if (kind === "forward") active.el.contentWindow?.history.forward();
-      else { try { active.el.contentWindow?.location.reload(); } catch { active.el.src = active.el.src; } }
+      switch (kind) {
+        case "back": (active.el as HTMLIFrameElement).contentWindow?.history.back(); break;
+        case "forward": (active.el as HTMLIFrameElement).contentWindow?.history.forward(); break;
+        case "reload": if ((active.el as HTMLIFrameElement).contentWindow) (active.el as HTMLIFrameElement).src = (active.el as HTMLIFrameElement).src; break;
+      }
     } catch {}
   }
 }
@@ -212,10 +208,10 @@ function renderTabstrip(): void {
   strip.textContent = "";
   for (const t of tabs) {
     const el = document.createElement("div");
-    el.className = "b-tab" + (t.id === activeTabId ? " active" : "") + (t.type === "ziva" ? " b-tab-pinned" : "");
+    el.className = "b-tab" + (t.id === activeTabId ? " active" : "");
     el.dataset.tab = t.id;
     if (t.type === "ziva") {
-      const pin = document.createElement("span"); pin.className = "b-tab-pin"; pin.textContent = "📌"; el.appendChild(pin);
+      el.classList.add("b-tab-pinned");
     } else {
       const fav = document.createElement("span"); fav.className = "b-tab-favicon"; fav.textContent = "●"; el.appendChild(fav);
     }
@@ -238,41 +234,53 @@ function renderTabstrip(): void {
 function renderOmnibox(): void {
   if (!omnibox) return;
   const active = tabs.find(t => t.id === activeTabId);
+  const isWeb = active?.type === "web";
+  
+  if (!isWeb) {
+    omnibox.style.display = "none";
+    return;
+  }
+  omnibox.style.display = "flex";
   omnibox.textContent = "";
+
   const mkBtn = (label: string, kind: string, title: string, disabled = false): HTMLButtonElement => {
     const b = document.createElement("button");
     b.className = "bt-btn"; b.dataset.nav = kind; b.title = title; b.textContent = label;
     if (disabled) { b.disabled = true; b.style.opacity = "0.3"; }
     return b;
   };
-  const isWeb = active?.type === "web";
   const back = mkBtn("◂", "back", "Back", !isWeb);
   const fwd = mkBtn("▸", "forward", "Forward", !isWeb);
   const reload = mkBtn("⟳", "reload", "Reload", !isWeb);
   const input = document.createElement("input");
   input.type = "text"; input.className = "bt-url";
-  input.value = isWeb ? (active!.url && active!.url !== "about:blank" ? active!.url! : "") : "ziva";
+  input.value = active!.url || "";
   input.placeholder = "Search or enter URL…";
-  if (!isWeb) { input.readOnly = true; input.style.fontStyle = "italic"; input.style.opacity = "0.7"; }
+  
   const goBtn = document.createElement("button"); goBtn.className = "bt-go"; goBtn.textContent = "Go";
   omnibox.append(back, fwd, reload, input, goBtn);
-  if (isWeb) {
-    const go = () => {
-      let v = (input.value || "").trim();
-      if (!v) return;
-      if (!/^https?:\/\//i.test(v) && !/^[\w-]+(\.[\w-]+)+/.test(v)) v = "https://www.google.com/search?q=" + encodeURIComponent(v);
-      else if (!/^https?:\/\//i.test(v)) v = "https://" + v;
-      navigateActive(v);
-    };
-    goBtn.onclick = go;
-    input.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
-    back.onclick = () => navActive("back");
-    fwd.onclick = () => navActive("forward");
-    reload.onclick = () => navActive("reload");
-  }
+
+  const go = () => {
+    let v = (input.value || "").trim();
+    if (!v) return;
+    if (!/^https?:\/\//i.test(v) && !/^[\w-]+(\.[\w-]+)+/.test(v)) v = "https://www.google.com/search?q=" + encodeURIComponent(v);
+    else if (!/^https?:\/\//i.test(v)) v = "https://" + v;
+    navigateActive(v);
+  };
+  goBtn.onclick = go;
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+  back.onclick = () => navActive("back");
+  fwd.onclick = () => navActive("forward");
+  reload.onclick = () => navActive("reload");
 }
 
 function prettyHost(url: string): string {
   try { return new URL(url).hostname.replace(/^www\./, "") || url; }
   catch { return url; }
+}
+
+export function reportBrowserArea() {
+  if (!webArea || !ea?.browserSetArea) return;
+  const r = webArea.getBoundingClientRect();
+  if (r.width > 0 && r.height > 0) ea.browserSetArea({ x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) });
 }
