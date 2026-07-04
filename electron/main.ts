@@ -30,10 +30,10 @@ function showBrowserTab(id: string): void {
   if (!mainWindow) return;
   for (const [vid, view] of browserViews) {
     if (vid === id) {
-      mainWindow.contentView.addChildView(view);
+      try { mainWindow.contentView.addChildView(view); } catch {}
       view.setBounds(browserArea);
     } else {
-      mainWindow.contentView.removeChildView(view);
+      try { mainWindow.contentView.removeChildView(view); } catch {}
     }
   }
   activeBrowserTab = id;
