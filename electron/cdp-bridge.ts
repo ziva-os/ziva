@@ -356,8 +356,52 @@ export class CdpBridge {
     ws.on("close", cleanup);
     ws.on("error", cleanup);
   }
+  private async handleSessionMessage(ws: WebSocket, sess: any, innerMsg: any, sessionId: string, outerMsgId: number | undefined) {
+    try {
+      const result = await sess.webContents.debugger.sendCommand(
+        innerMsg.method,
+        innerMsg.params || {},
+      );
+
+      if (innerMsg.method === "Page.getFrameTree" && result?.frameTree?.frame?.id) {
+        const target = this.pages.find((p) => p.webContents === sess.webContents);
+        if (target) target.mainFrameId = result.frameTree.frame.id;
+      } else if (innerMsg.method === "Page.navigate" && result?.loaderId) {
+        const target = this.pages.find((p) => p.webContents === sess.webContents);
+        if (target) {
+          target.latestLoaderId = result.loaderId;
+          if (result.frameId) target.mainFrameId = result.frameId;
+        }
+      }
+
+      if (sess.flatten) {
+        this.respond(ws, outerMsgId !== undefined ? outerMsgId : innerMsg.id, { ...result, sessionId });
+      } else {
+        if (outerMsgId !== undefined) this.respond(ws, outerMsgId, {});
+        this.sendInnerResponseAsEvent(sess, innerMsg.id, result, undefined);
+      }
+    } catch (err: any) {
+      const message = err?.message || String(err);
+      if (sess.flatten) {
+        this.respondError(ws, outerMsgId !== undefined ? outerMsgId : innerMsg.id, -32000, message);
+      } else {
+        if (outerMsgId !== undefined) this.respond(ws, outerMsgId, {});
+        this.sendInnerResponseAsEvent(sess, innerMsg.id, undefined, message);
+      }
+    }
+  }
 
   private async handleBrowserMessage(ws: WebSocket, msg: any) {
+    if (msg.sessionId) {
+      const sess = this.sessions.get(msg.sessionId);
+      if (!sess) {
+        this.respondError(ws, msg.id, -32000, "No session");
+        return;
+      }
+      await this.handleSessionMessage(ws, sess, msg, msg.sessionId, undefined);
+      return;
+    }
+
     // ---- Target domain ----
     // chrome-devtools-mcp / Puppeteer call this right after connect. Electron
     // has no browser contexts (no incognito), so report none — returning
@@ -518,46 +562,8 @@ export class CdpBridge {
         this.respondError(ws, msg.id, -32000, "No session");
         return;
       }
-      if (innerMsg.id === undefined) {
-        // Not a request, ignore
-        return;
-      }
-
-      try {
-        const result = await sess.webContents.debugger.sendCommand(
-          innerMsg.method,
-          innerMsg.params || {},
-        );
-        if (innerMsg.method === "Page.getFrameTree" && result?.frameTree?.frame?.id) {
-          const target = this.pages.find((p) => p.webContents === sess.webContents);
-          if (target) target.mainFrameId = result.frameTree.frame.id;
-        } else if (innerMsg.method === "Page.navigate" && result?.loaderId) {
-          const target = this.pages.find((p) => p.webContents === sess.webContents);
-          if (target) {
-            target.latestLoaderId = result.loaderId;
-            if (result.frameId) target.mainFrameId = result.frameId;
-          }
-        }
-        if (sess.flatten) {
-          // Modern (Puppeteer) shape: embed inner result in the outer's
-          // response. The outer's id and the inner's id are linked 1:1
-          // by the client, so we just spread the inner result.
-          this.respond(ws, msg.id, { ...result, sessionId });
-        } else {
-          // Legacy shape: empty outer response, inner response is
-          // delivered as a Target.receivedMessageFromTarget event.
-          this.respond(ws, msg.id, {});
-          this.sendInnerResponseAsEvent(sess, innerMsg.id, result, undefined);
-        }
-      } catch (err: any) {
-        const message = err?.message || String(err);
-        if (sess.flatten) {
-          this.respondError(ws, msg.id, -32000, message);
-        } else {
-          this.respond(ws, msg.id, {});
-          this.sendInnerResponseAsEvent(sess, innerMsg.id, undefined, message);
-        }
-      }
+      if (innerMsg.id === undefined) return;
+      await this.handleSessionMessage(ws, sess, innerMsg, sessionId, msg.id);
       return;
     }
 
