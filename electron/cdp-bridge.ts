@@ -118,6 +118,14 @@ export class CdpBridge {
     webContents.on("did-navigate", refreshMeta);
     webContents.on("did-navigate-in-page", refreshMeta);
 
+    // Some heavy sites (like weibo) might never fire the native 'load' event
+    // in Electron due to blocked trackers or background rendering differences.
+    // Force emit Page.loadEventFired when the spinner stops to prevent Puppeteer timeouts.
+    webContents.on("did-stop-loading", () => {
+      this.dispatchEvent(webContents, "Page.loadEventFired", { timestamp: Date.now() / 1000 });
+      this.dispatchEvent(webContents, "Page.lifecycleEvent", { frameId: id, loaderId: "", name: "load", timestamp: Date.now() / 1000 });
+    });
+
     webContents.once("destroyed", () => this.removePage(id));
 
     // If the bridge is already up, announce the new target to live clients.
@@ -572,7 +580,7 @@ export class CdpBridge {
       wc.debugger.attach(PROTOCOL_VERSION);
       this.attachedPages.add(wc);
       wc.debugger.on("message", (_event, method, params) => {
-        this.dispatchEvent(wc, method, params);
+        require("fs").appendFileSync("/Users/wangxinxin/.ziva/cdp.log", method + "\n"); this.dispatchEvent(wc, method, params);
       });
     } catch (err) {
       // eslint-disable-next-line no-console

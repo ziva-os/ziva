@@ -271,6 +271,16 @@ function createWindow() {
   // the agent shouldn't be able to navigate or inspect the chat
   // surface it's embedded in.
   cdpBridge = new CdpBridge({ port: CDP_PORT, host: "127.0.0.1" });
+  cdpBridge.onEnsurePage = () => {
+    const win = new BrowserWindow({
+      width: 1000,
+      height: 700,
+      title: "Ziva Browser",
+      webPreferences: { contextIsolation: true, nodeIntegration: false, backgroundThrottling: false },
+    });
+    win.loadURL("about:blank");
+    cdpBridge!.addPage(win.webContents, { type: "page" });
+  };
   cdpBridge.start().then(() => {
     const port = cdpBridge!.port;
     console.log(
@@ -348,7 +358,7 @@ ipcMain.handle("browser-set-area", (_e, b: { x: number; y: number; width: number
 ipcMain.handle("browser-create-tab", (_e, url?: string): string => {
   const id = "bv_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6);
   const view = new WebContentsView({
-    webPreferences: { contextIsolation: true, sandbox: true },
+    webPreferences: { contextIsolation: true, sandbox: true, backgroundThrottling: false },
   });
   // Honour the system/env proxy on the embedded browser too.
   const envProxy = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
