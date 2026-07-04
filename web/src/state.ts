@@ -132,3 +132,30 @@ export const store = new Store<AppState>({
   autoScroll: true,
   splitSessions: [],
 });
+
+// ---- Persist per-session input state (pending queue + drafts) ----
+// A page refresh would otherwise lose everything the user typed but hasn't
+// sent yet. Save pendingMessages + promptDrafts to localStorage on every
+// store change and restore them on load.
+const PERSIST_KEY = "ziva:input-state-v1";
+try {
+  const saved = localStorage.getItem(PERSIST_KEY);
+  if (saved) {
+    const obj = JSON.parse(saved);
+    const hasPending = obj.pendingMessages && Object.keys(obj.pendingMessages).length > 0;
+    const hasDrafts = obj.promptDrafts && Object.keys(obj.promptDrafts).length > 0;
+    if (hasPending || hasDrafts) {
+      store.set({ pendingMessages: obj.pendingMessages || {}, promptDrafts: obj.promptDrafts || {} });
+    }
+  }
+} catch { /* corrupt or localStorage unavailable — start fresh */ }
+
+store.subscribe(() => {
+  const s = store.get();
+  try {
+    localStorage.setItem(PERSIST_KEY, JSON.stringify({
+      pendingMessages: s.pendingMessages,
+      promptDrafts: s.promptDrafts,
+    }));
+  } catch { /* quota exceeded (large images) — best effort */ }
+});

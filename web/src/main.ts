@@ -251,7 +251,13 @@ function init() {
       </aside>
     </div>`;
 
-  initBrowserShell();
+  // The browser shell (tab strip + omnibox + embedded Chromium) only makes
+  // sense in the Electron desktop app — in a regular browser, the "web tabs"
+  // are just iframes (can't render complex sites). So in web mode, skip the
+  // shell entirely and show the ziva chat UI directly (original layout).
+  if ((window as any).electronAPI) {
+    initBrowserShell();
+  }
   bindEvents();
   refreshStatus();
   refreshMCPStatus();
