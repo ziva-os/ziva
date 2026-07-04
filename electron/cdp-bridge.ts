@@ -58,6 +58,7 @@ interface PageTarget {
   webContents: WebContents;
   type: "page" | "background_page";
   latestLoaderId?: string;
+  mainFrameId?: string;
 }
 
 interface AttachedSession {
@@ -129,8 +130,8 @@ export class CdpBridge {
     // Force emit Page.loadEventFired when the spinner stops to prevent Puppeteer timeouts.
     webContents.on("did-stop-loading", () => {
       this.dispatchEvent(webContents, "Page.loadEventFired", { timestamp: Date.now() / 1000 });
-      this.dispatchEvent(webContents, "Page.lifecycleEvent", { frameId: id, loaderId: target.latestLoaderId || "", name: "load", timestamp: Date.now() / 1000 });
-      this.dispatchEvent(webContents, "Page.lifecycleEvent", { frameId: id, loaderId: target.latestLoaderId || "", name: "networkIdle", timestamp: Date.now() / 1000 });
+      this.dispatchEvent(webContents, "Page.lifecycleEvent", { frameId: target.mainFrameId || id, loaderId: target.latestLoaderId || "", name: "load", timestamp: Date.now() / 1000 });
+      this.dispatchEvent(webContents, "Page.lifecycleEvent", { frameId: target.mainFrameId || id, loaderId: target.latestLoaderId || "", name: "networkIdle", timestamp: Date.now() / 1000 });
     });
 
     webContents.once("destroyed", () => this.removePage(id));
@@ -594,6 +595,7 @@ export class CdpBridge {
           const target = this.pages.find((p) => p.webContents === wc);
           if (target && !params.frame.parentId) {
             target.latestLoaderId = params.frame.loaderId;
+            target.mainFrameId = params.frame.id;
           }
         }
         this.dispatchEvent(wc, method, params);
