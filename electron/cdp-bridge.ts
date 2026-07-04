@@ -57,6 +57,7 @@ interface PageTarget {
   url: string;
   webContents: WebContents;
   type: "page" | "background_page";
+  latestLoaderId?: string;
 }
 
 interface AttachedSession {
@@ -81,7 +82,7 @@ export class CdpBridge {
   private readonly host: string;
   private requestedPort: number;
   private actualPort: number = 0;
-  public onEnsurePage?: () => void;
+  public onEnsurePage?: () => Promise<void> | void;
 
   constructor(opts: CdpBridgeOptions = {}) {
     this.host = opts.host ?? "127.0.0.1";
@@ -91,6 +92,10 @@ export class CdpBridge {
   /** Port the server is listening on (only valid after start() resolves). */
   get port(): number {
     return this.actualPort;
+  }
+
+  get pageCount(): number {
+    return this.pages.length;
   }
 
   /** Register a webContents as a Target. Returns the assigned targetId. */
@@ -124,7 +129,8 @@ export class CdpBridge {
     // Force emit Page.loadEventFired when the spinner stops to prevent Puppeteer timeouts.
     webContents.on("did-stop-loading", () => {
       this.dispatchEvent(webContents, "Page.loadEventFired", { timestamp: Date.now() / 1000 });
-      this.dispatchEvent(webContents, "Page.lifecycleEvent", { frameId: id, loaderId: "", name: "load", timestamp: Date.now() / 1000 });
+      this.dispatchEvent(webContents, "Page.lifecycleEvent", { frameId: id, loaderId: target.latestLoaderId || "", name: "load", timestamp: Date.now() / 1000 });
+      this.dispatchEvent(webContents, "Page.lifecycleEvent", { frameId: id, loaderId: target.latestLoaderId || "", name: "networkIdle", timestamp: Date.now() / 1000 });
     });
 
     webContents.once("destroyed", () => this.removePage(id));
@@ -417,12 +423,13 @@ export class CdpBridge {
     // Browser tab so a webview gets registered via
     // registerWebviewWithCdp in the renderer.
     if (msg.method === "Target.createTarget") {
-      if (this.onEnsurePage) {
-        try {
-          this.onEnsurePage();
-        } catch {}
-      }
-      const page = this.pages[this.pages.length - 1];
+      (async () => {
+        if (this.onEnsurePage) {
+          try {
+            await this.onEnsurePage();
+          } catch {}
+        }
+        const page = this.pages[this.pages.length - 1];
       if (page && ws.readyState === WebSocket.OPEN) {
         ws.send(
           JSON.stringify({
@@ -438,8 +445,8 @@ export class CdpBridge {
             },
           })
         );
-      }
-      this.respond(ws, msg.id, { targetId: page?.id || "" });
+        this.respond(ws, msg.id, { targetId: page?.id || "" });
+      })();
       return;
     }
 
@@ -581,7 +588,14 @@ export class CdpBridge {
       wc.debugger.attach(PROTOCOL_VERSION);
       this.attachedPages.add(wc);
       wc.debugger.on("message", (_event, method, params) => {
-        require("fs").appendFileSync("/Users/wangxinxin/.ziva/cdp.log", method + "\n"); this.dispatchEvent(wc, method, params);
+        // require("fs").appendFileSync("/Users/wangxinxin/.ziva/cdp.log", method + "\n");
+        if (method === "Page.frameNavigated" && params?.frame?.loaderId) {
+          const target = this.pages.find((p) => p.webContents === wc);
+          if (target && !params.frame.parentId) {
+            target.latestLoaderId = params.frame.loaderId;
+          }
+        }
+        this.dispatchEvent(wc, method, params);
       });
     } catch (err) {
       // eslint-disable-next-line no-console

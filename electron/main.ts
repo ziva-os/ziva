@@ -271,15 +271,15 @@ function createWindow() {
   // the agent shouldn't be able to navigate or inspect the chat
   // surface it's embedded in.
   cdpBridge = new CdpBridge({ port: CDP_PORT, host: "127.0.0.1" });
-  cdpBridge.onEnsurePage = () => {
-    const win = new BrowserWindow({
-      width: 1000,
-      height: 700,
-      title: "Ziva Browser",
-      webPreferences: { contextIsolation: true, nodeIntegration: false, backgroundThrottling: false },
-    });
-    win.loadURL("about:blank");
-    cdpBridge!.addPage(win.webContents, { type: "page" });
+  cdpBridge.onEnsurePage = async () => {
+    if (!mainWindow) return;
+    const oldLen = cdpBridge!.pageCount;
+    mainWindow.webContents.send("ziva:browser-new-tab", "about:blank");
+    // Wait for the renderer to call browser-create-tab which increments pageCount
+    for (let i = 0; i < 50; i++) {
+      if (cdpBridge!.pageCount > oldLen) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
   };
   cdpBridge.start().then(() => {
     const port = cdpBridge!.port;
