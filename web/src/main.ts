@@ -2205,6 +2205,16 @@ async function loadHiddenImageForTool(sid: string, imagePath: string, target: HT
   } catch { /* best-effort */ }
 }
 
+function updateToolCardStatus(card: HTMLElement, status: "running" | "success" | "error" | "cancelled"): void {
+  const statusClass = status === "error" ? "error" : status === "running" ? "running" : status === "cancelled" ? "cancelled" : "success";
+  const statusText = status === "error" ? "error" : status === "running" ? "running..." : status === "cancelled" ? "cancelled" : "done";
+  const statusEl = card.querySelector(".tool-status") as HTMLElement | null;
+  if (statusEl) {
+    statusEl.innerHTML = `<span class="status-dot ${statusClass}"></span>${statusText}`;
+  }
+  card.classList.toggle("open", status === "running");
+}
+
 function appendToolCard(
   toolName: string,
   args: Record<string, unknown>,
@@ -2921,7 +2931,7 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
     if (usage?.prompt_tokens !== undefined) {
       const contextWindow = store.get().config.contextWindow || 200000;
       const pct = Math.min(usage.prompt_tokens / contextWindow, 1);
-      updateContextProgress(pct, usage.prompt_tokens);
+      updateContextProgress(pct, usage.prompt_tokens, sid);
     }
   } else if (t === "stream_reset") {
     // Server: provider returned a retryable error (e.g. 1027 output
@@ -3046,7 +3056,10 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
       if (ev.tool === "update_plan") {
         const planSteps = (output as any)?.plan as { id?: string; description?: string; status?: string }[] | undefined;
         if (planSteps && planSteps.length > 0) {
-          _currentPlanSteps = planSteps;
+          // updatePlanTabContent (in right-panel.ts) also assigns _currentPlanSteps
+          // internally — calling it is enough, no need to touch the module-local
+          // variable from here (and it would ReferenceError anyway after the
+          // right-panel extraction in 83fe2b8 moved the declaration out of main.ts).
           const { rightPanelTabs } = store.get();
           const planTab = rightPanelTabs.find(t => t.type === "plan");
           if (planTab) updatePlanTabContent(planSteps);
@@ -3119,7 +3132,7 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
     if (usage?.prompt_tokens) {
       const contextWindow = store.get().config.contextWindow || 200000;
       const pct = Math.min(usage.prompt_tokens / contextWindow, 1);
-      updateContextProgress(pct, usage.prompt_tokens);
+      updateContextProgress(pct, usage.prompt_tokens, sid);
     }
   } else if (t === "status" && (ev as any).content === "compact") {
     const activeSid = store.get().activeSid;
@@ -3144,6 +3157,8 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
       removeTyping();
       setActiveRunning(false);
       updateSendStopButton();
+      streamCtx(sid).pendingTools.forEach((card) => updateToolCardStatus(card, "cancelled"));
+      streamCtx(sid).pendingTools.clear();
       appendError(ev.error as string || "Unknown error");
     }
   } else if (t === "turn_cancelled" || t === "turn_failed") {
@@ -3186,6 +3201,11 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
           appendError("Turn failed");
         }
       }
+      // Any tool cards that were still in the running state are now
+      // abandoned. Mark them cancelled so they don't show "running..."
+      // forever.
+      streamCtx(sid).pendingTools.forEach((card) => updateToolCardStatus(card, "cancelled"));
+      streamCtx(sid).pendingTools.clear();
       // else: the user already replaced this turn via cancel→
       // sendFromQueue. A fresh turn_start has bumped runningSessions
       // back to true; don't tear that down.

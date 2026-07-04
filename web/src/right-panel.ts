@@ -4,7 +4,7 @@
  *  (no main.ts deps) — imports store/api/dom/@xterm/prism directly. */
 
 import * as api from "./api";
-import { $, esc } from "./dom";
+import { $, esc, bindResizer } from "./dom";
 import { store } from "./state";
 import type { RightPanelTab } from "./state";
 import { Terminal } from "@xterm/xterm";
