@@ -81,6 +81,7 @@ export class CdpBridge {
   private readonly host: string;
   private requestedPort: number;
   private actualPort: number = 0;
+  public onEnsurePage?: () => void;
 
   constructor(opts: CdpBridgeOptions = {}) {
     this.host = opts.host ?? "127.0.0.1";
