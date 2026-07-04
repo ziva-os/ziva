@@ -138,6 +138,7 @@ function activateTab(id: string): void {
     const t = tabs.find(x => x.id === id);
     const mainId = t && (t as any).mainId;
     if (t?.type === "web" && mainId && ea?.browserShowTab) ea.browserShowTab(mainId);
+    else if (t?.type === "ziva" && ea?.browserHideTabs) ea.browserHideTabs();
   } else {
     // web fallback: show the active iframe, hide others
     tabs.forEach(t => { if (t.el) (t.el as HTMLElement).style.display = (t.id === id) ? "" : "none"; });
@@ -168,7 +169,7 @@ function applyActive(): void {
   const active = tabs.find(t => t.id === activeTabId);
   const isWeb = active?.type === "web";
   if (zivaLayout) zivaLayout.style.display = isWeb ? "none" : "";
-  if (webArea) webArea.style.display = isWeb ? "" : "none";
+  if (webArea) webArea.style.display = isWeb ? "block" : "none";
   requestAnimationFrame(reportBrowserArea);
 }
 

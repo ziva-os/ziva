@@ -3631,34 +3631,22 @@ function flushComposerQueue(sid: string, delayMs: number) {
   if (_flushingQueue[sid]) return;  // a flush for this session is already in flight
   _flushingQueue[sid] = true;
   
-  // Combine all items in the queue (FIFO)
-  const items = [...queue];
-  if (items.length === 0) { _flushingQueue[sid] = false; return; }
+  // Pop only the first item in the queue (FIFO)
+  const item = queue[0];
+  if (!item) { _flushingQueue[sid] = false; return; }
   
-  // Clear the queue immediately so new items can be added while flushing
-  clearAllPending(sid);
+  // Remove the first item from the queue, leave the rest
+  removePendingItem(sid, item.id);
   renderComposerPending(sid);
   
-  let combinedText = "";
-  let combinedImages: PendingAttachment[] = [];
-  let maxRetries = 0;
-  
-  for (const item of items) {
-    if (item.text) {
-      if (combinedText) combinedText += "\n\n";
-      combinedText += item.text;
-    }
-    if (item.images) {
-      combinedImages.push(...item.images);
-    }
-    if (item.retries > maxRetries) {
-      maxRetries = item.retries;
-    }
-  }
+  const combinedText = item.text || "";
+  const combinedImages = item.images || [];
+  const maxRetries = item.retries || 0;
+
 
   setTimeout(async () => {
     try {
-      await sendComposerFromQueue(sid, combinedText, combinedImages, maxRetries, items[0].id);
+      await sendComposerFromQueue(sid, combinedText, combinedImages, maxRetries, item.id);
     } finally {
       _flushingQueue[sid] = false;
     }

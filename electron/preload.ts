@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.invoke("browser-set-area", b),
   browserCreateTab: (url?: string) => ipcRenderer.invoke("browser-create-tab", url),
   browserShowTab: (id: string) => ipcRenderer.invoke("browser-show-tab", id),
+  browserHideTabs: () => ipcRenderer.invoke("browser-hide-tabs"),
   browserNavigate: (id: string, url: string) => ipcRenderer.invoke("browser-navigate", id, url),
   browserNav: (id: string, kind: "back" | "forward" | "reload") => ipcRenderer.invoke("browser-nav", id, kind),
   browserCloseTab: (id: string) => ipcRenderer.invoke("browser-close-tab", id),

@@ -374,6 +374,14 @@ ipcMain.handle("browser-create-tab", (_e, url?: string): string => {
   return id;
 });
 ipcMain.handle("browser-show-tab", (_e, id: string) => { showBrowserTab(id); return true; });
+ipcMain.handle("browser-hide-tabs", () => {
+  if (!mainWindow) return false;
+  for (const view of browserViews.values()) {
+    try { mainWindow.contentView.removeChildView(view); } catch {}
+  }
+  activeBrowserTab = null;
+  return true;
+});
 ipcMain.handle("browser-navigate", (_e, id: string, url: string) => {
   browserViews.get(id)?.webContents.loadURL(url);
   return true;

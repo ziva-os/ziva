@@ -371,8 +371,32 @@ export class CdpBridge {
     // Puppeteer optionally enables auto-attach / target discovery. We don't
     // auto-attach (the client attaches explicitly via attachToTarget), but
     // must respond so the method isn't "not handled".
-    if (msg.method === "Target.setAutoAttach" || msg.method === "Target.setDiscoverTargets") {
+    if (msg.method === "Target.setAutoAttach") {
       this.respond(ws, msg.id, {});
+      return;
+    }
+    if (msg.method === "Target.setDiscoverTargets") {
+      this.respond(ws, msg.id, {});
+      if (msg.params?.discover) {
+        for (const p of this.pages) {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(
+              JSON.stringify({
+                method: "Target.targetCreated",
+                params: {
+                  targetInfo: {
+                    targetId: p.id,
+                    type: p.type,
+                    title: p.title,
+                    url: p.url,
+                    attached: this.hasSessionFor(p.id),
+                  },
+                },
+              })
+            );
+          }
+        }
+      }
       return;
     }
     // chrome-devtools-mcp's new_page / navigate calls Target.createTarget to
@@ -385,6 +409,9 @@ export class CdpBridge {
     // registerWebviewWithCdp in the renderer.
     if (msg.method === "Target.createTarget") {
       const page = this.pages[this.pages.length - 1];
+      if (page && msg.params?.url && msg.params.url !== "about:blank") {
+        page.webContents.loadURL(msg.params.url).catch(() => {});
+      }
       this.respond(ws, msg.id, { targetId: page?.id || "" });
       return;
     }
