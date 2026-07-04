@@ -3322,7 +3322,7 @@ async function cancelTurn() {
   const { activeSid } = store.get();
   if (!activeSid) return;
   // Cancel the turn outright. Lock any pending question cards so
-  // the user sees them as cancelled, then send the cancel API call.
+  // the user sees them as cancelled.
   const pendingCards = document.querySelectorAll(".question-card:not(.question-card-answered):not(.question-card-cancelled)");
   pendingCards.forEach(card => {
     (card as HTMLElement).querySelector(".question-input-row")?.remove();
@@ -3331,48 +3331,19 @@ async function cancelTurn() {
     card.classList.add("question-card-cancelled");
   });
   store.set({ questionPending: false });
-  // Don't drop the queued message here — the `turn_cancelled` event
-  // (or the manual flush below if the event is missed) will pull the
-  // queue back into the prompt and re-send it. Cancelling should
-  // advance the queue, not erase it.
-  try { await api.cancelTurn(activeSid); } catch { /* ignore */ }
+  // Immediately update the UI (stop button → send, remove typing indicator).
+  // Don't wait for the backend cancel response — the user should see instant
+  // feedback. The backend cancel is fire-and-forget below.
   setActiveRunning(false);
   removeTyping();
   updateSendStopButton();
-  // Fire-and-forget queue flush. We don't wait for `turn_cancelled`
-  // because if the SSE event is missed (network blip, page refresh
-  // mid-cancel), the queue would otherwise sit forever. Mirrors the
-  // auto-flush logic in the `turn_end` handler — same refactor: pass
-  // content to sendFromQueue (no prompt mutation, re-queue on
-  // failure) instead of writing into promptEl.value and then reading
-  // it back inside sendMessage. That used to leave the queued text
-  // stuck in the textarea on any createTurn failure.
-  //
-  // The 200ms delay is longer than turn_end's 30ms because cancel
-  // leaves the server mid-cleanup (the OLD runner is still in its
-  // `except asyncio.CancelledError` block awaiting `_emit` before
-  // its finally clears session state). If we send createTurn before
-  // the OLD runner's finally runs, the new task can race with the
-  // old finally's `s.turn_task = None` and the new turn ends up
-  // untracked — next cancel becomes a no-op. 200ms is a pragmatic
-  // middle ground; the user already sees "send" button immediately,
-  // the queue is just a chip they aren't actively interacting with.
-  const { pendingMessages } = store.get();
-  const pendingEntry = pendingMessages[activeSid];
-  const pendingText = pendingEntry?.text;
-  const pendingRetries = pendingEntry?.retries ?? 0;
-  const flushImages = queuedImages(activeSid);
-  if (pendingText != null || flushImages.length > 0) {
-    const flushSid = activeSid;
-    const flushRetries = pendingRetries;
-    setTimeout(() => {
-      if (store.get().activeSid !== flushSid) return;
-      setActivePending(null);
-      if (flushImages.length > 0) clearQueuedImages(flushSid);
-      renderPendingBar();
-      sendFromQueue(pendingText || "", flushImages, flushRetries);
-    }, 200);
-  }
+  // Tell the backend to cancel the running turn (fire-and-forget).
+  api.cancelTurn(activeSid).catch(() => { /* best effort */ });
+  // Flush the queued message after a short delay (gives the backend time to
+  // clean up the old runner before the new turn starts). Uses
+  // flushComposerQueue which correctly reads queue[0] (the old manual flush
+  // read pendingMessages[sid].text on an ARRAY → undefined → sent nothing).
+  flushComposerQueue(activeSid, 300);
 }
 
 // ---------------------------------------------------------------------------
