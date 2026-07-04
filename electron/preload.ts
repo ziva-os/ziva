@@ -1,15 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
 
-// Webview → renderer link bridge: the main process forwards
-// target=_blank / window.open events here (via webContents.send).
-// The webview's own <a> click interception uses sendToHost, which is
-// delivered through the webview element's `ipc-message` event in the
-// renderer — that path is wired in renderBrowserTab(). Both paths end
-// up calling the same handler.
-let _openLinkInPanelHandler: ((url: string) => void) | null = null;
-ipcRenderer.on("ziva:open-link-in-panel", (_event, url: string) => {
-  if (_openLinkInPanelHandler) _openLinkInPanelHandler(url);
-});
 
 // Embedded-browser event channels: the main process (which owns the native
 // WebContentsView per web tab) pushes navigation/title/window-open events here

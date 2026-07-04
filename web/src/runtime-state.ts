@@ -46,15 +46,48 @@ export function isSessionRunning(sid: string): boolean {
   return !!store.get().runningSessions[sid];
 }
 
+// Mark a sid as "user just pressed stop" so routeSSEEvent can swallow
+// the in-flight tail events until turn_cancelled arrives. Pure store
+// mutation — no DOM, no fetch. Idempotent. Sets a 30s safety timeout:
+// if turn_cancelled never reaches us (e.g. SSE drop), the marker
+// auto-clears so the session isn't stuck swallowing events forever.
+export function markSidCancelled(sid: string): void {
+  if (!sid) return;
+  const { cancellingSids } = store.get();
+  if (cancellingSids.includes(sid)) return;
+  store.set({ cancellingSids: [...cancellingSids, sid] });
+  setTimeout(() => clearSidCancelled(sid), 30000);
+}
+
+// Clear the cancelling flag — called by the turn_cancelled / turn_failed
+// SSE handler so the next turn on the same session isn't swallowed.
+export function clearSidCancelled(sid: string): void {
+  if (!sid) return;
+  const { cancellingSids } = store.get();
+  if (!cancellingSids.includes(sid)) return;
+  store.set({ cancellingSids: cancellingSids.filter((s) => s !== sid) });
+}
+
+// True if the user has pressed stop on this sid and the server hasn't
+// confirmed yet. Used by routeSSEEvent to drop tail events.
+export function isSidCancelling(sid: string): boolean {
+  if (!sid) return false;
+  return store.get().cancellingSids.includes(sid);
+}
+
 export function getSessionPending(sid: string): string | null {
-  // Legacy compatibility: return the first item's text if any exist
+  // First-queued-item helper — returns the head of the pending queue
+  // as a single string, the shape that the rest of the app still
+  // asks for. Don't reach for this in new code: read queue[0] directly.
   if (!sid) return null;
   const queue = store.get().pendingMessages[sid];
   return (queue && queue.length > 0) ? queue[0].text : null;
 }
 
 export function setSessionPending(sid: string, text: string | null, retries: number = 0) {
-  // Legacy compatibility: replace the entire queue with a single item
+  // First-queue-slot writer — replaces the queue with a single item
+  // (head = this text, tail dropped). Used by editComposerPending
+  // to remove the now-edited item from the queue.
   if (!sid) return;
   const { pendingMessages } = store.get();
   const next = { ...pendingMessages };
@@ -196,29 +229,11 @@ export function setDraftText(sid: string, text: string): void {
   store.set({ promptDrafts: { ...promptDrafts, [sid]: { text, images: prev.images || [] } } });
 }
 export function queuedImages(sid: string): PendingAttachment[] {
-  // Legacy compatibility: return images from the first item
+  // First-queued-item helper — image attachments on the head of the
+  // pending queue are promoted back to the draft when the user edits
+  // the queued message. Don't reach for this in new code: persist to
+  // / read from the queue directly.
   if (!sid) return [];
   const queue = store.get().pendingMessages[sid];
   return (queue && queue.length > 0) ? (queue[0].images || []) : [];
-}
-export function setQueuedImages(sid: string, images: PendingAttachment[]): void {
-  // Legacy compatibility: update images on the first item
-  if (!sid) return;
-  const { pendingMessages } = store.get();
-  const queue = pendingMessages[sid];
-  if (!queue || queue.length === 0) return;
-  const next = { ...pendingMessages };
-  next[sid] = [{ ...queue[0], images }, ...queue.slice(1)];
-  store.set({ pendingMessages: next });
-}
-export function clearQueuedImages(sid: string): void {
-  // Legacy compatibility: clear images from the first item
-  if (!sid) return;
-  const { pendingMessages } = store.get();
-  const queue = pendingMessages[sid];
-  if (!queue || queue.length === 0) return;
-  const next = { ...pendingMessages };
-  const { images: _drop, ...rest } = queue[0];
-  next[sid] = [{ ...rest, images: undefined }, ...queue.slice(1)];
-  store.set({ pendingMessages: next });
 }

@@ -21,7 +21,7 @@ import { openSettingsModal, setSettingsDeps } from "./modals/settings";
 import { openAutomationsModal, closeAutomationsModal, loadAutomationsIntoModal, setAutomationsDeps } from "./modals/automations";
 import { formatRelativeTime } from "./format";
 import { refreshStatus, refreshMCPStatus, updateConnStatus, setStatusDeps } from "./status";
-import { toggleRightPanel, initResizablePanel, updatePlanTabContent, scheduleDiffRefresh, refreshActiveReviewTabs } from "./right-panel";
+import {   toggleRightPanel, initResizablePanel, updatePlanTabContent, scheduleDiffRefresh, refreshActiveReviewTabs, refreshActivePlanTab, ensurePlanSubscriber } from "./right-panel";
 import {
   isActiveRunning, getActivePending, setActivePending, setActiveRunning,
   setSessionRunning, isSessionRunning, getSessionPending, setSessionPending,
@@ -30,7 +30,8 @@ import {
   streamCtx, clearStreamCtx, invalidateLiveStreamEl,
   getLiveStreamSid, setLiveStreamSid, getLiveStreamTarget, setLiveStreamTarget,
   draftImages, setDraftImages, draftText, setDraftText,
-  queuedImages, setQueuedImages, clearQueuedImages,
+  queuedImages,
+  markSidCancelled, clearSidCancelled, isSidCancelling,
   setRuntimeStateDeps,
 } from "./runtime-state";
 
@@ -290,18 +291,6 @@ let slashMenuIndex = -1;
 // a time — the focused composer). Used by the unified sid-aware slash fns.
 let slashMenuSid = "";
 
-// Legacy slash-menu aliases — delegate to the sid-aware versions for the
-// active session. Deleted once all callers move to the *For fns (Step 8).
-function showSlashMenu(text: string) { showSlashMenuFor(store.get().activeSid || "", text); }
-function hideSlashMenu() { hideSlashMenuFor(store.get().activeSid || ""); }
-function isSlashMenuVisible() {
-  const menu = composerSlashEl(store.get().activeSid || "");
-  return !!menu && menu.style.display === "block";
-}
-function moveSlashSelection(dir: number) { moveSlashSelectionFor(store.get().activeSid || "", dir); }
-function selectSlashCommand() { selectSlashCommandFor(store.get().activeSid || ""); }
-function insertSlashCommand(cmd: string) { insertSlashCommandFor(store.get().activeSid || "", cmd); }
-
 // ---- Event Bindings ----
 // Per-composer voice input. Reuses the single global MediaRecorder (only
 // one recording at a time) and inserts the transcription into THIS
@@ -501,6 +490,10 @@ function bindEvents() {
   $("btnNewSession").onclick = () => createSession();
   $("btnOpenRightPanel").onclick = toggleRightPanel;
   initResizablePanel();
+  // Reactively re-paint the Plan panel whenever store.currentPlanSteps
+  // or activeSid changes — replaces the previous imperative path that
+  // raced with itself across SSE handlers and loadHistory calls.
+  ensurePlanSubscriber();
 
   $("btnSkills").onclick = () => openSkillsBrowser();
   $("btnScheduled").onclick = () => openAutomationsModal();
@@ -679,9 +672,10 @@ function abortImageUpload(thumbUrl: string) {
 
 // Free any blob URLs in `arr` whose thumbUrl is NOT still referenced by
 // any session's draft or queued images. Called when dropping a set of
-// previews (clearPendingMessage, sendFromQueue success, etc.) to avoid
-// leaking blob URLs — but only the ones truly no longer reachable from
-// the store. If another session still holds the thumb, leave it alone.
+// previews (clearComposerPending, sendComposerFromQueue success, etc.)
+// to avoid leaking blob URLs — but only the ones truly no longer
+// reachable from the store. If another session still holds the thumb,
+// leave it alone.
 function disposePendingImageThumbs(arr: Array<{ thumbUrl?: string }>) {
   if (!arr || arr.length === 0) return;
   const { promptDrafts, pendingMessages } = store.get();
@@ -750,7 +744,7 @@ async function addImageFile(file: File, sid?: string) {
     // attachment for that session, restored from the draft on return.
     const image = { ...result, name: file.name, thumbUrl };
     setDraftImages(uploadSid, [...draftImages(uploadSid), image]);
-    if (store.get().activeSid === uploadSid) renderImagePreviews();
+    renderComposerPreviews(uploadSid);
   };
 
   const fd = new FormData();
@@ -779,12 +773,6 @@ async function addImageFile(file: File, sid?: string) {
       }
       finish(null, String(e));
     });
-}
-
-// Legacy alias — delegates to the per-session canonical renderer. Deleted
-// once all callers move to renderComposerPreviews(sid) (Step 8).
-function renderImagePreviews() {
-  renderComposerPreviews(store.get().activeSid || "");
 }
 
 // ---- Split-screen sessions ----
@@ -1521,21 +1509,6 @@ async function createSession() {
 // Background sessions don't get a textarea, so this only matters for
 // the active sid; for any other sid the draft is just dormant state
 // that gets re-saved verbatim the next time the user visits it.
-// Legacy draft helpers — the unified input handler keeps promptDrafts in
-// sync per keystroke, and hydrateComposer restores on mount. These remain
-// as thin bridges for existing callers (deleted in Step 8).
-function savePromptDraft(sid: string | null) {
-  if (!sid) return;
-  const ta = composerTextarea(sid);
-  const text = ta ? ta.value : draftText(sid);
-  const images = draftImages(sid);
-  if (!text && images.length === 0 && !store.get().promptDrafts[sid]) return;
-  store.set({ promptDrafts: { ...store.get().promptDrafts, [sid]: { text, images } } });
-}
-
-function loadPromptDraft(sid: string | null) {
-  if (sid) hydrateComposer(sid);
-}
 
 async function switchSession(sid: string, opts: { skipGitRefresh?: boolean } = {}) {
   closeAllFullpageOverlays();
@@ -1553,7 +1526,14 @@ async function switchSession(sid: string, opts: { skipGitRefresh?: boolean } = {
     }
     // Stash the current prompt (text + attached images) under the
     // session we're leaving so switching back restores it verbatim.
-    savePromptDraft(oldSid);
+    if (oldSid) {
+      const ta = composerTextarea(oldSid);
+      const text = ta ? ta.value : draftText(oldSid);
+      const images = draftImages(oldSid);
+      if (text || images.length > 0 || store.get().promptDrafts[oldSid]) {
+        store.set({ promptDrafts: { ...store.get().promptDrafts, [oldSid]: { text, images } } });
+      }
+    }
   }
   store.set({ activeSid: sid, questionPending: false });
   // If the newly active session was shown as a secondary split pane,
@@ -1572,6 +1552,12 @@ async function switchSession(sid: string, opts: { skipGitRefresh?: boolean } = {
   renderPendingBar();
   await loadHistory(sid);
   renderSplitPanes();
+  // The Plan tab shared its body with the previous session because the
+  // in-memory cache was a module-level singleton (see right-panel.ts
+  // updatePlanTabContent — it now keys by sid). Re-render against the
+  // newly-active session so the panel shows its plan, not the previous
+  // one's. No-op if the Plan tab isn't open / doesn't exist.
+  refreshActivePlanTab();
   // Mount/hydrate the full-screen composer for the newly active session
   // (no-op in split mode; pane composers are hydrated in renderSplitPanes).
   renderComposers();
@@ -1639,7 +1625,7 @@ async function switchSession(sid: string, opts: { skipGitRefresh?: boolean } = {
   // we're switching TO. Done last so all render/turn-detection above
   // has already settled, and the input bar reflects the new sid
   // when the user starts typing.
-  loadPromptDraft(sid);
+  if (sid) hydrateComposer(sid);
   updateSendStopButton();
   refreshPlan();
   if ($("rightPanel").classList.contains("show")) refreshActiveReviewTabs();
@@ -2651,6 +2637,17 @@ function scrollSessionBottom(sid: string) {
 function routeSSEEvent(ev: api.Event) {
   const sid = (ev as any).session_id as string | undefined;
   if (!sid) return;
+  // User pressed stop — drop in-flight tail events until the server
+  // confirms with turn_cancelled/turn_failed. Without this, the next
+  // 50-200ms of buffered stream chunks keep growing the assistant
+  // bubble and re-pulsing the typing chip between stop click and
+  // turn_cancelled arrival, which the user perceives as "slow".
+  // We still let terminal events through so the cancellation
+  // teardown (clear stream / pendingTools / runningSessions) fires.
+  const t0 = ev.type as string;
+  if (isSidCancelling(sid) && t0 !== "turn_cancelled" && t0 !== "turn_failed" && t0 !== "turn_end") {
+    return;
+  }
   const { activeSid, splitSessions } = store.get();
   if (sid === activeSid) {
     handleSessionEvent(sid, ev, true);
@@ -3052,17 +3049,14 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
         }
       }
       appendToolCard(ev.tool as string, (ev.arguments || {}) as Record<string, unknown>, status, output, subagentTools);
-      // Update plan tab if this is an update_plan tool
+      // Update plan tab if this is an update_plan tool. Pass the
+      // owning sid so the cache key is per-session; the renderer in
+      // right-panel.ts reads/writes store.currentPlanSteps[sid] and
+      // only paints the panel if this sid is the active one.
       if (ev.tool === "update_plan") {
         const planSteps = (output as any)?.plan as { id?: string; description?: string; status?: string }[] | undefined;
-        if (planSteps && planSteps.length > 0) {
-          // updatePlanTabContent (in right-panel.ts) also assigns _currentPlanSteps
-          // internally — calling it is enough, no need to touch the module-local
-          // variable from here (and it would ReferenceError anyway after the
-          // right-panel extraction in 83fe2b8 moved the declaration out of main.ts).
-          const { rightPanelTabs } = store.get();
-          const planTab = rightPanelTabs.find(t => t.type === "plan");
-          if (planTab) updatePlanTabContent(planSteps);
+        if (planSteps) {
+          updatePlanTabContent(sid, planSteps);
         }
       }
     }
@@ -3090,6 +3084,11 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
     // container and re-rendered from scratch on every turn — a jarring
     // "flash" of the full conversation. We only refresh lightweight
     // sidebar / context surfaces that don't drive the chat display.
+    //
+    // Clear the cancelling flag here too (defensive — turn_cancelled
+    // normally clears it, but on a normal-completion turn we still want
+    // to drop any stale marker from a prior stop attempt on this sid).
+    if (sid) clearSidCancelled(sid);
     const { activeSid, sessions, runningSessions } = store.get();
 
     if (sid) {
@@ -3169,14 +3168,19 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
     // (no further events will ever come for it).
     //
     // Race watch: when the user clicks stop and the queue is
-    // non-empty, cancelTurn fires a fire-and-forget sendFromQueue
-    // that creates a NEW turn. The OLD turn's `turn_cancelled` and
-    // the NEW turn's `turn_start` race on the SSE stream. If
-    // `turn_cancelled` arrives AFTER `turn_start`, runningSessions
-    // is already true for the new turn — we must NOT clobber it.
-    // Use a monotonic counter: a turn_start bumps it, this event
-    // only acts if the current counter still matches the turn we
-    // think is being cancelled.
+    // non-empty, the turn_cancelled handler below flushes the queue
+    // with a 200ms delay (see flushComposerQueue call), which spawns
+    // a NEW turn. The OLD turn's `turn_cancelled` and the NEW turn's
+    // `turn_start` race on the SSE stream. If `turn_cancelled`
+    // arrives AFTER `turn_start`, runningSessions is already true
+    // for the new turn — we must NOT clobber it. The wasRunning gate
+    // below is what makes this safe: a fresh turn_start has already
+    // cleared runningSessions[sid], so wasRunning is false and we
+    // skip the setActiveRunning(false) / updateSendStopButton() calls.
+    //
+    // Clear the cancellingSids marker so a subsequent turn_start on
+    // the same sid isn't dropped by routeSSEEvent's tail filter.
+    if (sid) clearSidCancelled(sid);
     const { activeSid, runningSessions } = store.get();
     const wasRunning = sid ? !!runningSessions[sid] : false;
     if (sid) {
@@ -3206,9 +3210,9 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
       // forever.
       streamCtx(sid).pendingTools.forEach((card) => updateToolCardStatus(card, "cancelled"));
       streamCtx(sid).pendingTools.clear();
-      // else: the user already replaced this turn via cancel→
-      // sendFromQueue. A fresh turn_start has bumped runningSessions
-      // back to true; don't tear that down.
+      // else: the user already replaced this turn via cancel →
+      // flushComposerQueue → createTurn. A fresh turn_start has bumped
+      // runningSessions back to true; don't tear that down.
     }
     // Flush queued prompts now that this session's turn has closed (cancel /
     // fail). OUTSIDE the activeSid guard (matches turn_end) so a queued
@@ -3230,7 +3234,11 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
 }
 
 
-// Legacy alias — the unified composer button is driven by setComposerRunning.
+// Bridge into runtime-state's _deps — runtime-state can't import
+// setComposerRunning directly (would create a circular import), so
+// the activeSid-agnostic side asks main.ts to refresh the active
+// composer's button. Kept as a named function (not inlined at the
+// 10-ish call sites) so the dependency is grep-able.
 function updateSendStopButton() {
   const sid = store.get().activeSid || "";
   if (sid) setComposerRunning(sid, isActiveRunning());
@@ -3261,10 +3269,6 @@ function updateContextProgress(pct: number, tokens: number, sid?: string) {
 // The `turn_end` event flushes it. The user sees a chip above the
 // composer with a one-click edit / clear affordance. Per-session —
 // background sessions keep their own queues untouched.
-// Legacy aliases — delegate to the per-session canonical functions for the
-// active session. Deleted once all callers move to the sid-aware versions.
-function queuePromptMessage() { queueComposerMessage(store.get().activeSid || ""); }
-function clearPendingMessage() { clearComposerPending(store.get().activeSid || ""); }
 
 // Shared compaction/prune flow used by both the global composer and the
 // split-pane composer, so /compact behaves identically in every pane.
@@ -3334,37 +3338,7 @@ async function runCompactFlow(sid: string, isPrune: boolean, messagesEl: HTMLEle
   }
 }
 
-function editPendingMessage() { editComposerPending(store.get().activeSid || ""); }
 function renderPendingBar() { renderComposerPending(store.get().activeSid || ""); }
-
-// ---- Cancel ----
-async function cancelTurn() {
-  const { activeSid } = store.get();
-  if (!activeSid) return;
-  // Cancel the turn outright. Lock any pending question cards so
-  // the user sees them as cancelled.
-  const pendingCards = document.querySelectorAll(".question-card:not(.question-card-answered):not(.question-card-cancelled)");
-  pendingCards.forEach(card => {
-    (card as HTMLElement).querySelector(".question-input-row")?.remove();
-    (card as HTMLElement).querySelector(".question-options")?.remove();
-    (card as HTMLElement).querySelector(".question-footer")?.remove();
-    card.classList.add("question-card-cancelled");
-  });
-  store.set({ questionPending: false });
-  // Immediately update the UI (stop button → send, remove typing indicator).
-  // Don't wait for the backend cancel response — the user should see instant
-  // feedback. The backend cancel is fire-and-forget below.
-  setActiveRunning(false);
-  removeTyping();
-  updateSendStopButton();
-  // Tell the backend to cancel the running turn (fire-and-forget).
-  api.cancelTurn(activeSid).catch(() => { /* best effort */ });
-  // Flush the queued message after a short delay (gives the backend time to
-  // clean up the old runner before the new turn starts). Uses
-  // flushComposerQueue which correctly reads queue[0] (the old manual flush
-  // read pendingMessages[sid].text on an ARRAY → undefined → sent nothing).
-  flushComposerQueue(activeSid, 300);
-}
 
 // ---------------------------------------------------------------------------
 // Unified composer BEHAVIOR layer (sid-parameterized). One implementation
@@ -3400,8 +3374,17 @@ function renderComposerPreviews(sid: string) {
     const item = document.createElement("div");
     item.className = "image-preview-item";
     const im = document.createElement("img");
-    im.src = img.thumbUrl;
+    // Same blob-vs-disk strategy as the queued bar: live session uses
+    // the instant blob URL, post-refresh falls back to /attachments.
+    // state.ts also strips blob: URLs from localStorage on serialize,
+    // so img.thumbUrl is typically empty after a reload.
+    const fallbackSrc = attachmentUrl(img.path);
+    im.src = img.thumbUrl || fallbackSrc;
     im.alt = img.name;
+    im.addEventListener("error", () => {
+      if (im.src === fallbackSrc) return;
+      im.src = fallbackSrc;
+    }, { once: true });
     const rm = document.createElement("button");
     rm.className = "image-preview-remove";
     rm.title = "Remove";
@@ -3448,11 +3431,21 @@ function renderComposerPending(sid: string) {
       thumbContainer.className = "pending-bar-images";
       item.images.forEach(img => {
         const im = document.createElement("img");
-        im.src = img.thumbUrl;
+        // Prefer the session-local blob URL (instant preview during a
+        // live session); fall back to the on-disk attachment on refresh
+        // — the blob URL is page-local (URL.createObjectURL) and dies
+        // when the page reloads, while path is durable server-side and
+        // served via GET /attachments. Same fallback applies to draft
+        // previews below.
+        const fallbackSrc = attachmentUrl(img.path);
+        im.src = img.thumbUrl || fallbackSrc;
         im.alt = img.name;
         im.className = "pending-bar-thumb";
-        // Store full image URL for lightbox
-        im.setAttribute("data-full-src", attachmentUrl(img.path));
+        im.setAttribute("data-full-src", fallbackSrc);
+        im.addEventListener("error", () => {
+          if (im.src === fallbackSrc) return;
+          im.src = fallbackSrc;
+        }, { once: true });
         thumbContainer.appendChild(im);
       });
       itemEl.appendChild(thumbContainer);
@@ -3656,6 +3649,14 @@ function flushComposerQueue(sid: string, delayMs: number) {
 function cancelComposerTurn(sid: string) {
   if (!sid) return;
   api.cancelTurn(sid).catch(() => { /* ignore */ });
+  // Mark this sid so routeSSEEvent swallows the in-flight tail events
+  // (delta / reasoning_delta / tool_start / usage_update) that are
+  // already buffered in the SSE pipe or still being generated by the
+  // upstream model. Without this, the assistant bubble keeps growing
+  // for ~50-200ms after the stop click — the user sees "Thinking..."
+  // and new text even though they already pressed stop. Cleared by the
+  // turn_cancelled / turn_failed handler below.
+  markSidCancelled(sid);
   setSessionRunning(sid, false);
   setComposerRunning(sid, false);
   renderSessions();
@@ -3680,7 +3681,9 @@ function clearComposerPending(sid: string) {
 }
 
 function editComposerPending(sid: string, itemId?: string) {
-  // If itemId provided, edit that specific item; otherwise edit the first one (legacy)
+  // Pull the queued item back into the composer textarea for editing.
+  // With an itemId we target a specific entry; without one we edit
+  // the head of the queue (the next message that would flush).
   const queue = getPendingQueue(sid);
   if (queue.length === 0) return;
   const targetId = itemId || queue[0].id;
@@ -3848,38 +3851,6 @@ function renderComposers() {
     host.replaceChildren();
     host.dataset.sid = "";
   }
-}
-
-// ---- Send ----
-// Legacy alias — the unified send path is sendComposerMessage(sid).
-async function sendMessage() {
-  if (!store.get().activeSid) {
-    try { await createSession(); } catch { return; }
-  }
-  const sid = store.get().activeSid;
-  if (sid) await sendComposerMessage(sid);
-}
-
-// Send a payload that came from the queue bar (turn_end / cancel
-// flush), bypassing the prompt textarea entirely. The previous
-// implementation wrote `pending` into promptEl.value and then
-// called sendMessage, but sendMessage's catch block restores the
-// captured `text` to the prompt on any createTurn failure — and
-// appendUserMsg had ALREADY optimistically rendered the user
-// message in chat before the await, so the failure path produced
-// "message in chat + text in input" duplicates.
-//
-// sendFromQueue takes the content as parameters and re-queues it
-// (not the prompt) on failure, so the next turn_end retries the
-// same payload. The user's typed draft in promptEl.value is
-// untouched throughout — queued messages and live typing don't
-// fight for the same textarea slot.
-// Legacy alias — delegates to the per-session sendComposerFromQueue for the
-// active session (the only session whose queue the legacy flush paths drain).
-async function sendFromQueue(text: string, images: PendingAttachment[], initialRetries: number = 0) {
-  const sid = store.get().activeSid;
-  if (!sid) return;
-  await sendComposerFromQueue(sid, text, images, initialRetries);
 }
 
 // ---- Plan ----

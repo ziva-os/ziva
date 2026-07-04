@@ -245,8 +245,13 @@ class AnthropicChatAdapter:
         # Wrap only the connection setup (__aenter__) with retry. Once the
         # stream starts yielding, errors propagate — the runtime's
         # turn-level retry loop handles mid-stream failures via stream_reset.
-        stream_ctx = self._client.messages.stream(**kwargs)
-        stream = await call_with_retry(stream_ctx.__aenter__)
+        stream_ctx = None
+        async def _connect_stream():
+            nonlocal stream_ctx
+            stream_ctx = self._client.messages.stream(**kwargs)
+            return await stream_ctx.__aenter__()
+
+        stream = await call_with_retry(_connect_stream)
         try:
             tool_calls_acc: dict[int, dict] = {}
 

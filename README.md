@@ -1,69 +1,44 @@
-# ziva
+# Ziva
 
-Clean-slate implementation of a Codex-like CLI/Desktop backend runtime.
+Ziva is a highly modular, codex-like AI agent runtime and desktop application. 
+It features a full-fledged Python SDK for agent orchestration, a Vite+React web frontend, and an Electron native desktop shell capable of side-by-side browser automation.
 
-## Implemented
-- Unified extension API for `prompt/tool/skill/hook/memory`
-- YAML config with layered merge/strict validation
-- Plugin manifest loader with runtime checks
-- OpenAI Agents adapter (single-SDK strategy)
-- ACP protocol server:
-  - `initialize`
-  - `ping`
-  - `tools/list`
-  - `chat`
-  - `chat_stream` (event timeline + final output)
-  - `chat_stream_chunks` (incremental chunk list + final payload)
-- Desktop backend API + minimal UI shell with SSE timeline
-- Session history endpoints for desktop:
-  - `GET /sessions`
-  - `GET /sessions/{id}/messages`
-  - `GET /sessions/{id}/turns`
-- Model -> tool -> model execution loop with guardrails
+## Project Structure
 
-## Tool call protocol
-Preferred structured format:
+- **`src/ziva`**: The core Python SDK. Handles Model-Tool loops, token compaction, MCP clients, and capability registries.
+- **`web/`**: The frontend UI. Implements the chat layout, SSE real-time streaming, and terminal/file tree views.
+- **`electron/`**: The desktop shell. Manages IPC, CDP browser integration, and bundles the Python backend via PyInstaller.
+- **`plugins/`**: Dynamically loaded external tools, skills, and memory backends.
+- **`docs/`**: Technical documentation (see `docs/architecture.md`).
 
-```text
-[[TOOL_CALL]]{"name":"echo","arguments":{"text":"hello"}}[[/TOOL_CALL]]
-```
+## Quick Start
 
-Backward-compatible format:
+### Installation
 
-```text
-TOOL_CALL echo {"text":"hello"}
-```
-
-## ACP error shape
-ACP errors include JSON-RPC error + classification:
-
-```json
-{
-  "error": {
-    "code": -32602,
-    "message": "params.messages must be a non-empty array",
-    "data": {"classification": "invalid_params"}
-  }
-}
-```
-
-## Commands
-```bash
-# single prompt
-PYTHONPATH=src python -m ziva.app.cli run "hello"
-
-# ACP server over stdio
-PYTHONPATH=src python -m ziva.app.cli acp serve
-
-# desktop backend API (HTTP + SSE + minimal UI)
-PYTHONPATH=src python -m ziva.app.cli desktop serve --host 127.0.0.1 --port 4097
-# then open http://127.0.0.1:4097/
-```
-
-## Tests
-Note: in this environment, pytest capture plugin segfaults; run with `-p no:capture`.
+Use `uv` (or `pip`) to install the core SDK and its dependencies:
 
 ```bash
-PYTHONPATH=src python -m pytest -q -p no:capture tests
-PYTHONPATH=src python scripts/smoke_test.py
+uv pip install -e .
 ```
+
+### Running the Application
+
+**1. Run the Desktop API (Backend Server)**
+```bash
+PYTHONPATH=src uv run python -m ziva.app.cli desktop serve --host 127.0.0.1 --port 4097
+```
+
+**2. Run the Electron Desktop App**
+```bash
+cd electron
+npm install
+npm run dev
+```
+
+## Features
+- **Unified Extension API**: Dynamically load `prompt`, `tool`, `skill`, `hook`, and `memory` from `manifest.yaml` definitions.
+- **Desktop Browser Integration**: A seamless side-by-side Ziva agent + Chromium tabbed browser experience.
+- **Robust Model Loop**: Multi-turn execution, context auto-compaction, and dynamic tool schemas.
+
+## Configuration
+Ziva's runtime is fully configurable via layered YAML files, allowing strict validation and merge capabilities across workspaces and global settings.

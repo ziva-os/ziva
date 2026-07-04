@@ -287,65 +287,99 @@ function renderTabContent(tab: RightPanelTab, container: HTMLElement) {
   }
 }
 
-let _currentPlanSteps: { id?: string; description?: string; status?: string }[] = [];
-
 function renderPlanTab(container: HTMLElement) {
-  container.innerHTML = `<div class="panel-content-body plan-panel"><div class="plan-empty">Loading...</div></div>`;
-  // Load latest plan from server
+  // Reactive: subscribe to store.currentPlanSteps + activeSid changes
+  // and re-paint from the cache. The previous imperative version called
+  // panel.innerHTML only inside the SSE handler that ran update_plan;
+  // when the LLM didn't push an update_plan incrementally (which it
+  // routinely doesn't, despite the prompt asking for it), the panel
+  // showed a stale state for tens of seconds until the LLM finally
+  // caught up. We still fetch the server's stored plan on first open
+  // for cold-start, but for subsequent updates the store IS the source
+  // of truth and any currentPlanSteps change triggers an instant paint.
+  ensurePlanPanel(container);
+  // Replace the placeholder text now; the subscriber will overwrite
+  // once we resolve from the server.
+  const placeholder = container.querySelector(".plan-panel") as HTMLElement | null;
+  if (placeholder) placeholder.innerHTML = `<div class="plan-empty">Loading...</div>`;
   const sid = store.get().activeSid;
-  if (sid) {
-    api.getPlan(sid).then(steps => {
-      if (steps && steps.length > 0) {
-        _currentPlanSteps = steps as { id?: string; description?: string; status?: string }[];
-        updatePlanTabContent(_currentPlanSteps);
-      } else if (_currentPlanSteps.length > 0) {
-        updatePlanTabContent(_currentPlanSteps);
-      } else {
-        const panel = container.querySelector(".plan-panel") as HTMLElement;
-        if (panel) panel.innerHTML = `<div class="plan-empty">No active plan</div>`;
+  if (!sid) {
+    if (placeholder) placeholder.innerHTML = `<div class="plan-empty">No active plan</div>`;
+    return;
+  }
+  api.getPlan(sid).then(steps => {
+    const list = (steps || []) as { id?: string; description?: string; status?: string }[];
+    if (list.length > 0) {
+      // Write through to the store so the subscriber paints from the
+      // same path as a live update_plan event — single render path.
+      mergeStepsIntoStore(sid, list);
+    } else {
+      // Server says no plan for this sid. If the live SSE has cached
+      // anything, leave it; otherwise paint the empty state.
+      const cached = store.get().currentPlanSteps?.[sid];
+      if (!cached || cached.length === 0) {
+        if (placeholder) placeholder.innerHTML = `<div class="plan-empty">No active plan</div>`;
       }
-    }).catch(() => {
-      const panel = container.querySelector(".plan-panel") as HTMLElement;
-      if (panel) panel.innerHTML = `<div class="plan-empty">No active plan</div>`;
-    });
-  } else {
-    const panel = container.querySelector(".plan-panel") as HTMLElement;
-    if (panel) panel.innerHTML = `<div class="plan-empty">No active plan</div>`;
+    }
+  }).catch(() => {
+    const ph = container.querySelector(".plan-panel") as HTMLElement | null;
+    if (ph) ph.innerHTML = `<div class="plan-empty">No active plan</div>`;
+  });
+}
+
+// Pure data: write steps to store, no DOM. Auto-creates the Plan tab
+// once per session so the right panel surfaces immediately on the
+// first update_plan of an active session.
+export function updatePlanTabContent(sid: string, steps: { id?: string; description?: string; status?: string }[]) {
+  mergeStepsIntoStore(sid, steps);
+  // First-time-only: pop the right panel open with a Plan tab so the
+  // user actually sees the updates instead of having to discover the
+  // tab via the + menu. Reactive subscriber below does the painting.
+  const { rightPanelTabs, activeRightTabId } = store.get();
+  const hasActivePlanTab = rightPanelTabs.some(t => t.type === "plan" && t.id === activeRightTabId);
+  const hasAnyPlanTab = rightPanelTabs.some(t => t.type === "plan");
+  if (!hasAnyPlanTab) {
+    openRightPanel("plan");
+  } else if (!hasActivePlanTab) {
+    // Switch to the existing Plan tab so the live render is visible.
+    const planTab = rightPanelTabs.find(t => t.type === "plan");
+    if (planTab) activateTab(planTab.id);
   }
 }
 
-export function updatePlanTabContent(steps: { id?: string; description?: string; status?: string }[]) {
-  _currentPlanSteps = steps;
-  const { rightPanelTabs } = store.get();
-  const planTab = rightPanelTabs.find(t => t.type === "plan");
-  if (!planTab) return;
-
-  // Always find the panel-content via the right panel body to avoid wrong container
-  const rp = $("rightPanel");
-  const body = rp.querySelector(".right-panel-body") as HTMLElement;
-  if (!body) return;
-  let content = body.querySelector(`[data-tab-id="${planTab.id}"]`) as HTMLElement;
-  if (!content) {
-    activateTab(planTab.id);
-    content = body.querySelector(`[data-tab-id="${planTab.id}"]`) as HTMLElement;
+function mergeStepsIntoStore(sid: string, steps: { id?: string; description?: string; status?: string }[]) {
+  const cur = store.get().currentPlanSteps || {};
+  if (steps && steps.length > 0) {
+    // Replace this sid's entry; don't touch other sessions'. Pure data,
+    // no DOM access — the subscriber below reacts to the set().
+    store.set({ currentPlanSteps: { ...cur, [sid]: steps } });
+  } else {
+    const next = { ...cur };
+    delete next[sid];
+    store.set({ currentPlanSteps: next });
   }
-  if (!content) return;
-  let panel = content.querySelector(".plan-panel") as HTMLElement;
+}
+
+// Lazily create the `.plan-panel` wrapper inside `container`. The
+// subscriber below re-fills its innerHTML — we keep the element
+// stable so reactive paints don't churn the DOM.
+function ensurePlanPanel(container: HTMLElement): HTMLElement | null {
+  let panel = container.querySelector(".plan-panel") as HTMLElement | null;
   if (!panel) {
-    // Create the plan-panel directly instead of calling renderPlanTab,
-    // which would asynchronously fetch from the server and overwrite
-    // the steps we already have from the live tool_end event.
     panel = document.createElement("div");
     panel.className = "panel-content-body plan-panel";
-    content.appendChild(panel);
+    container.appendChild(panel);
   }
-  if (!panel) return;
+  return panel;
+}
 
+// Build the plan HTML from a steps array. Pure function; the result is
+// assigned via panel.innerHTML. Kept separate from data writes so the
+// reactive subscriber can call it without re-entering the write path.
+function buildPlanHtml(steps: { id?: string; description?: string; status?: string }[]): string {
   const completed = steps.filter((s) => s.status === "completed").length;
-  const inProgress = steps.filter((s) => s.status === "in_progress").length;
   const total = steps.length;
   const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
-
   let html = `<div class="plan-summary">${completed}/${total} done (${pct}%)</div>`;
   html += `<div class="plan-progress-bar"><div class="plan-progress-fill" style="width:${pct}%"></div></div>`;
   html += `<div class="plan-steps">`;
@@ -355,7 +389,42 @@ export function updatePlanTabContent(steps: { id?: string; description?: string;
     html += `<div class="plan-step plan-step-${esc(cls)}"><span class="plan-step-icon">${icon}</span><span class="plan-step-text">${esc(step.description || step.id || "")}</span></div>`;
   }
   html += `</div>`;
-  panel.innerHTML = html;
+  return html;
+}
+
+// Reactive: re-paint the active Plan tab whenever either the cached
+// plan for the active sid changes OR the active sid itself switches.
+// One render path for live SSE updates, server reconciliations, and
+// session switches — eliminating the previous race where multiple
+// imperative code paths could overwrite each other and leave the panel
+// showing a stale state.
+let _planPanelSubscribed = false;
+function paintPlanFromStore() {
+  const { activeSid, rightPanelTabs, activeRightTabId, currentPlanSteps } = store.get();
+  // No active session or no Plan tab open? Nothing to paint.
+  const planTab = rightPanelTabs.find(t => t.type === "plan" && t.id === activeRightTabId);
+  if (!planTab) return;
+  const rp = $("rightPanel");
+  if (!rp) return;
+  const body = rp.querySelector(".right-panel-body") as HTMLElement | null;
+  if (!body) return;
+  const content = body.querySelector(`[data-tab-id="${planTab.id}"]`) as HTMLElement | null;
+  if (!content) return;
+  const panel = ensurePlanPanel(content);
+  if (!panel) return;
+  const steps = (activeSid && currentPlanSteps?.[activeSid]) || [];
+  if (steps.length === 0) {
+    panel.innerHTML = `<div class="plan-empty">No active plan</div>`;
+    return;
+  }
+  panel.innerHTML = buildPlanHtml(steps);
+}
+
+// Wire the store subscription once on first call. Idempotent.
+export function ensurePlanSubscriber() {
+  if (_planPanelSubscribed) return;
+  _planPanelSubscribed = true;
+  store.subscribe(paintPlanFromStore);
 }
 
 function renderReviewTab(container: HTMLElement) {
@@ -618,8 +687,28 @@ export function refreshActiveReviewTabs() {
   const activeTab = rightPanelTabs.find(t => t.id === activeRightTabId && t.type === "review");
   if (!activeTab) return;
   const rp = $("rightPanel");
-  const container = rp.querySelector(`[data-tab-id="${activeTab.id}"]`) as HTMLElement;
+  if (!rp) return;
+  const body = rp.querySelector(".right-panel-body");
+  if (!body) return;
+  const container = body.querySelector(`[data-tab-id="${activeTab.id}"]`) as HTMLElement | null;
   if (container) refreshDiffForContainer(container);
+}
+
+// Re-render the Plan tab content for the current active session.
+// Called from switchSession() so the Plan view follows the user when
+// they jump between sidebar entries — without this the previously
+// active session's plan would remain on screen even though we've
+// moved to a different conversation.
+export function refreshActivePlanTab() {
+  const { rightPanelTabs, activeRightTabId } = store.get();
+  const activeTab = rightPanelTabs.find(t => t.id === activeRightTabId && t.type === "plan");
+  if (!activeTab) return;
+  const rp = $("rightPanel");
+  if (!rp) return;
+  const body = rp.querySelector(".right-panel-body");
+  if (!body) return;
+  const container = body.querySelector(`[data-tab-id="${activeTab.id}"]`) as HTMLElement | null;
+  if (container) renderPlanTab(container);
 }
 
 async function refreshDiffForContainer(container: HTMLElement) {
