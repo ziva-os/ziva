@@ -11,30 +11,33 @@ ipcRenderer.on("ziva:open-link-in-panel", (_event, url: string) => {
   if (_openLinkInPanelHandler) _openLinkInPanelHandler(url);
 });
 
+// Embedded-browser event channels: the main process (which owns the native
+// WebContentsView per web tab) pushes navigation/title/window-open events here
+// so the renderer's tab strip + omnibox stay in sync with the real Chromium view.
+let _browserNewTabHandler: any = null;
+let _browserNavHandler: any = null;
+let _browserTitleHandler: any = null;
+ipcRenderer.on("ziva:browser-new-tab", (_e, url: string) => { if (_browserNewTabHandler) _browserNewTabHandler(url); });
+ipcRenderer.on("ziva:browser-nav", (_e, e: any) => { if (_browserNavHandler) _browserNavHandler(e); });
+ipcRenderer.on("ziva:browser-title", (_e, e: any) => { if (_browserTitleHandler) _browserTitleHandler(e); });
+
 contextBridge.exposeInMainWorld("electronAPI", {
   getBackendUrl: () => ipcRenderer.invoke("get-backend-url"),
   isElectron: () => ipcRenderer.invoke("is-electron"),
-  // Open a URL in the user's external (system default) browser. Used now that
-  // the in-app embedded browser panel has been removed — clicked links go to
-  // the user's browser instead of an in-app <webview>.
   openExternal: (url: string) => ipcRenderer.invoke("open-external", url),
-  // CDP bridge: the renderer registers the Agent Browser webview as a
-  // target, and asks the main process for the port chrome-devtools-mcp
-  // should be configured with.
   getCdpPort: () => ipcRenderer.invoke("get-cdp-port"),
-  registerCdpPage: (wcId: number) =>
-    ipcRenderer.invoke("register-cdp-page", wcId),
-  unregisterCdpPage: (targetId: string) =>
-    ipcRenderer.invoke("unregister-cdp-page", targetId),
-  // Webview preload path, async via main process. renderBrowserTab caches
-  // this once at init and uses it to set <webview>.preload.
-  getBrowserPreloadPath: () => ipcRenderer.invoke("get-browser-preload-path"),
-  // Partition to use for the Agent Browser webview so it gets the dedicated
-  // session with explicit system proxy settings.
-  browserPartition: "persist:ziva-browser",
-  // Register a single renderer-side callback that handles every link
-  // forwarded by the main process (target=_blank / window.open).
-  setOpenLinkInPanelHandler: (cb: (url: string) => void) => {
-    _openLinkInPanelHandler = cb;
-  },
+  // ---- Embedded Chromium browser (WebContentsView) ----
+  // The renderer is the host shell; it asks the main process to create/show/
+  // navigate/close native browser views and reports the rectangle where the
+  // view should be positioned.
+  browserSetArea: (b: { x: number; y: number; width: number; height: number }) =>
+    ipcRenderer.invoke("browser-set-area", b),
+  browserCreateTab: (url?: string) => ipcRenderer.invoke("browser-create-tab", url),
+  browserShowTab: (id: string) => ipcRenderer.invoke("browser-show-tab", id),
+  browserNavigate: (id: string, url: string) => ipcRenderer.invoke("browser-navigate", id, url),
+  browserNav: (id: string, kind: "back" | "forward" | "reload") => ipcRenderer.invoke("browser-nav", id, kind),
+  browserCloseTab: (id: string) => ipcRenderer.invoke("browser-close-tab", id),
+  onBrowserNewTab: (cb: (url: string) => void) => { _browserNewTabHandler = cb; },
+  onBrowserNav: (cb: (e: { id: string; url: string }) => void) => { _browserNavHandler = cb; },
+  onBrowserTitle: (cb: (e: { id: string; title: string }) => void) => { _browserTitleHandler = cb; },
 });

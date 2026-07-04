@@ -12,6 +12,11 @@
   color: var(--text, #e8eaed);
 }
 
+/* In browser-shell mode the ziva-layout's own toolbar is redundant — the
+   browser tab strip + omnibox IS the chrome. Hide it so the Ziva tab shows
+   clean chat content (sidebar + messages + composer) like a web page. */
+.browser-shell .ziva-toolbar { display: none !important; }
+
 /* ---- tab strip ---- */
 .browser-tabstrip {
   display: flex;
@@ -86,7 +91,7 @@ body.electron-darwin .browser-tabstrip { padding-left: 80px; }
 }
 
 /* ---- chrome toolbar (web tabs only) ---- */
-.browser-toolbar {
+.browser-omnibox {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -135,23 +140,27 @@ body.electron-darwin .browser-tabstrip { padding-left: 80px; }
 }
 
 /* ---- content area: ziva view vs webviews ---- */
-.browser-content {
+.browser-body {
   flex: 1;
   position: relative;
   overflow: hidden;
   display: flex;
 }
-/* The existing chat layout now lives inside .browser-content; it was sized to
+/* The existing chat layout now lives inside .browser-body; it was sized to
    100vh as the app root, so override to fill the content area instead. */
-.browser-content .ziva-layout {
+.browser-body .ziva-layout {
   flex: 1;
   height: 100%;
   min-width: 0;
 }
-.web-views {
+/* The web area is a placeholder whose on-screen rectangle the main process
+   reads to position the native WebContentsView over it (Electron). In web/dev
+   mode the <iframe> fills it. */
+.browser-web-area {
   position: absolute;
   inset: 0;
   display: none;
+  background: #fff;
 }
 .web-frame {
   width: 100%;
@@ -160,3 +169,4 @@ body.electron-darwin .browser-tabstrip { padding-left: 80px; }
   display: block;
   background: #fff;
 }
+

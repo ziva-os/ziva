@@ -1,25 +1,17 @@
 /**
- * Pinned-tab browser shell (Phase 4).
+ * Browser shell — embeds a real Chromium browser in the desktop app.
  *
- * Wraps the existing chat UI (`.ziva-layout`) in a Chromium-like shell:
+ * Two modes:
+ *  • Electron: each web tab is a native WebContentsView owned by the MAIN
+ *    process (a true embedded browser, not a DOM <webview>). This renderer is
+ *    the host shell — a tab strip + omnibox that drives the main-process views
+ *    over IPC, plus a "web area" div whose on-screen rectangle the main process
+ *    reads (browser-set-area) to position the WebContentsView over.
+ *  • Web/dev (no Electron): falls back to an <iframe> via /api/proxy so the UI
+ *    is still drivable in a browser, though it's not a "real" embedded browser.
  *
- *   ┌ tabstrip ──────────────────────────────────────────────┐
- *   │ 📌 Ziva   ● example.com   ● docs.org   [+]             │
- *   ├ toolbar (web tabs only) ───────────────────────────────┤
- *   │ ◂ ▸ ⟳  [url]                                           │
- *   ├ content ───────────────────────────────────────────────┤
- *   │   Ziva tab → the chat UI (.ziva-layout)                │
- *   │   Web tab  → an embedded <webview> filling the area    │
- *   └────────────────────────────────────────────────────────┘
- *
- * The Ziva tab is always index 0, pinned, and cannot be closed. Each web tab
- * is an Electron <webview> on the `persist:ziva-browser` partition; on
- * `did-attach` it registers with the CDP bridge (port 9223) so chrome-devtools-
- * mcp can drive it. The Ziva tab is plain renderer DOM, so it is never exposed
- * as a CDP target (the agent can't inspect the chat it lives in).
- *
- * Tabstrip/toolbar are built with the DOM API (no innerHTML) so page-derived
- * titles/URLs can't introduce markup.
+ * Ziva is the leftmost pinned tab (the chat UI). Web tabs are real browser
+ * panes. Links from chat / from web pages open as new web tabs.
  */
 
 export interface BrowserTab {
@@ -27,7 +19,7 @@ export interface BrowserTab {
   type: "ziva" | "web";
   url?: string;
   title: string;
-  el?: HTMLElement; // the <webview>/<iframe> for web tabs
+  el?: HTMLElement; // the <iframe> for web-mode fallback (unused in Electron)
 }
 
 const ZIVA_TAB_ID = "ziva";
@@ -35,191 +27,131 @@ let tabs: BrowserTab[] = [{ id: ZIVA_TAB_ID, type: "ziva", title: "Ziva" }];
 let activeTabId = ZIVA_TAB_ID;
 let _seq = 0;
 
-// DOM refs — populated in initBrowserShell().
 let strip: HTMLElement | null = null;
-let toolbar: HTMLElement | null = null;
+let omnibox: HTMLElement | null = null;
 let zivaLayout: HTMLElement | null = null;
-let webViews: HTMLElement | null = null;
+let webArea: HTMLElement | null = null;
 
 const isElectron = !!(window as any).electronAPI;
+const ea: any = (window as any).electronAPI;
 
-/**
- * Initialize the shell. The existing chat UI (`.ziva-layout`, already rendered
- * into #app by main.ts) is moved INSIDE the shell's content area; the
- * tabstrip, toolbar, and web-views container are built around it via the DOM
- * API (no template rewrite). The Ziva tab shows that layout; web tabs show
- * embedded <webview>s.
- */
+function nextId(): string { _seq += 1; return "web_" + _seq; }
+
+/** Build the shell: tab strip + omnibox + body (ziva-layout | web-area). */
 export function initBrowserShell(): void {
   const app = document.getElementById("app");
   if (!app) return;
   const layout = app.querySelector(".ziva-layout") as HTMLElement | null;
   if (layout) layout.id = "zivaLayout";
+  zivaLayout = layout;
 
-  // Build the shell and relocate the existing chat layout into it.
   const shell = document.createElement("div");
   shell.className = "browser-shell";
   strip = document.createElement("div");
   strip.id = "browserTabstrip";
   strip.className = "browser-tabstrip";
-  toolbar = document.createElement("div");
-  toolbar.id = "browserToolbar";
-  toolbar.className = "browser-toolbar";
-  toolbar.style.display = "none";
-  const content = document.createElement("div");
-  content.className = "browser-content";
-  webViews = document.createElement("div");
-  webViews.id = "webViews";
-  webViews.className = "web-views";
+  omnibox = document.createElement("div");
+  omnibox.id = "browserOmnibox";
+  omnibox.className = "browser-omnibox";
+  const body = document.createElement("div");
+  body.className = "browser-body";
+  webArea = document.createElement("div");
+  webArea.id = "browserWebArea";
+  webArea.className = "browser-web-area";
 
   app.replaceChildren(shell);
-  shell.append(strip, toolbar, content);
-  if (layout) content.append(layout);
-  content.append(webViews);
-  zivaLayout = layout;
+  shell.append(strip, omnibox, body);
+  if (layout) body.append(layout);
+  body.append(webArea);
 
   renderTabstrip();
-  renderToolbar();
+  renderOmnibox();
   applyActive();
 
-  // target=_blank / window.open inside any webview → main process forwards
-  // the URL here; open it as a new web tab (browser semantics).
-  const ea = (window as any).electronAPI;
-  if (ea?.setOpenLinkInPanelHandler) {
-    ea.setOpenLinkInPanelHandler((url: string) => openInBrowserTab(url));
+  // Report the web-area rectangle to the main process so it can position the
+  // native WebContentsView over it. Re-report on any size change.
+  const report = () => {
+    if (!webArea || !ea?.browserSetArea) return;
+    const r = webArea.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0) ea.browserSetArea({ x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) });
+  };
+  if (typeof ResizeObserver !== "undefined") {
+    const ro = new ResizeObserver(report);
+    ro.observe(webArea);
   }
+  window.addEventListener("resize", report);
+  setTimeout(report, 100);
 
-  // Browser-style keyboard shortcuts. Cmd/Ctrl+T new tab, Cmd/Ctrl+W close
-  // active web tab (never the pinned Ziva tab), Cmd/Ctrl+L focus the URL bar,
-  // Cmd/Ctrl+1..8 switch to tab N, Cmd/Ctrl+9 last tab.
+  // Main → renderer events: target=_blank in a page → new tab; nav/title sync.
+  ea?.onBrowserNewTab?.((url: string) => openInBrowserTab(url));
+  ea?.onBrowserNav?.((e: { id: string; url: string }) => {
+    const t = tabs.find(x => x.id === e.id);
+    if (t) { t.url = e.url; t.title = prettyHost(e.url); if (t.id === activeTabId) renderOmnibox(); renderTabstrip(); }
+  });
+  ea?.onBrowserTitle?.((e: { id: string; title: string }) => {
+    const t = tabs.find(x => x.id === e.id);
+    if (t && e.title) { t.title = e.title; renderTabstrip(); }
+  });
+
+  // Keyboard shortcuts: Cmd/Ctrl+T new tab, +W close, +L focus omnibox.
   document.addEventListener("keydown", (e: KeyboardEvent) => {
     const mod = e.metaKey || e.ctrlKey;
     if (!mod) return;
     const k = e.key.toLowerCase();
-    if (k === "t") { e.preventDefault(); createWebTab(); focusUrlBar(); }
+    if (k === "t") { e.preventDefault(); createWebTab(); }
     else if (k === "w") { e.preventDefault(); closeTab(activeTabId); }
-    else if (k === "l") { e.preventDefault(); focusUrlBar(); }
-    else if (/^[1-9]$/.test(k)) {
-      const idx = Number(k) - 1;
-      const list = tabs;
-      const target = idx === 8 ? list[list.length - 1] : list[idx];
-      if (target) { e.preventDefault(); activateTab(target.id); }
+    else if (k === "l") {
+      e.preventDefault();
+      const inp = omnibox?.querySelector(".bt-url") as HTMLInputElement | null;
+      inp?.focus(); inp?.select();
     }
   });
 }
 
-function focusUrlBar(): void {
-  // Defer one tick so renderToolbar() from a just-created tab has run.
-  requestAnimationFrame(() => {
-    const input = toolbar?.querySelector(".bt-url") as HTMLInputElement | null;
-    input?.focus();
-    input?.select();
-  });
-}
-
-/** Open a URL in a web tab: reuse a tab already on that URL, else make a new one. */
+/** Open a URL in a web tab: reuse a tab on that URL, else make a new one. */
 export function openInBrowserTab(url: string): void {
   const existing = tabs.find(t => t.type === "web" && t.url === url);
   if (existing) { activateTab(existing.id); return; }
-  // If the active web tab is still on about:blank, navigate it instead of piling up tabs.
-  const active = tabs.find(t => t.id === activeTabId);
-  if (active && active.type === "web" && (!active.url || active.url === "about:blank")) {
-    navigateWebTab(active, url);
-    activateTab(active.id);
-    return;
-  }
   createWebTab(url);
 }
 
-function nextId(): string { _seq += 1; return "web_" + _seq; }
-
 function createWebTab(url?: string): void {
   const tab: BrowserTab = { id: nextId(), type: "web", url, title: url ? prettyHost(url) : "New Tab" };
-  tab.el = createFrame(url);
-  if (webViews) webViews.appendChild(tab.el);
+  if (!isElectron) {
+    // Web/dev fallback: an <iframe> via the proxy. Not a real browser, just
+    // keeps the UI drivable outside Electron.
+    const f = document.createElement("iframe");
+    f.className = "web-frame";
+    f.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms allow-popups");
+    f.src = url ? "/api/proxy?url=" + encodeURIComponent(url) : "about:blank";
+    tab.el = f;
+    if (webArea) webArea.appendChild(f);
+  }
   tabs.push(tab);
   activateTab(tab.id);
-  focusUrlBar();
-}
-
-function navigateWebTab(tab: BrowserTab, url: string): void {
-  tab.url = url;
-  tab.title = prettyHost(url);
-  const frame: any = tab.el;
-  if (!frame) return;
-  if (isElectron) { try { frame.loadURL(url); } catch {} }
-  else { frame.src = "/api/proxy?url=" + encodeURIComponent(url); }
-}
-
-function createFrame(url?: string): HTMLElement {
-  let frame: any;
-  if (isElectron) {
-    frame = document.createElement("webview");
-    frame.className = "web-frame";
-    frame.setAttribute("allowpopups", "");
-    const partition = (window as any).electronAPI?.browserPartition || "persist:ziva-browser";
-    frame.setAttribute("partition", partition);
-    // Preload must be set BEFORE attach (Electron captures it at attach time).
-    const preload = (window as any).electronAPI?.browserPreloadPath;
-    if (typeof preload === "string") frame.setAttribute("preload", preload);
-    frame.setAttribute("src", "about:blank");
-    registerCdp(frame);
-    // <a> clicks inside the webview are forwarded by browser-preload.ts via
-    // sendToHost → ipc-message; open them as new web tabs.
-    frame.addEventListener("ipc-message", (e: any) => {
-      if (e.channel === "ziva:open-link-in-panel" && e.args?.[0]) openInBrowserTab(e.args[0]);
+  if (isElectron && ea?.browserCreateTab) {
+    ea.browserCreateTab(url).then((id: string) => {
+      // The main process allocated the real view; keep our id in sync by
+      // reusing the returned id for subsequent navigate/show calls.
+      const t = tabs.find(x => x === tab);
+      if (t) { (t as any).mainId = id; }
     });
-    if (url) {
-      frame.addEventListener("did-attach", () => { try { frame.loadURL(url); } catch {} }, { once: true });
-    }
-    // Keep the URL bar + tab title in sync as the user navigates.
-    frame.addEventListener("did-navigate", (e: any) => onNav(frame, e.url));
-    frame.addEventListener("did-navigate-in-page", (e: any) => onNav(frame, e.url));
-    frame.addEventListener("page-title-updated", (e: any) => {
-      const t = tabs.find(x => x.el === frame);
-      if (t && e.title) { t.title = e.title; renderTabstrip(); }
-    });
-  } else {
-    frame = document.createElement("iframe");
-    frame.className = "web-frame";
-    frame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms allow-popups");
-    frame.src = url ? "/api/proxy?url=" + encodeURIComponent(url) : "about:blank";
   }
-  return frame;
-}
-
-function onNav(frame: any, url: string): void {
-  const t = tabs.find(x => x.el === frame);
-  if (!t) return;
-  t.url = url;
-  t.title = prettyHost(url);
-  renderTabstrip();
-  if (t.id === activeTabId) renderToolbar();
-}
-
-/** Register a webview with the CDP bridge so chrome-devtools-mcp can drive it. */
-function registerCdp(frame: any): void {
-  frame.addEventListener("did-attach", async () => {
-    try {
-      const wcId = frame.getWebContentsId?.();
-      if (typeof wcId !== "number") return;
-      const targetId: string | null = await (window as any).electronAPI.registerCdpPage(wcId);
-      if (!targetId) return;
-      frame._cdpTargetId = targetId;
-      frame.addEventListener("destroyed", () => {
-        (window as any).electronAPI.unregisterCdpPage(targetId).catch(() => {});
-      }, { once: true });
-    } catch (err) {
-      console.error("[browser-shell] CDP register failed:", err);
-    }
-  }, { once: true });
 }
 
 function activateTab(id: string): void {
   activeTabId = id;
+  if (isElectron) {
+    const t = tabs.find(x => x.id === id);
+    const mainId = t && (t as any).mainId;
+    if (t?.type === "web" && mainId && ea?.browserShowTab) ea.browserShowTab(mainId);
+  } else {
+    // web fallback: show the active iframe, hide others
+    tabs.forEach(t => { if (t.el) (t.el as HTMLElement).style.display = (t.id === id) ? "" : "none"; });
+  }
   applyActive();
   renderTabstrip();
-  renderToolbar();
+  renderOmnibox();
 }
 
 function closeTab(id: string): void {
@@ -227,6 +159,7 @@ function closeTab(id: string): void {
   const idx = tabs.findIndex(t => t.id === id);
   if (idx < 0) return;
   const tab = tabs[idx];
+  if (isElectron && (tab as any).mainId && ea?.browserCloseTab) ea.browserCloseTab((tab as any).mainId);
   tab.el?.remove();
   tabs.splice(idx, 1);
   if (activeTabId === id) {
@@ -237,123 +170,106 @@ function closeTab(id: string): void {
   }
 }
 
-/** Show/hide the ziva view vs webviews + toolbar based on the active tab. */
+/** Show/hide ziva-layout vs web-area based on the active tab. */
 function applyActive(): void {
   const active = tabs.find(t => t.id === activeTabId);
   const isWeb = active?.type === "web";
   if (zivaLayout) zivaLayout.style.display = isWeb ? "none" : "";
-  if (toolbar) toolbar.style.display = isWeb ? "" : "none";
-  if (webViews) webViews.style.display = isWeb ? "" : "none";
-  tabs.forEach(t => {
-    if (t.el) (t.el as HTMLElement).style.display = (t.id === activeTabId) ? "" : "none";
-  });
+  if (webArea) webArea.style.display = isWeb ? "" : "none";
+}
+
+function navigateActive(url: string): void {
+  const active = tabs.find(t => t.id === activeTabId);
+  if (!active || active.type !== "web") return;
+  active.url = url;
+  active.title = prettyHost(url);
+  if (isElectron) {
+    const mainId = (active as any).mainId;
+    if (mainId && ea?.browserNavigate) ea.browserNavigate(mainId, url);
+  } else if (active.el) {
+    active.el.src = "/api/proxy?url=" + encodeURIComponent(url);
+  }
+  renderTabstrip();
+}
+
+function navActive(kind: "back" | "forward" | "reload"): void {
+  const active = tabs.find(t => t.id === activeTabId);
+  if (!active || active.type !== "web") return;
+  if (isElectron) {
+    const mainId = (active as any).mainId;
+    if (mainId && ea?.browserNav) ea.browserNav(mainId, kind);
+  } else if (active.el) {
+    try {
+      if (kind === "back") active.el.contentWindow?.history.back();
+      else if (kind === "forward") active.el.contentWindow?.history.forward();
+      else { try { active.el.contentWindow?.location.reload(); } catch { active.el.src = active.el.src; } }
+    } catch {}
+  }
 }
 
 function renderTabstrip(): void {
   if (!strip) return;
-  strip.textContent = ""; // clear safely
+  strip.textContent = "";
   for (const t of tabs) {
     const el = document.createElement("div");
     el.className = "b-tab" + (t.id === activeTabId ? " active" : "") + (t.type === "ziva" ? " b-tab-pinned" : "");
     el.dataset.tab = t.id;
     if (t.type === "ziva") {
-      el.title = "Ziva (pinned)";
-      const pin = document.createElement("span");
-      pin.className = "b-tab-pin";
-      pin.textContent = "📌";
-      el.appendChild(pin);
+      const pin = document.createElement("span"); pin.className = "b-tab-pin"; pin.textContent = "📌"; el.appendChild(pin);
     } else {
-      const fav = document.createElement("span");
-      fav.className = "b-tab-favicon";
-      fav.textContent = "●";
-      el.appendChild(fav);
+      const fav = document.createElement("span"); fav.className = "b-tab-favicon"; fav.textContent = "●"; el.appendChild(fav);
     }
-    const title = document.createElement("span");
-    title.className = "b-tab-title";
-    title.textContent = t.title;
-    el.appendChild(title);
+    const title = document.createElement("span"); title.className = "b-tab-title"; title.textContent = t.title; el.appendChild(title);
     if (t.type !== "ziva") {
       const close = document.createElement("button");
-      close.className = "b-tab-close";
-      close.dataset.close = t.id;
-      close.title = "Close tab";
-      close.textContent = "×";
+      close.className = "b-tab-close"; close.title = "Close tab"; close.textContent = "×";
       close.onclick = (e) => { e.stopPropagation(); closeTab(t.id); };
       el.appendChild(close);
     }
-    el.onclick = (e) => {
-      if ((e.target as HTMLElement).classList.contains("b-tab-close")) return;
-      activateTab(t.id);
-    };
+    el.onclick = (e) => { if ((e.target as HTMLElement).classList.contains("b-tab-close")) return; activateTab(t.id); };
     strip.appendChild(el);
   }
   const add = document.createElement("button");
-  add.className = "b-tab-new";
-  add.id = "btnNewWebTab";
-  add.title = "New tab";
-  add.textContent = "+";
+  add.className = "b-tab-new"; add.title = "New tab"; add.textContent = "+";
   add.onclick = () => createWebTab();
   strip.appendChild(add);
 }
 
-function renderToolbar(): void {
-  if (!toolbar) return;
+function renderOmnibox(): void {
+  if (!omnibox) return;
   const active = tabs.find(t => t.id === activeTabId);
-  if (!active || active.type !== "web") { toolbar.textContent = ""; return; }
-  toolbar.textContent = "";
-  const url = active.url && active.url !== "about:blank" ? active.url : "";
-  const mkBtn = (label: string, kind: string, title: string): HTMLButtonElement => {
+  omnibox.textContent = "";
+  const mkBtn = (label: string, kind: string, title: string, disabled = false): HTMLButtonElement => {
     const b = document.createElement("button");
-    b.className = "bt-btn";
-    b.dataset.nav = kind;
-    b.title = title;
-    b.textContent = label;
+    b.className = "bt-btn"; b.dataset.nav = kind; b.title = title; b.textContent = label;
+    if (disabled) { b.disabled = true; b.style.opacity = "0.3"; }
     return b;
   };
-  const back = mkBtn("◂", "back", "Back");
-  const fwd = mkBtn("▸", "forward", "Forward");
-  const reload = mkBtn("⟳", "reload", "Reload");
+  const isWeb = active?.type === "web";
+  const back = mkBtn("◂", "back", "Back", !isWeb);
+  const fwd = mkBtn("▸", "forward", "Forward", !isWeb);
+  const reload = mkBtn("⟳", "reload", "Reload", !isWeb);
   const input = document.createElement("input");
-  input.type = "text";
-  input.className = "bt-url";
-  input.value = url;
+  input.type = "text"; input.className = "bt-url";
+  input.value = isWeb ? (active!.url && active!.url !== "about:blank" ? active!.url! : "") : "ziva";
   input.placeholder = "Search or enter URL…";
-  const goBtn = document.createElement("button");
-  goBtn.className = "bt-go";
-  goBtn.textContent = "Go";
-  toolbar.append(back, fwd, reload, input, goBtn);
-
-  const frame: any = active.el;
-  const go = () => {
-    let v = (input.value || "").trim();
-    if (!v) return;
-    if (!/^https?:\/\//i.test(v) && !/^[\w-]+(\.[\w-]+)+/.test(v)) {
-      v = "https://www.google.com/search?q=" + encodeURIComponent(v);
-    } else if (!/^https?:\/\//i.test(v)) {
-      v = "https://" + v;
-    }
-    navigateWebTab(active, v);
-  };
-  goBtn.onclick = go;
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
-  back.onclick = () => nav(frame, "back");
-  fwd.onclick = () => nav(frame, "forward");
-  reload.onclick = () => nav(frame, "reload");
-}
-
-function nav(frame: any, kind: "back" | "forward" | "reload"): void {
-  if (!frame) return;
-  try {
-    if (isElectron) {
-      if (kind === "back") frame.goBack();
-      else if (kind === "forward") frame.goForward();
-      else frame.reload();
-    } else {
-      if (kind === "back") frame.contentWindow?.history.back();
-      else if (kind === "forward") frame.contentWindow?.history.forward();
-      else { try { frame.contentWindow?.location.reload(); } catch { frame.src = frame.src; } }
-    }
-  } catch {}
+  if (!isWeb) { input.readOnly = true; input.style.fontStyle = "italic"; input.style.opacity = "0.7"; }
+  const goBtn = document.createElement("button"); goBtn.className = "bt-go"; goBtn.textContent = "Go";
+  omnibox.append(back, fwd, reload, input, goBtn);
+  if (isWeb) {
+    const go = () => {
+      let v = (input.value || "").trim();
+      if (!v) return;
+      if (!/^https?:\/\//i.test(v) && !/^[\w-]+(\.[\w-]+)+/.test(v)) v = "https://www.google.com/search?q=" + encodeURIComponent(v);
+      else if (!/^https?:\/\//i.test(v)) v = "https://" + v;
+      navigateActive(v);
+    };
+    goBtn.onclick = go;
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+    back.onclick = () => navActive("back");
+    fwd.onclick = () => navActive("forward");
+    reload.onclick = () => navActive("reload");
+  }
 }
 
 function prettyHost(url: string): string {

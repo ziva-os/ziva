@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, webContents, session, shell } from "electron";
+import { app, BrowserWindow, ipcMain, webContents, session, shell, WebContentsView } from "electron";
 import * as path from "path";
 import { spawn, ChildProcess } from "child_process";
 import { CdpBridge } from "./cdp-bridge";
@@ -7,10 +7,45 @@ let mainWindow: BrowserWindow | null = null;
 let pythonProcess: ChildProcess | null = null;
 let cdpBridge: CdpBridge | null = null;
 const PORT = 4097;
-// CDP bridge exposing the in-app browser-shell <webview> tabs as CDP targets
-// for chrome-devtools-mcp (the agent drives them here). The Ziva tab is plain
-// renderer DOM and is intentionally NOT exposed.
 const CDP_PORT = Number(process.env.ZIVA_CDP_PORT || 9223);
+
+// ---- Embedded Chromium browser (WebContentsView) ----
+// Each web tab is a real native Chromium view (WebContentsView), managed by the
+// main process and positioned over the "web area" the renderer reserves. This
+// is a true embedded browser (not a <webview> DOM element) — the page renders
+// in its own native web contents, like a real browser pane inside Ziva.
+const browserViews = new Map<string, WebContentsView>();
+let activeBrowserTab: string | null = null;
+// Bounds of the web area in window coords (reported by the renderer). The
+// renderer leaves this rectangle empty (its tab strip + Ziva panel sit around
+// it) and the main process positions the WebContentsView exactly here.
+let browserArea = { x: 0, y: 72, width: 1000, height: 700 };
+
+function applyBrowserArea(): void {
+  for (const [id, view] of browserViews) {
+    if (id === activeBrowserTab) view.setBounds(browserArea);
+  }
+}
+function showBrowserTab(id: string): void {
+  if (!mainWindow) return;
+  for (const [vid, view] of browserViews) {
+    if (vid === id) {
+      mainWindow.contentView.addChildView(view);
+      view.setBounds(browserArea);
+    } else {
+      mainWindow.contentView.removeChildView(view);
+    }
+  }
+  activeBrowserTab = id;
+}
+function destroyBrowserTab(id: string): void {
+  const v = browserViews.get(id);
+  if (!v) return;
+  try { mainWindow?.contentView.removeChildView(v); } catch { /* not attached */ }
+  (v.webContents as any).destroy?.();
+  browserViews.delete(id);
+  if (activeBrowserTab === id) activeBrowserTab = null;
+}
 // Dedicated session partition for the Agent Browser <webview>. This keeps
 // browser cookies/cache isolated from the main Ziva UI and lets us set a
 // system proxy explicitly on the session used by the webview.
@@ -219,6 +254,11 @@ async function createMainWindow() {
     mainWindow = null;
   });
 
+  // Re-position the embedded browser view when the window is resized — the
+  // renderer re-reports the web-area bounds, but this keeps the view pinned
+  // during the resize gesture itself.
+  mainWindow.on("resize", () => { applyBrowserArea(); });
+
   return mainWindow;
 }
 
@@ -296,6 +336,63 @@ ipcMain.handle("unregister-cdp-page", (_event, targetId: string): boolean => {
   return true;
 });
 
+// ---- Embedded browser (WebContentsView) IPC ----
+// Renderer drives the native Chromium views: create/navigate/switch/close +
+// back/forward/reload, and reports the web-area rectangle so the main process
+// can position the active view over it.
+ipcMain.handle("browser-set-area", (_e, b: { x: number; y: number; width: number; height: number }) => {
+  browserArea = b;
+  applyBrowserArea();
+  return true;
+});
+ipcMain.handle("browser-create-tab", (_e, url?: string): string => {
+  const id = "bv_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6);
+  const view = new WebContentsView({
+    webPreferences: { contextIsolation: true, sandbox: true },
+  });
+  // Honour the system/env proxy on the embedded browser too.
+  const envProxy = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
+  view.webContents.session.setProxy(envProxy ? { proxyRules: envProxy } : { mode: "system" }).catch(() => {});
+  // target=_blank / window.open inside the page → open as a new embedded tab
+  // (renderer handles it via the event below), never the OS browser.
+  view.webContents.setWindowOpenHandler(({ url: u }) => {
+    mainWindow?.webContents.send("ziva:browser-new-tab", u);
+    return { action: "deny" };
+  });
+  // Keep the renderer's omnibox/tab title in sync with real navigation.
+  view.webContents.on("did-navigate", (_ev, u) => mainWindow?.webContents.send("ziva:browser-nav", { id, url: u }));
+  view.webContents.on("did-navigate-in-page", (_ev, u) => mainWindow?.webContents.send("ziva:browser-nav", { id, url: u }));
+  view.webContents.on("page-title-updated", (_ev, title) => mainWindow?.webContents.send("ziva:browser-title", { id, title }));
+  browserViews.set(id, view);
+  if (url) view.webContents.loadURL(url);
+  // Expose as a CDP target so chrome-devtools-mcp can drive the embedded page.
+  if (cdpBridge) {
+    const tid = cdpBridge.addPage(view.webContents, { type: "page" });
+    (view as any)._cdpTargetId = tid;
+  }
+  showBrowserTab(id);
+  return id;
+});
+ipcMain.handle("browser-show-tab", (_e, id: string) => { showBrowserTab(id); return true; });
+ipcMain.handle("browser-navigate", (_e, id: string, url: string) => {
+  browserViews.get(id)?.webContents.loadURL(url);
+  return true;
+});
+ipcMain.handle("browser-nav", (_e, id: string, kind: "back" | "forward" | "reload") => {
+  const wc = browserViews.get(id)?.webContents;
+  if (!wc) return false;
+  if (kind === "back") wc.goBack();
+  else if (kind === "forward") wc.goForward();
+  else wc.reload();
+  return true;
+});
+ipcMain.handle("browser-close-tab", (_e, id: string) => {
+  const view = browserViews.get(id);
+  if (view && (view as any)._cdpTargetId && cdpBridge) cdpBridge.removePage((view as any)._cdpTargetId);
+  destroyBrowserTab(id);
+  return true;
+});
+
 // App lifecycle
 app.whenReady().then(async () => {
   // Set up a dedicated session for the Agent Browser webview and honour the
@@ -342,6 +439,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  for (const id of Array.from(browserViews.keys())) destroyBrowserTab(id);
   if (pythonProcess) {
     pythonProcess.kill("SIGTERM");
     pythonProcess = null;
