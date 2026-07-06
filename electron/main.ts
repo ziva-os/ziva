@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, webContents, session, shell, WebContentsView } from "electron";
 import * as path from "path";
 import { spawn, ChildProcess } from "child_process";
+import * as http from "http";
 import { CdpBridge } from "./cdp-bridge";
 
 let mainWindow: BrowserWindow | null = null;
@@ -102,11 +103,21 @@ function getBackendCommand(): { cmd: string; args: string[]; env: NodeJS.Process
   } catch { /* zsh missing or slow — fall back to default PATH */ }
 
   if (isDev) {
-    const projectRoot = path.resolve(__dirname, "..");
+    const fs = require("fs");
+    const projectRoot = (() => {
+      // When compiled to dist/main.js, __dirname is electron/dist; the
+      // project root is two levels up. When running from source it is one
+      // level up. Detect by looking for pyproject.toml.
+      const oneUp = path.resolve(__dirname, "..");
+      const twoUp = path.resolve(__dirname, "..", "..");
+      if (fs.existsSync(path.join(twoUp, "pyproject.toml"))) return twoUp;
+      if (fs.existsSync(path.join(oneUp, "pyproject.toml"))) return oneUp;
+      return twoUp;
+    })();
     return {
       cmd: "python3",
-      args: ["-m", "ziva", ...baseArgs],
-      env: { ...env, PYTHONPATH: projectRoot },
+      args: ["-m", "ziva.app.cli", ...baseArgs],
+      env: { ...env, PYTHONPATH: path.join(projectRoot, "src") },
     };
   }
 
@@ -124,6 +135,29 @@ function getBackendCommand(): { cmd: string; args: string[]; env: NodeJS.Process
 // fused into the app itself — web tabs are in-app <webview>s exposed to
 // chrome-devtools-mcp via the CDP bridge on CDP_PORT (9222). Point
 // chrome-devtools-mcp at --browser-url=http://127.0.0.1:9222.
+
+// Detect a leftover backend from a previous crashed session and reuse it if
+// it is still healthy. This prevents the "address already in use" startup
+// failure and also makes second-instance launches attach to the running one.
+function checkBackendHealth(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = http.get(`http://127.0.0.1:${PORT}/status`, { timeout: 2000 }, (res) => {
+      let body = "";
+      res.on("data", (chunk) => { body += chunk; });
+      res.on("end", () => {
+        try {
+          const data = JSON.parse(body);
+          // /status returns { model, workspace, tools, approval_policy, context_window }
+          resolve(data && typeof data.workspace === "string");
+        } catch {
+          resolve(false);
+        }
+      });
+    });
+    req.on("error", () => resolve(false));
+    req.on("timeout", () => { req.destroy(); resolve(false); });
+  });
+}
 
 function startPythonBackend(): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -271,15 +305,20 @@ function createWindow() {
   // the agent shouldn't be able to navigate or inspect the chat
   // surface it's embedded in.
   cdpBridge = new CdpBridge({ port: CDP_PORT, host: "127.0.0.1" });
-  cdpBridge.onEnsurePage = async () => {
-    if (!mainWindow) return;
-    const oldLen = cdpBridge!.pageCount;
-    mainWindow.webContents.send("ziva:browser-new-tab", "about:blank?t=" + Date.now());
-    // Wait for the renderer to call browser-create-tab which increments pageCount
-    for (let i = 0; i < 50; i++) {
-      if (cdpBridge!.pageCount > oldLen) break;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
+  cdpBridge.onEnsurePage = async (url?: string) => {
+    if (!mainWindow || !cdpBridge) return;
+    console.log(`[main] onEnsurePage url=${JSON.stringify(url)}`);
+    // Create the native view directly in the main process instead of asking
+    // the renderer to do it asynchronously. This removes the race that caused
+    // CDP Target.createTarget to return the wrong/stale targetId or
+    // about:blank when the URL was lost in the IPC round-trip.
+    const id = createBrowserTab(url || "about:blank?t=" + Date.now());
+    const view = browserViews.get(id);
+    const targetId = (view as any)?._cdpTargetId;
+    // Notify the renderer about the tab so the shell UI stays in sync.
+    // The renderer may not be ready yet; its preload buffers the event.
+    mainWindow.webContents.send("ziva:browser-tab-created", { id, url, targetId });
+    return targetId;
   };
   cdpBridge.start().then(() => {
     const port = cdpBridge!.port;
@@ -355,7 +394,9 @@ ipcMain.handle("browser-set-area", (_e, b: { x: number; y: number; width: number
   applyBrowserArea();
   return true;
 });
-ipcMain.handle("browser-create-tab", (_e, url?: string): string => {
+// ---- Embedded browser helpers ----
+function createBrowserTab(url?: string): string {
+  if (!mainWindow) return "";
   const id = "bv_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6);
   const view = new WebContentsView({
     webPreferences: { contextIsolation: true, sandbox: true, backgroundThrottling: false },
@@ -374,14 +415,31 @@ ipcMain.handle("browser-create-tab", (_e, url?: string): string => {
   view.webContents.on("did-navigate-in-page", (_ev, u) => mainWindow?.webContents.send("ziva:browser-nav", { id, url: u }));
   view.webContents.on("page-title-updated", (_ev, title) => mainWindow?.webContents.send("ziva:browser-title", { id, title }));
   browserViews.set(id, view);
-  if (url) view.webContents.loadURL(url);
-  // Expose as a CDP target so chrome-devtools-mcp can drive the embedded page.
+  // Attach the view to the window *before* loading the URL and before
+  // registering it with the CDP bridge. A WebContentsView whose webContents
+  // has not been added to a BrowserWindow may silently fail to start
+  // navigation / CDP domain setup, which is why chrome-devtools-mcp's new_page
+  // often ended up stuck on about:blank while manually clicked links worked.
+  showBrowserTab(id);
   if (cdpBridge) {
-    const tid = cdpBridge.addPage(view.webContents, { type: "page" });
+    const tid = cdpBridge.addPage(view.webContents, { type: "page", url });
     (view as any)._cdpTargetId = tid;
   }
-  showBrowserTab(id);
+  if (url) {
+    console.log(`[browser] createBrowserTab calling loadURL=${url}`);
+    view.webContents.loadURL(url).then(() => {
+      console.log(`[browser] loadURL resolved for ${url}, currentURL=${view.webContents.getURL()}`);
+    }).catch((err: any) => {
+      console.error(`[browser] loadURL failed for ${url}:`, err?.message || err);
+    });
+  } else {
+    console.log(`[browser] createBrowserTab no url, staying on about:blank`);
+  }
   return id;
+}
+
+ipcMain.handle("browser-create-tab", (_e, url?: string): string => {
+  return createBrowserTab(url);
 });
 ipcMain.handle("browser-show-tab", (_e, id: string) => { showBrowserTab(id); return true; });
 ipcMain.handle("browser-hide-tabs", () => {
@@ -430,9 +488,21 @@ app.whenReady().then(async () => {
     console.error("[proxy] failed to set system proxy on browser session:", err);
   }
 
-  createWindow();  // show the loading window immediately (not a blank screen)
+  createWindow(); // show the loading window immediately (not a blank screen)
   try {
-    await startPythonBackend();
+    // Start the backend in parallel with the window so the UI can load sooner.
+    // Reuse an already-running backend from a previous session to avoid the
+    // PyInstaller cold-start penalty on second launches.
+    const backendReady = (async () => {
+      const alreadyRunning = await checkBackendHealth();
+      if (alreadyRunning) {
+        console.log("[backend] reusing existing backend on port", PORT);
+        return true;
+      }
+      await startPythonBackend();
+      return true;
+    })();
+    await backendReady;
     // Backend is up — swap the loading screen for the real UI.
     const backendUrl = `http://127.0.0.1:${PORT}`;
     mainWindow?.webContents.on("did-fail-load", () => {

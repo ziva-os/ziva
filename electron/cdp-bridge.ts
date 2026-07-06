@@ -79,11 +79,13 @@ export class CdpBridge {
   private readonly directClient: Map<number, WebSocket> = new Map();
   // webContents -> true if we've already wc.debugger.attach()'d
   private readonly attachedPages: Set<WebContents> = new Set();
+  // browser WS clients that requested Target.setAutoAttach({autoAttach:true})
+  private readonly autoAttachClients: Map<WebSocket, { flatten: boolean }> = new Map();
   private nextSessionId = 1;
   private readonly host: string;
   private requestedPort: number;
   private actualPort: number = 0;
-  public onEnsurePage?: () => Promise<void> | void;
+  public onEnsurePage?: (url?: string) => Promise<string | void> | string | void;
 
   constructor(opts: CdpBridgeOptions = {}) {
     this.host = opts.host ?? "127.0.0.1";
@@ -102,7 +104,7 @@ export class CdpBridge {
   /** Register a webContents as a Target. Returns the assigned targetId. */
   addPage(
     webContents: WebContents,
-    opts: { type?: "page" | "background_page" } = {},
+    opts: { type?: "page" | "background_page"; url?: string } = {},
   ): string {
     const id = `ziva-page-${webContents.id}`;
     if (this.pages.find((p) => p.id === id)) return id;
@@ -110,7 +112,7 @@ export class CdpBridge {
     const target: PageTarget = {
       id,
       title: webContents.getTitle() || "",
-      url: webContents.getURL() || "about:blank",
+      url: opts.url || webContents.getURL() || "about:blank",
       webContents,
       type: opts.type || "page",
     };
@@ -137,7 +139,16 @@ export class CdpBridge {
     webContents.once("destroyed", () => this.removePage(id));
 
     // If the bridge is already up, announce the new target to live clients.
-    if (this.server) this.broadcastTargetInfoChanged(target);
+    if (this.server) {
+      this.broadcastTargetInfoChanged(target);
+      this.broadcastTargetCreated(target);
+      // Auto-attach to any clients that requested auto-attach (e.g. modern Puppeteer).
+      for (const [ws] of this.autoAttachClients) {
+        if (ws.readyState === WebSocket.OPEN) {
+          this.autoAttachClientToPage(ws, target);
+        }
+      }
+    }
     return id;
   }
 
@@ -325,6 +336,7 @@ export class CdpBridge {
           this.detachDebugger(page.webContents);
         }
       }
+      this.autoAttachClients.delete(ws);
     };
     ws.on("close", cleanup);
     ws.on("error", cleanup);
@@ -347,6 +359,7 @@ export class CdpBridge {
       for (const [sessionId, sess] of this.sessions) {
         if (sess.ws === ws) this.sessions.delete(sessionId);
       }
+      this.autoAttachClients.delete(ws);
       for (const p of this.pages) {
         if (!this.hasAnyClientFor(p.webContents)) {
           this.detachDebugger(p.webContents);
@@ -356,12 +369,41 @@ export class CdpBridge {
     ws.on("close", cleanup);
     ws.on("error", cleanup);
   }
+  private async debuggerCommandWithTimeout(
+    wc: WebContents,
+    method: string,
+    params: any,
+    timeoutMs: number = 5000,
+  ): Promise<any> {
+    return Promise.race([
+      wc.debugger.sendCommand(method, params),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`debugger command ${method} timed out`)), timeoutMs),
+      ),
+    ]);
+  }
+
   private async handleSessionMessage(ws: WebSocket, sess: any, innerMsg: any, sessionId: string, outerMsgId: number | undefined) {
+    console.log(`[cdp-bridge] session msg method=${innerMsg.method} id=${innerMsg.id} sessionId=${sessionId} params=${JSON.stringify(innerMsg.params)}`);
     try {
-      const result = await sess.webContents.debugger.sendCommand(
-        innerMsg.method,
-        innerMsg.params || {},
-      );
+      let result: any;
+      if (innerMsg.method === "Page.navigate" && innerMsg.params?.url) {
+        result = await this.navigateWithFallback(sess.webContents, innerMsg.params.url);
+      } else if (innerMsg.method === "Network.enable") {
+        // Electron's debugger may hang on Network.enable for a WebContentsView
+        // that has not rendered a frame yet. Return a stub so navigation can proceed.
+        try {
+          result = await this.debuggerCommandWithTimeout(sess.webContents, "Network.enable", innerMsg.params || {}, 2000);
+        } catch (err: any) {
+          console.warn(`[cdp-bridge] Network.enable timed out, returning stub response`);
+          result = {};
+        }
+      } else {
+        result = await sess.webContents.debugger.sendCommand(
+          innerMsg.method,
+          innerMsg.params || {},
+        );
+      }
 
       if (innerMsg.method === "Page.getFrameTree" && result?.frameTree?.frame?.id) {
         const target = this.pages.find((p) => p.webContents === sess.webContents);
@@ -375,7 +417,7 @@ export class CdpBridge {
       }
 
       if (sess.flatten) {
-        this.respond(ws, outerMsgId !== undefined ? outerMsgId : innerMsg.id, { ...result, sessionId });
+        this.respond(ws, outerMsgId !== undefined ? outerMsgId : innerMsg.id, result, sessionId);
       } else {
         if (outerMsgId !== undefined) this.respond(ws, outerMsgId, {});
         this.sendInnerResponseAsEvent(sess, innerMsg.id, result, undefined);
@@ -383,7 +425,7 @@ export class CdpBridge {
     } catch (err: any) {
       const message = err?.message || String(err);
       if (sess.flatten) {
-        this.respondError(ws, outerMsgId !== undefined ? outerMsgId : innerMsg.id, -32000, message);
+        this.respondError(ws, outerMsgId !== undefined ? outerMsgId : innerMsg.id, -32000, message, sessionId);
       } else {
         if (outerMsgId !== undefined) this.respond(ws, outerMsgId, {});
         this.sendInnerResponseAsEvent(sess, innerMsg.id, undefined, message);
@@ -391,7 +433,34 @@ export class CdpBridge {
     }
   }
 
+  // Electron's debugger Page.navigate works for most sites but can silently
+  // fail on WebContentsView or sites whose main frame never finishes loading.
+  // Fallback to loadURL and synthesize a loaderId so the client sees a
+  // successful navigation and can wait for our synthetic load events.
+  private async navigateWithFallback(wc: WebContents, url: string): Promise<any> {
+    console.log(`[cdp-bridge] Page.navigate url=${JSON.stringify(url)} wc=${wc.id}`);
+    try {
+      const result = await wc.debugger.sendCommand("Page.navigate", { url });
+      console.log(`[cdp-bridge] Page.navigate debugger result=${JSON.stringify(result)}`);
+      if (result?.loaderId) return result;
+    } catch (err: any) {
+      console.error(`[cdp-bridge] Page.navigate debugger error:`, err?.message || err);
+      // Debugger rejected the command; fall through to loadURL.
+    }
+    console.log(`[cdp-bridge] Page.navigate falling back to loadURL`);
+    wc.loadURL(url);
+    const target = this.pages.find((p) => p.webContents === wc);
+    const loaderId = "loader_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
+    const frameId = target?.mainFrameId || target?.id || "main";
+    if (target) {
+      target.latestLoaderId = loaderId;
+      if (!target.mainFrameId) target.mainFrameId = frameId;
+    }
+    return { loaderId, frameId };
+  }
+
   private async handleBrowserMessage(ws: WebSocket, msg: any) {
+    console.log(`[cdp-bridge] browser msg method=${msg.method} id=${msg.id} sessionId=${msg.sessionId} params=${JSON.stringify(msg.params)}`);
     if (msg.sessionId) {
       const sess = this.sessions.get(msg.sessionId);
       if (!sess) {
@@ -428,15 +497,30 @@ export class CdpBridge {
       });
       return;
     }
-    // Puppeteer optionally enables auto-attach / target discovery. We don't
-    // auto-attach (the client attaches explicitly via attachToTarget), but
-    // must respond so the method isn't "not handled".
+    // Modern Puppeteer (used by chrome-devtools-mcp) enables auto-attach with
+    // flatten: true. When a client asks for auto-attach, we must attach to all
+    // existing pages and to every new target created afterwards, sending
+    // Target.attachedToTarget so that browser.newPage() returns a usable Page.
     if (msg.method === "Target.setAutoAttach") {
+      const autoAttach = !!msg.params?.autoAttach;
+      const flatten = !!msg.params?.flatten;
+      if (autoAttach) {
+        this.autoAttachClients.set(ws, { flatten });
+      } else {
+        this.autoAttachClients.delete(ws);
+      }
       this.respond(ws, msg.id, {});
+      if (autoAttach) {
+        for (const p of this.pages) {
+          this.autoAttachClientToPage(ws, p);
+        }
+      }
       return;
     }
     if (msg.method === "Target.setDiscoverTargets") {
       this.respond(ws, msg.id, {});
+      // Note: In a real implementation we should track which clients requested
+      // discovery. For now we just eagerly emit for all existing pages.
       if (msg.params?.discover) {
         for (const p of this.pages) {
           if (ws.readyState === WebSocket.OPEN) {
@@ -450,6 +534,7 @@ export class CdpBridge {
                     title: p.title,
                     url: p.url,
                     attached: this.hasSessionFor(p.id),
+                    browserContextId: p.id, // Fake browser context
                   },
                 },
               })
@@ -460,39 +545,35 @@ export class CdpBridge {
       return;
     }
     // chrome-devtools-mcp's new_page / navigate calls Target.createTarget to
-    // open a fresh page. We return the most recently registered page's
-    // targetId so the client can attach to it. If no page is registered
-    // (Browser tab never opened), we return an empty targetId and the
-    // client fails with a clear error — no silent fallback to a hidden
-    // window. To open a fresh page the user must first open the Agent
-    // Browser tab so a webview gets registered via
-    // registerWebviewWithCdp in the renderer.
+    // open a fresh page. We create the native view directly in the main process
+    // (via onEnsurePage) and return the exact targetId of the new page so the
+    // client attaches to the right tab instead of a stale / about:blank one.
     if (msg.method === "Target.createTarget") {
       (async () => {
+        const incomingUrl = msg.params?.url;
+        console.log(`[cdp-bridge] Target.createTarget url=${JSON.stringify(incomingUrl)}`);
+        let createdTargetId: string | undefined;
         if (this.onEnsurePage) {
           try {
-            await this.onEnsurePage();
-          } catch {}
+            const res = await this.onEnsurePage(incomingUrl);
+            if (typeof res === "string") createdTargetId = res;
+          } catch (err: any) {
+            console.error(`[cdp-bridge] onEnsurePage threw:`, err?.message || err);
+          }
         }
-        const page = this.pages[this.pages.length - 1];
-      if (page && ws.readyState === WebSocket.OPEN) {
-        ws.send(
-          JSON.stringify({
-            method: "Target.targetCreated",
-            params: {
-              targetInfo: {
-                targetId: page.id,
-                type: page.type,
-                title: page.title,
-                url: page.url,
-                attached: this.hasSessionFor(page.id),
-              },
-            },
-          })
-        );
-      }
-      this.respond(ws, msg.id, { targetId: page?.id || "" });
-    })();
+        // Fallback to the newest page if the callback didn't return an id.
+        const targetId = createdTargetId || this.pages[this.pages.length - 1]?.id || "";
+        const page = this.pages.find((p) => p.id === targetId);
+        if (page) {
+          this.broadcastTargetCreated(page);
+          for (const [client] of this.autoAttachClients) {
+            if (client.readyState === WebSocket.OPEN) {
+              this.autoAttachClientToPage(client, page);
+            }
+          }
+        }
+        this.respond(ws, msg.id, { targetId });
+      })();
       return;
     }
 
@@ -502,6 +583,14 @@ export class CdpBridge {
       const page = this.pages.find((p) => p.id === targetId);
       if (!page) {
         this.respondError(ws, msg.id, -32000, "No target found");
+        return;
+      }
+      // If this client already has a session for the target, reuse it.
+      const existingSession = Array.from(this.sessions.values()).find(
+        (s) => s.ws === ws && s.targetId === targetId && s.flatten === flatten,
+      );
+      if (existingSession) {
+        this.respond(ws, msg.id, { sessionId: existingSession.sessionId });
         return;
       }
       this.attachDebugger(page.webContents);
@@ -526,6 +615,8 @@ export class CdpBridge {
                 type: page.type,
                 title: page.title,
                 url: page.url,
+                attached: true,
+                browserContextId: page.id,
               },
             },
           }),
@@ -716,6 +807,28 @@ export class CdpBridge {
     }
   }
 
+  private broadcastTargetCreated(p: PageTarget) {
+    if (!this.wss) return;
+    for (const ws of this.wss.clients) {
+      if (ws.readyState !== WebSocket.OPEN) continue;
+      ws.send(
+        JSON.stringify({
+          method: "Target.targetCreated",
+          params: {
+            targetInfo: {
+              targetId: p.id,
+              type: p.type,
+              title: p.title,
+              url: p.url,
+              attached: this.hasSessionFor(p.id),
+              browserContextId: p.id,
+            },
+          },
+        }),
+      );
+    }
+  }
+
   // ---- helpers ----
 
   private parseMessage(data: any): any | null {
@@ -726,14 +839,18 @@ export class CdpBridge {
     }
   }
 
-  private respond(ws: WebSocket, id: number, result: any) {
+  private respond(ws: WebSocket, id: number, result: any, sessionId?: string) {
     if (ws.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify({ id, result }));
+    const msg = sessionId ? { id, result, sessionId } : { id, result };
+    console.log("SEND:", JSON.stringify(msg));
+    ws.send(JSON.stringify(msg));
   }
 
-  private respondError(ws: WebSocket, id: number, code: number, message: string) {
+  private respondError(ws: WebSocket, id: number, code: number, message: string, sessionId?: string) {
     if (ws.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify({ id, error: { code, message } }));
+    const msg = sessionId ? { id, error: { code, message }, sessionId } : { id, error: { code, message } };
+    console.log("SEND:", JSON.stringify(msg));
+    ws.send(JSON.stringify(msg));
   }
 
   private hasAnyClientFor(wc: WebContents): boolean {
@@ -749,5 +866,45 @@ export class CdpBridge {
       if (sess.targetId === targetId) return true;
     }
     return false;
+  }
+
+  private hasSessionForWebContents(ws: WebSocket, wc: WebContents): boolean {
+    for (const sess of this.sessions.values()) {
+      if (sess.ws === ws && sess.webContents === wc) return true;
+    }
+    return false;
+  }
+
+  private autoAttachClientToPage(ws: WebSocket, page: PageTarget) {
+    const cfg = this.autoAttachClients.get(ws);
+    if (!cfg || this.hasSessionForWebContents(ws, page.webContents)) return;
+    this.attachDebugger(page.webContents);
+    const sessionId = `s-${this.nextSessionId++}`;
+    this.sessions.set(sessionId, {
+      sessionId,
+      targetId: page.id,
+      webContents: page.webContents,
+      ws,
+      flatten: cfg.flatten,
+    });
+    console.log(`[cdp-bridge] auto-attached target=${page.id} session=${sessionId} flatten=${cfg.flatten}`);
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(
+        JSON.stringify({
+          method: "Target.attachedToTarget",
+          params: {
+            sessionId,
+            targetInfo: {
+              targetId: page.id,
+              type: page.type,
+              title: page.title,
+              url: page.url,
+              attached: true,
+              browserContextId: page.id,
+            },
+          },
+        }),
+      );
+    }
   }
 }
