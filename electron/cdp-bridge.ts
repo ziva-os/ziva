@@ -162,14 +162,28 @@ export class CdpBridge {
     const idx = this.pages.findIndex((p) => p.id === id);
     if (idx === -1) return;
     const [removed] = this.pages.splice(idx, 1);
-    // Detach sessions for this target
+    // Notify each session's client that the target is detached before we delete
+    // the session. Puppeteer uses Target.detachedFromTarget to close its
+    // CDPSession and remove the page from browser.targets()/pages().
+    const sessionsToClose: AttachedSession[] = [];
     for (const [sessionId, sess] of this.sessions) {
-      if (sess.targetId === id) this.sessions.delete(sessionId);
+      if (sess.targetId === id) {
+        sessionsToClose.push(sess);
+        this.sessions.delete(sessionId);
+      }
     }
     this.directClient.delete(removed.webContents.id);
-    // Notify every connected browser-level client so Puppeteer/chrome-devtools-mcp
-    // can drop the page from its internal list. We must use the connection set,
-    // not the session map, because sessions for this target were just deleted.
+    for (const sess of sessionsToClose) {
+      if (sess.ws.readyState === WebSocket.OPEN) {
+        const detachEvent = JSON.stringify({
+          method: "Target.detachedFromTarget",
+          params: { sessionId: sess.sessionId, targetId: id },
+        });
+        console.log(`[cdp-bridge] send Target.detachedFromTarget session=${sess.sessionId} targetId=${id}`);
+        sess.ws.send(detachEvent);
+      }
+    }
+    // Notify browser-level clients that the target is gone.
     const destroyedEvent = JSON.stringify({
       method: "Target.targetDestroyed",
       params: { targetId: id },
@@ -824,24 +838,23 @@ export class CdpBridge {
   }
 
   private broadcastTargetCreated(p: PageTarget) {
-    if (!this.wss) return;
-    for (const ws of this.wss.clients) {
-      if (ws.readyState !== WebSocket.OPEN) continue;
-      ws.send(
-        JSON.stringify({
-          method: "Target.targetCreated",
-          params: {
-            targetInfo: {
-              targetId: p.id,
-              type: p.type,
-              title: p.title,
-              url: p.url,
-              attached: this.hasSessionFor(p.id),
-              browserContextId: p.id,
-            },
-          },
-        }),
-      );
+    const event = JSON.stringify({
+      method: "Target.targetCreated",
+      params: {
+        targetInfo: {
+          targetId: p.id,
+          type: p.type,
+          title: p.title,
+          url: p.url,
+          attached: this.hasSessionFor(p.id),
+          browserContextId: p.id,
+        },
+      },
+    });
+    for (const ws of this.connections) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(event);
+      }
     }
   }
 

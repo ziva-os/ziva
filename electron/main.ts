@@ -56,21 +56,31 @@ const BROWSER_PARTITION = "persist:ziva-browser";
 
 function getBackendCommand(): { cmd: string; args: string[]; env: NodeJS.ProcessEnv } {
   const isDev = !app.isPackaged;
+  const fs = require("fs");
+  const projectRoot = (() => {
+    // When compiled to dist/main.js, __dirname is electron/dist; the
+    // project root is two levels up. When running from source it is one
+    // level up. Detect by looking for pyproject.toml.
+    const oneUp = path.resolve(__dirname, "..");
+    const twoUp = path.resolve(__dirname, "..", "..");
+    if (fs.existsSync(path.join(twoUp, "pyproject.toml"))) return twoUp;
+    if (fs.existsSync(path.join(oneUp, "pyproject.toml"))) return oneUp;
+    return twoUp;
+  })();
+
   // Default workspace for the packaged app: the user's Documents folder, so
   // sessions / repos live somewhere the user can browse in Finder instead of
   // inside the read-only Ziva.app bundle. Falls back to HOME if Documents
-  // isn't available (very unusual). Dev mode keeps the old behavior of
-  // cwd-relative ".", which on `electron .` resolves to the ziva repo root
-  // and is what local development expects.
+  // isn't available (very unusual). Dev mode uses the repo root so that the
+  // desktop app shares the same project_id (and therefore history) as a
+  // `ziva desktop serve` started from the repo root.
   let workspaceArg: string | null = null;
   if (!isDev) {
     // Prefer the last-used workspace so reopening the app lands back in the
-    // project the user was working in — otherwise every launch defaults to
-    // the Documents folder, which shows up as a stray empty workspace in the
-    // sidebar. First launch (no recent workspaces yet) falls back to
-    // Documents, which is Finder-browsable and writable (unlike the app bundle).
+    // project the user was working in — otherwise every launch defaults to the
+    // Documents folder, which shows up as a stray empty workspace in the sidebar.
+    // First launch (no recent workspaces yet) falls back to Documents.
     try {
-      const fs = require("fs");
       const recentPath = path.join(app.getPath("home"), ".ziva", "recent_workspaces.json");
       const recent = JSON.parse(fs.readFileSync(recentPath, "utf8"));
       if (Array.isArray(recent) && recent.length > 0 && fs.existsSync(recent[0])) {
@@ -86,6 +96,8 @@ function getBackendCommand(): { cmd: string; args: string[]; env: NodeJS.Process
         workspaceArg = app.getPath("home");
       }
     }
+  } else {
+    workspaceArg = projectRoot;
   }
   const baseArgs = ["desktop", "serve", "--port", String(PORT)];
   if (workspaceArg) baseArgs.push("--workspace", workspaceArg);
@@ -105,17 +117,6 @@ function getBackendCommand(): { cmd: string; args: string[]; env: NodeJS.Process
   } catch { /* zsh missing or slow — fall back to default PATH */ }
 
   if (isDev) {
-    const fs = require("fs");
-    const projectRoot = (() => {
-      // When compiled to dist/main.js, __dirname is electron/dist; the
-      // project root is two levels up. When running from source it is one
-      // level up. Detect by looking for pyproject.toml.
-      const oneUp = path.resolve(__dirname, "..");
-      const twoUp = path.resolve(__dirname, "..", "..");
-      if (fs.existsSync(path.join(twoUp, "pyproject.toml"))) return twoUp;
-      if (fs.existsSync(path.join(oneUp, "pyproject.toml"))) return oneUp;
-      return twoUp;
-    })();
     return {
       cmd: "python3",
       args: ["-m", "ziva.app.cli", ...baseArgs],
