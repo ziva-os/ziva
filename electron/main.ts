@@ -40,8 +40,10 @@ function showBrowserTab(id: string): void {
   activeBrowserTab = id;
 }
 function destroyBrowserTab(id: string): void {
+  console.log(`[main] destroyBrowserTab id=${id}`);
   const v = browserViews.get(id);
   if (!v) return;
+  if ((v as any)._cdpTargetId && cdpBridge) cdpBridge.removePage((v as any)._cdpTargetId);
   try { mainWindow?.contentView.removeChildView(v); } catch { /* not attached */ }
   (v.webContents as any).destroy?.();
   browserViews.delete(id);
@@ -414,6 +416,15 @@ function createBrowserTab(url?: string): string {
   view.webContents.on("did-navigate", (_ev, u) => mainWindow?.webContents.send("ziva:browser-nav", { id, url: u }));
   view.webContents.on("did-navigate-in-page", (_ev, u) => mainWindow?.webContents.send("ziva:browser-nav", { id, url: u }));
   view.webContents.on("page-title-updated", (_ev, title) => mainWindow?.webContents.send("ziva:browser-title", { id, title }));
+  (view.webContents as any).on("crashed", (_ev: any, killed: boolean) => {
+    console.log(`[browser] webContents crashed id=${id} killed=${killed}`);
+  });
+  (view.webContents as any).on("unresponsive", () => {
+    console.log(`[browser] webContents unresponsive id=${id}`);
+  });
+  (view.webContents as any).on("destroyed", () => {
+    console.log(`[browser] webContents destroyed id=${id}`);
+  });
   browserViews.set(id, view);
   // Attach the view to the window *before* loading the URL and before
   // registering it with the CDP bridge. A WebContentsView whose webContents

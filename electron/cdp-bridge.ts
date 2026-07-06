@@ -79,6 +79,11 @@ export class CdpBridge {
   private readonly directClient: Map<number, WebSocket> = new Map();
   // webContents -> true if we've already wc.debugger.attach()'d
   private readonly attachedPages: Set<WebContents> = new Set();
+  // All live WebSocket connections (browser-level and direct). We need
+  // this because sessions are deleted when a target is destroyed, but
+  // browser-level events (Target.targetDestroyed, etc.) must still reach
+  // the client so it can invalidate stale pages.
+  private readonly connections: Set<WebSocket> = new Set();
   // browser WS clients that requested Target.setAutoAttach({autoAttach:true})
   private readonly autoAttachClients: Map<WebSocket, { flatten: boolean }> = new Map();
   private nextSessionId = 1;
@@ -153,6 +158,7 @@ export class CdpBridge {
   }
 
   removePage(id: string): void {
+    console.log(`[cdp-bridge] removePage id=${id}`);
     const idx = this.pages.findIndex((p) => p.id === id);
     if (idx === -1) return;
     const [removed] = this.pages.splice(idx, 1);
@@ -161,15 +167,17 @@ export class CdpBridge {
       if (sess.targetId === id) this.sessions.delete(sessionId);
     }
     this.directClient.delete(removed.webContents.id);
-    // Notify browser WS clients
-    for (const sess of this.sessions.values()) {
-      if (sess.ws.readyState === WebSocket.OPEN) {
-        sess.ws.send(
-          JSON.stringify({
-            method: "Target.targetGone",
-            params: { targetId: id },
-          }),
-        );
+    // Notify every connected browser-level client so Puppeteer/chrome-devtools-mcp
+    // can drop the page from its internal list. We must use the connection set,
+    // not the session map, because sessions for this target were just deleted.
+    const destroyedEvent = JSON.stringify({
+      method: "Target.targetDestroyed",
+      params: { targetId: id },
+    });
+    console.log(`[cdp-bridge] broadcast Target.targetDestroyed targetId=${id} to ${this.connections.size} connection(s)`);
+    for (const ws of this.connections) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(destroyedEvent);
       }
     }
   }
@@ -321,6 +329,7 @@ export class CdpBridge {
   private attachDirectPageSession(ws: WebSocket, page: PageTarget) {
     this.attachDebugger(page.webContents);
     this.directClient.set(page.webContents.id, ws);
+    this.connections.add(ws);
 
     ws.on("message", async (data) => {
       const msg = this.parseMessage(data);
@@ -330,6 +339,7 @@ export class CdpBridge {
     });
 
     const cleanup = () => {
+      this.connections.delete(ws);
       if (this.directClient.get(page.webContents.id) === ws) {
         this.directClient.delete(page.webContents.id);
         if (!this.hasAnyClientFor(page.webContents)) {
@@ -348,6 +358,7 @@ export class CdpBridge {
     // Pre-attach to all pages so Puppeteer's connect() can attach to
     // them immediately. Idempotent — no-op if already attached.
     for (const p of this.pages) this.attachDebugger(p.webContents);
+    this.connections.add(ws);
 
     ws.on("message", async (data) => {
       const msg = this.parseMessage(data);
@@ -356,6 +367,7 @@ export class CdpBridge {
     });
 
     const cleanup = () => {
+      this.connections.delete(ws);
       for (const [sessionId, sess] of this.sessions) {
         if (sess.ws === ws) this.sessions.delete(sessionId);
       }
@@ -461,7 +473,11 @@ export class CdpBridge {
 
   private async handleBrowserMessage(ws: WebSocket, msg: any) {
     console.log(`[cdp-bridge] browser msg method=${msg.method} id=${msg.id} sessionId=${msg.sessionId} params=${JSON.stringify(msg.params)}`);
-    if (msg.sessionId) {
+    // The Target domain is browser-level: even if the client mistakenly sends a
+    // top-level sessionId, commands like Target.detachFromTarget must be handled
+    // here, not routed to the session. Session-only domains (Page, Runtime, ...)
+    // are routed via the top-level sessionId in flattened mode.
+    if (msg.sessionId && !String(msg.method).startsWith("Target.")) {
       const sess = this.sessions.get(msg.sessionId);
       if (!sess) {
         this.respondError(ws, msg.id, -32000, "No session");
@@ -789,21 +805,21 @@ export class CdpBridge {
   }
 
   private broadcastTargetInfoChanged(p: PageTarget) {
-    for (const sess of this.sessions.values()) {
-      if (sess.ws.readyState !== WebSocket.OPEN) continue;
-      sess.ws.send(
-        JSON.stringify({
-          method: "Target.targetInfoChanged",
-          params: {
-            targetInfo: {
-              targetId: p.id,
-              type: p.type,
-              title: p.title,
-              url: p.url,
-            },
-          },
-        }),
-      );
+    const event = JSON.stringify({
+      method: "Target.targetInfoChanged",
+      params: {
+        targetInfo: {
+          targetId: p.id,
+          type: p.type,
+          title: p.title,
+          url: p.url,
+        },
+      },
+    });
+    for (const ws of this.connections) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(event);
+      }
     }
   }
 
