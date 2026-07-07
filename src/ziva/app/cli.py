@@ -489,6 +489,7 @@ async def run_async(argv: list[str] | None = None) -> int:
             loop = asyncio.get_running_loop()
             loop.add_signal_handler(sig, stop_event.set)
         await server.start(host=args.host, port=args.port)
+        print(f"Ziva desktop backend running on http://{args.host}:{args.port}", flush=True)
         try:
             await runtime._connect_mcp_if_needed()
         except Exception:

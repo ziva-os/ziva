@@ -224,17 +224,32 @@ function startPythonBackend(): Promise<void> {
       pythonProcess = null;
     });
 
-    // Fallback: wait up to 60s for the "Running on" marker. The PyInstaller
-    // backend can take 10-20s to import on first launch (cold start); the
-    // old 5s fallback resolved before the server was up, so loadURL hit a
-    // dead port → the white screen on first open. 60s only fires if the
-    // backend truly hung.
-    setTimeout(() => {
-      if (!started) {
+    // Poll the backend /status endpoint until it is healthy. This is more
+    // reliable than parsing stdout markers, and resolves as soon as the HTTP
+    // server is accepting requests. The old 60s stdout-marker fallback
+    // waited needlessly when the marker was missing.
+    const startTime = Date.now();
+    const timeout = 60000;
+    const pollInterval = 200;
+    const poll = async () => {
+      if (started) return;
+      if (Date.now() - startTime > timeout) {
+        console.warn("[backend] timed out waiting for /status; loading UI anyway");
         started = true;
         resolve();
+        return;
       }
-    }, 60000);
+      try {
+        const healthy = await checkBackendHealth();
+        if (healthy) {
+          started = true;
+          resolve();
+          return;
+        }
+      } catch { /* not ready yet */ }
+      setTimeout(poll, pollInterval);
+    };
+    poll();
   });
 }
 
@@ -301,40 +316,8 @@ async function createMainWindow() {
 
 function createWindow() {
   createMainWindow();
-
-  // CDP bridge starts now; pages will be registered lazily by the
-  // renderer as webviews come online (e.g. the Agent Browser tab).
-  // The main Ziva UI's webContents is intentionally NOT exposed —
-  // the agent shouldn't be able to navigate or inspect the chat
-  // surface it's embedded in.
-  cdpBridge = new CdpBridge({ port: CDP_PORT, host: "127.0.0.1" });
-  cdpBridge.onEnsurePage = async (url?: string) => {
-    if (!mainWindow || !cdpBridge) return;
-    console.log(`[main] onEnsurePage url=${JSON.stringify(url)}`);
-    // Create the native view directly in the main process instead of asking
-    // the renderer to do it asynchronously. This removes the race that caused
-    // CDP Target.createTarget to return the wrong/stale targetId or
-    // about:blank when the URL was lost in the IPC round-trip.
-    const id = createBrowserTab(url || "about:blank?t=" + Date.now());
-    const view = browserViews.get(id);
-    const targetId = (view as any)?._cdpTargetId;
-    // Notify the renderer about the tab so the shell UI stays in sync.
-    // The renderer may not be ready yet; its preload buffers the event.
-    mainWindow.webContents.send("ziva:browser-tab-created", { id, url, targetId });
-    return targetId;
-  };
-  cdpBridge.start().then(() => {
-    const port = cdpBridge!.port;
-    console.log(
-      `[cdp-bridge] To connect chrome-devtools-mcp, add to your MCP config:\n` +
-      `  "chrome-devtools": {\n` +
-      `    "command": "npx",\n` +
-      `    "args": ["-y", "chrome-devtools-mcp@latest", "--browser-url=http://127.0.0.1:${port}"]\n` +
-      `  }`,
-    );
-  }).catch((err) => {
-    console.error("[cdp-bridge] failed to start:", err);
-  });
+  // The CDP bridge is started once in app.whenReady so it survives window
+  // recreation on macOS (close window → click dock icon → new window).
 }
 
 // ---- IPC ----
@@ -481,6 +464,24 @@ ipcMain.handle("browser-close-tab", (_e, id: string) => {
   return true;
 });
 
+async function ensureBackendReady(): Promise<void> {
+  const alreadyRunning = await checkBackendHealth();
+  if (alreadyRunning) {
+    console.log("[backend] reusing existing backend on port", PORT);
+    return;
+  }
+  await startPythonBackend();
+}
+
+function loadBackendUrlInto(window: BrowserWindow | null): void {
+  if (!window) return;
+  const backendUrl = `http://127.0.0.1:${PORT}`;
+  window.webContents.on("did-fail-load", () => {
+    setTimeout(() => window.loadURL(backendUrl), 1000);
+  });
+  window.loadURL(backendUrl);
+}
+
 // App lifecycle
 app.whenReady().then(async () => {
   // Set up a dedicated session for the Agent Browser webview and honour the
@@ -502,32 +503,52 @@ app.whenReady().then(async () => {
 
   createWindow(); // show the loading window immediately (not a blank screen)
   try {
-    // Start the backend in parallel with the window so the UI can load sooner.
-    // Reuse an already-running backend from a previous session to avoid the
-    // PyInstaller cold-start penalty on second launches.
-    const backendReady = (async () => {
-      const alreadyRunning = await checkBackendHealth();
-      if (alreadyRunning) {
-        console.log("[backend] reusing existing backend on port", PORT);
-        return true;
-      }
-      await startPythonBackend();
-      return true;
-    })();
-    await backendReady;
-    // Backend is up — swap the loading screen for the real UI.
-    const backendUrl = `http://127.0.0.1:${PORT}`;
-    mainWindow?.webContents.on("did-fail-load", () => {
-      setTimeout(() => mainWindow?.loadURL(backendUrl), 1000);
-    });
-    mainWindow?.loadURL(backendUrl);
+    await ensureBackendReady();
+    loadBackendUrlInto(mainWindow);
   } catch (err) {
     console.error("Failed to start backend:", err);
   }
 
-  app.on("activate", () => {
+  // CDP bridge starts once; it must outlive individual BrowserWindows so that
+  // closing and reopening the window on macOS doesn't break the agent browser.
+  cdpBridge = new CdpBridge({ port: CDP_PORT, host: "127.0.0.1" });
+  cdpBridge.onEnsurePage = async (url?: string) => {
+    if (!mainWindow || !cdpBridge) return;
+    console.log(`[main] onEnsurePage url=${JSON.stringify(url)}`);
+    // Create the native view directly in the main process instead of asking
+    // the renderer to do it asynchronously. This removes the race that caused
+    // CDP Target.createTarget to return the wrong/stale targetId or
+    // about:blank when the URL was lost in the IPC round-trip.
+    const id = createBrowserTab(url || "about:blank?t=" + Date.now());
+    const view = browserViews.get(id);
+    const targetId = (view as any)?._cdpTargetId;
+    // Notify the renderer about the tab so the shell UI stays in sync.
+    // The renderer may not be ready yet; its preload buffers the event.
+    mainWindow.webContents.send("ziva:browser-tab-created", { id, url, targetId });
+    return targetId;
+  };
+  cdpBridge.start().then(() => {
+    const port = cdpBridge!.port;
+    console.log(
+      `[cdp-bridge] To connect chrome-devtools-mcp, add to your MCP config:\n` +
+      `  "chrome-devtools": {\n` +
+      `    "command": "npx",\n` +
+      `    "args": ["-y", "chrome-devtools-mcp@latest", "--browser-url=http://127.0.0.1:${port}"]\n` +
+      `  }`,
+    );
+  }).catch((err) => {
+    console.error("[cdp-bridge] failed to start:", err);
+  });
+
+  app.on("activate", async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
+      try {
+        await ensureBackendReady();
+        loadBackendUrlInto(mainWindow);
+      } catch (err) {
+        console.error("Failed to connect to backend on reactivate:", err);
+      }
     }
   });
 });
