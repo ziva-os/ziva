@@ -70,6 +70,27 @@ marked.setOptions({
 });
 marked.use({ extensions: [blockMath, inlineMath] });
 
+// Marked's autolinker includes trailing punctuation such as ')' as part of the
+// URL, so text like "（https://weibo.com/hot/mine）" renders the link as
+// "https://weibo.com/hot/mine)". For autolinks (href === text), strip trailing
+// punctuation from the URL and place it back after the link.
+const TRAILING_PUNCT_RE = /[.,;:!?\)\]\}>]+$/;
+renderer.link = function (href: string, title: string | null | undefined, text: string): string {
+  let cleanHref = href;
+  let cleanText = text;
+  let suffix = "";
+  if (href === text) {
+    const m = text.match(TRAILING_PUNCT_RE);
+    if (m) {
+      suffix = m[0];
+      cleanHref = href.slice(0, -suffix.length);
+      cleanText = text.slice(0, -suffix.length);
+    }
+  }
+  const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
+  return `<a href="${escapeHtml(cleanHref)}"${titleAttr}>${escapeHtml(cleanText)}</a>${suffix ? escapeHtml(suffix) : ""}`;
+};
+
 // Custom code block rendering
 renderer.code = function (code: string, lang?: string): string {
   const language = lang || "";

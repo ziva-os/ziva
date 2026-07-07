@@ -26,6 +26,7 @@ const ZIVA_TAB_ID = "ziva";
 let tabs: BrowserTab[] = [{ id: ZIVA_TAB_ID, type: "ziva", title: "Ziva" }];
 let activeTabId = ZIVA_TAB_ID;
 let _seq = 0;
+let pendingTabCreated: Array<{ id: string; url?: string; targetId?: string }> = [];
 
 let strip: HTMLElement | null = null;
 let omnibox: HTMLElement | null = null;
@@ -37,10 +38,29 @@ const ea: any = (window as any).electronAPI;
 
 function nextId(): string { _seq += 1; return "web_" + _seq; }
 
+/** Add a tab created by the main process (CDP Target.createTarget) to the shell UI. */
+function addMainProcessTab(e: { id: string; url?: string; targetId?: string }) {
+  if (!strip) {
+    // Shell not initialized yet; buffer until initBrowserShell finishes.
+    pendingTabCreated.push(e);
+    return;
+  }
+  const tab: BrowserTab = { id: nextId(), type: "web", url: e.url, title: e.url ? prettyHost(e.url) : "New Tab" };
+  (tab as any).mainId = e.id;
+  tabs.push(tab);
+  if (activeTabId === ZIVA_TAB_ID) {
+    activateTab(tab.id);
+  } else {
+    renderTabstrip();
+    reportBrowserArea();
+  }
+}
+
 /** Build the shell: tab strip + omnibox + body (ziva-layout | web-area). */
 export function initBrowserShell(): void {
   const app = document.getElementById("app");
   if (!app) return;
+  document.body.classList.add("browser-shell-active");
   const layout = app.querySelector(".ziva-layout") as HTMLElement | null;
   if (layout) layout.id = "zivaLayout";
   zivaLayout = layout;
@@ -75,8 +95,19 @@ export function initBrowserShell(): void {
   window.addEventListener("resize", reportBrowserArea);
   setTimeout(reportBrowserArea, 100);
 
-  // Main → renderer events: target=_blank in a page → new tab; nav/title sync.
-  ea?.onBrowserNewTab?.((url: string) => openInBrowserTab(url));
+  // Main → renderer events: target=_blank in a page → new tab; nav/title sync;
+  // main-process-created CDP tabs (from Target.createTarget) → add shell entry.
+  ea?.onBrowserNewTab?.((payload: string | { url: string; force?: boolean }) => {
+    const url = typeof payload === "string" ? payload : payload.url;
+    if (typeof payload === "object" && payload.force) {
+      createWebTab(url);
+    } else {
+      openInBrowserTab(url);
+    }
+  });
+  ea?.onBrowserTabCreated?.((e: { id: string; url?: string; targetId?: string }) => {
+    addMainProcessTab(e);
+  });
   ea?.onBrowserNav?.((e: { id: string; url: string }) => {
     const t = tabs.find(x => (x as any).mainId === e.id);
     if (t) { t.url = e.url; t.title = prettyHost(e.url); if (t.id === activeTabId) renderOmnibox(); renderTabstrip(); }
@@ -99,6 +130,11 @@ export function initBrowserShell(): void {
       inp?.focus(); inp?.select();
     }
   });
+
+  // Flush any main-process tabs that arrived before the shell was ready.
+  while (pendingTabCreated.length) {
+    addMainProcessTab(pendingTabCreated.shift()!);
+  }
 }
 
 /** Open a URL in a web tab: reuse a tab on that URL, else make a new one. */
@@ -170,6 +206,12 @@ function applyActive(): void {
   const isWeb = active?.type === "web";
   if (zivaLayout) zivaLayout.style.display = isWeb ? "none" : "";
   if (webArea) webArea.style.display = isWeb ? "block" : "none";
+  // Full-page overlays (Skills, Settings, etc.) are appended directly to
+  // <body>, not inside zivaLayout. Hide them while a browser tab is active
+  // so they don't cover the native WebContentsView.
+  document.querySelectorAll(".fullpage-overlay").forEach((el) => {
+    (el as HTMLElement).style.display = isWeb ? "none" : "";
+  });
   requestAnimationFrame(reportBrowserArea);
 }
 

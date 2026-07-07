@@ -5,11 +5,29 @@ import { contextBridge, ipcRenderer } from "electron";
 // WebContentsView per web tab) pushes navigation/title/window-open events here
 // so the renderer's tab strip + omnibox stay in sync with the real Chromium view.
 let _browserNewTabHandler: any = null;
+let _browserTabCreatedHandler: any = null;
 let _browserNavHandler: any = null;
 let _browserTitleHandler: any = null;
-ipcRenderer.on("ziva:browser-new-tab", (_e, url: string) => { if (_browserNewTabHandler) _browserNewTabHandler(url); });
-ipcRenderer.on("ziva:browser-nav", (_e, e: any) => { if (_browserNavHandler) _browserNavHandler(e); });
-ipcRenderer.on("ziva:browser-title", (_e, e: any) => { if (_browserTitleHandler) _browserTitleHandler(e); });
+const _pendingNewTab: any[] = [];
+const _pendingTabCreated: any[] = [];
+const _pendingNav: any[] = [];
+const _pendingTitle: any[] = [];
+ipcRenderer.on("ziva:browser-new-tab", (_e, payload: any) => {
+  if (_browserNewTabHandler) _browserNewTabHandler(payload);
+  else _pendingNewTab.push(payload);
+});
+ipcRenderer.on("ziva:browser-tab-created", (_e, e: any) => {
+  if (_browserTabCreatedHandler) _browserTabCreatedHandler(e);
+  else _pendingTabCreated.push(e);
+});
+ipcRenderer.on("ziva:browser-nav", (_e, e: any) => {
+  if (_browserNavHandler) _browserNavHandler(e);
+  else _pendingNav.push(e);
+});
+ipcRenderer.on("ziva:browser-title", (_e, e: any) => {
+  if (_browserTitleHandler) _browserTitleHandler(e);
+  else _pendingTitle.push(e);
+});
 
 contextBridge.exposeInMainWorld("electronAPI", {
   getBackendUrl: () => ipcRenderer.invoke("get-backend-url"),
@@ -28,7 +46,20 @@ contextBridge.exposeInMainWorld("electronAPI", {
   browserNavigate: (id: string, url: string) => ipcRenderer.invoke("browser-navigate", id, url),
   browserNav: (id: string, kind: "back" | "forward" | "reload") => ipcRenderer.invoke("browser-nav", id, kind),
   browserCloseTab: (id: string) => ipcRenderer.invoke("browser-close-tab", id),
-  onBrowserNewTab: (cb: (url: string) => void) => { _browserNewTabHandler = cb; },
-  onBrowserNav: (cb: (e: { id: string; url: string }) => void) => { _browserNavHandler = cb; },
-  onBrowserTitle: (cb: (e: { id: string; title: string }) => void) => { _browserTitleHandler = cb; },
+  onBrowserNewTab: (cb: (payload: string | { url: string; force?: boolean }) => void) => {
+    _browserNewTabHandler = cb;
+    while (_pendingNewTab.length) cb(_pendingNewTab.shift());
+  },
+  onBrowserTabCreated: (cb: (e: { id: string; url?: string; targetId?: string }) => void) => {
+    _browserTabCreatedHandler = cb;
+    while (_pendingTabCreated.length) cb(_pendingTabCreated.shift());
+  },
+  onBrowserNav: (cb: (e: { id: string; url: string }) => void) => {
+    _browserNavHandler = cb;
+    while (_pendingNav.length) cb(_pendingNav.shift());
+  },
+  onBrowserTitle: (cb: (e: { id: string; title: string }) => void) => {
+    _browserTitleHandler = cb;
+    while (_pendingTitle.length) cb(_pendingTitle.shift());
+  },
 });

@@ -170,3 +170,18 @@ body.electron-darwin .browser-tabstrip { padding-left: 80px; }
   background: #fff;
 }
 
+
+/* Override the 88px macOS title bar padding for the Ziva UI when running inside the browser shell, 
+   because the browser tabstrip already accounts for the traffic lights. */
+body.electron-darwin .browser-body .ziva-toolbar,
+body.electron-darwin .browser-body .sidebar-header {
+  padding-left: 12px;
+}
+
+/* Full-page overlays (Settings, Skills, Automations) are appended to <body>
+   and absolutely positioned to the viewport. In browser-shell mode the global
+   tab strip is above the Ziva content area, so push overlays down so they don't
+   cover the tabs and other browser chrome. */
+body.browser-shell-active .fullpage-overlay {
+  top: 36px;
+}

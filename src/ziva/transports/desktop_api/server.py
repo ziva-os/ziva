@@ -401,6 +401,23 @@ class DesktopAPIServer:
             pass
         return []
 
+    def _register_current_workspace(self) -> None:
+        """Record the current workspace in the recent list so other backends
+        and future app launches can discover its sessions."""
+        current = str(self.runtime.workspace_root)
+        recent_path = Path.home() / ".ziva" / "recent_workspaces.json"
+        try:
+            recent_path.parent.mkdir(parents=True, exist_ok=True)
+            workspaces = []
+            if recent_path.exists():
+                workspaces = json.loads(recent_path.read_text())
+            if current in workspaces:
+                workspaces.remove(current)
+            workspaces.insert(0, current)
+            recent_path.write_text(json.dumps(workspaces[:20]))
+        except Exception:
+            pass
+
     async def list_sessions(self, request: web.Request) -> web.Response:
         """List sessions across all known recent workspaces (and the active one).
 
@@ -1656,6 +1673,11 @@ class DesktopAPIServer:
         await self._runner.setup()
         site = web.TCPSite(self._runner, host=host, port=port)
         await site.start()
+        # Make sure the current workspace is discoverable when listing sessions.
+        # Without this, a backend started with workspace A only knows about A
+        # plus previously-switched workspaces; a desktop app reusing this
+        # backend would not see sessions from A unless we record it here.
+        self._register_current_workspace()
         # Kick off STT warmup in a background daemon thread. The first
         # user-driven /api/stt call would otherwise pay a 5+ second cold
         # start (import mlx_whisper + 461MB model load + Metal shader JIT

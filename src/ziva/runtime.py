@@ -777,6 +777,14 @@ class Runtime:
                         })
 
         # Append new user messages to session history
+        session = self._get_session(sid)
+        # Safety net: ensure any orphaned assistant+tool_calls from a previous
+        # cancelled or crashed turn are covered by synthetic tool_result messages
+        # before we add the new user messages. This keeps the in-memory history
+        # and the JSONL on disk in sync and avoids the provider 400 error about
+        # unmatched tool_call_ids.
+        sanitized = self._sanitize_orphaned_tool_calls(sid, list(session.history))
+        session.history[:] = sanitized
         session.history.extend(new_messages)
         for msg in new_messages:
             self._persist_message(sid, msg)
@@ -850,9 +858,12 @@ class Runtime:
             # with 400 "tool call result does not follow tool call
             # (2013)". Append synthetic tool_result messages for any
             # tool_use without a matching result so the next turn can
-            # replay history cleanly.
+            # replay history cleanly, and mirror them back into the
+            # in-memory session history so the current process doesn't
+            # keep sending stale history to the provider.
             session = self._get_session(sid)
-            self._sanitize_orphaned_tool_calls(sid, list(session.history))
+            sanitized = self._sanitize_orphaned_tool_calls(sid, list(session.history))
+            session.history[:] = sanitized
 
             result = ChatResult(
                 role="assistant",
@@ -910,19 +921,19 @@ class Runtime:
                             "id": sid,
                             "time": {"created": int(time.time() * 1000), "updated": int(time.time() * 1000)},
                         })
-                # Safety net for sessions whose JSONL ends with an orphaned
-                # assistant+tool_calls message. Covers:
-                #  - Cancels that fired before _sanitize_orphaned_tool_calls
-                #    ran (e.g. session was force-killed mid-cancel).
-                #  - Sessions from older ziva versions that predate the fix.
-                #  - Any other crash path that left history inconsistent.
-                # The function appends synthetic tool_result messages to
-                # both the in-memory history and the JSONL; replaying to
-                # the next turn is then wire-format-safe. We mirror its
-                # returned list back into session.history so the in-memory
-                # copy and the JSONL stay in sync.
-                sanitized = self._sanitize_orphaned_tool_calls(sid, list(session.history))
-                session.history[:] = sanitized
+            # Safety net for sessions whose JSONL ends with an orphaned
+            # assistant+tool_calls message. Covers:
+            #  - Cancels that fired before _sanitize_orphaned_tool_calls
+            #    ran (e.g. session was force-killed mid-cancel).
+            #  - Sessions from older ziva versions that predate the fix.
+            #  - Any other crash path that left history inconsistent.
+            # The function appends synthetic tool_result messages to
+            # both the in-memory history and the JSONL; replaying to the
+            # next turn is then wire-format-safe. We mirror its returned
+            # list back into session.history so the in-memory copy and
+            # the JSONL stay in sync.
+            sanitized = self._sanitize_orphaned_tool_calls(sid, list(session.history))
+            session.history[:] = sanitized
 
         session.history.extend(new_messages)
         for msg in new_messages:
@@ -1333,10 +1344,15 @@ class Runtime:
                     working.append(tool_msg)
                     self._get_session(session_id).history.append(tool_msg)
                     self._persist_message(session_id, tool_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
-                    image_parts: list = [
-                        {"type": "text", "text": f"[Image from {tool_output.metadata.get('path', 'file')}]"},
-                        {"type": "image_url", "image_url": {"url": tool_output.images[0]}},
-                    ]
+                    image_label = f"[Image from {tool_output.metadata.get('path', 'file')}]"
+                    image_parts: list = []
+                    if tool_output.text:
+                        image_parts.append({"type": "text", "text": tool_output.text})
+                    # Keep the image label as the last text block so the frontend's
+                    # '[Image from ...]' regex can still map this hidden message to
+                    # the corresponding '[Image file read: ...]' tool message.
+                    image_parts.append({"type": "text", "text": image_label})
+                    image_parts.append({"type": "image_url", "image_url": {"url": tool_output.images[0]}})
                     img_msg = ChatMessage(role="user", content=image_parts, _hidden=True)
                     deferred_images.append(img_msg)
                 else:

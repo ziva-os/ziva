@@ -264,11 +264,16 @@ function init() {
   refreshConfig();
   refreshSessions().then(() => {
     const s = store.get();
-    // Only auto-select a session on initial load if the user hasn't already
-    // picked one (e.g. by clicking "New Session" while refreshSessions was
-    // still in flight). Otherwise we clobber the user's explicit choice and
-    // the composer swaps to a different session unexpectedly.
-    if (!s.activeSid) {
+    const restored = s.activeSid;
+    // If the last active session still exists, restore it so reopening Ziva
+    // brings the user back to their previous conversation.
+    if (restored && s.sessions.some(session => session.id === restored)) {
+      switchSession(restored);
+    } else if (!s.activeSid) {
+      // Only auto-select a session on initial load if the user hasn't already
+      // picked one (e.g. by clicking "New Session" while refreshSessions was
+      // still in flight). Otherwise we clobber the user's explicit choice and
+      // the composer swaps to a different session unexpectedly.
       if (s.sessions.length > 0) {
         switchSession(s.sessions[0].id);
       } else {
@@ -1766,12 +1771,10 @@ async function loadHistoryInto(sid: string, target: HTMLElement): Promise<boolea
   // the live chat (just visually scaled down by the wrapper's CSS).
   let prev = 0;
   for (const si of summaryIndices) {
-    // Skip the previous summary message itself — it is the HEAD of the
-    // already-rendered tail (or the previous fold's boundary), not part of
-    // the range that should be folded AGAIN. Without this, summary N ends
-    // up inside the fold for summary N+1, and expanding the second boundary
-    // shows the raw summary text as a regular assistant message.
-    const foldStart = (prev > 0 && (fullMsgs[prev] as any)._compaction_summary) ? prev + 1 : prev;
+    // Each summary at index `s` folds the range [prev, s) — everything that
+    // was compacted INTO that summary, including the previous summary itself
+    // (it is the head of the context that produced the next summary).
+    const foldStart = prev;
     const count = si - foldStart;
     if (count > 0) appendCompactBoundary(sid, count, foldStart, si, target);
     prev = si;
@@ -1797,17 +1800,21 @@ function renderMessages(target: HTMLElement, msgs: any[]): void {
   const hiddenImages = new Map<string, string>();
   for (const m of msgs) {
     if (m.role === "user" && (m as any)._hidden && Array.isArray(m.content)) {
-      let textPart = "";
+      let imageLabel = "";
       let imgUrl = "";
       for (const part of m.content) {
         if (typeof part === "object" && part !== null) {
-          if ((part as any).type === "text") textPart = (part as any).text || "";
+          if ((part as any).type === "text") {
+            const text = (part as any).text || "";
+            // Prefer the text block that matches the expected image label.
+            if (/\[Image from .+\]/.test(text)) imageLabel = text;
+          }
           if ((part as any).type === "image_url" && (part as any).image_url?.url) imgUrl = (part as any).image_url.url;
         }
       }
-      if (textPart && imgUrl) {
-        // textPart is like "[Image from path]" — match to tool content "[Image file read: path]"
-        const pathMatch = textPart.match(/\[Image from (.+)\]/);
+      if (imageLabel && imgUrl) {
+        // imageLabel is like "[Image from path]" — match to tool content "[Image file read: path]"
+        const pathMatch = imageLabel.match(/\[Image from (.+)\]/);
         if (pathMatch) hiddenImages.set(`[Image file read: ${pathMatch[1]}]`, imgUrl);
       }
     }
@@ -2155,16 +2162,19 @@ async function loadHiddenImageForTool(sid: string, imagePath: string, target: HT
     const msgs = data.messages || [];
     for (const m of msgs) {
       if (m.role === "user" && (m as any)._hidden && Array.isArray(m.content)) {
-        let textPart = "";
+        let imageLabel = "";
         let imgUrl = "";
         for (const part of m.content) {
           if (typeof part === "object" && part !== null) {
-            if ((part as any).type === "text") textPart = (part as any).text || "";
+            if ((part as any).type === "text") {
+              const text = (part as any).text || "";
+              if (/\[Image from .+\]/.test(text)) imageLabel = text;
+            }
             if ((part as any).type === "image_url" && (part as any).image_url?.url) imgUrl = (part as any).image_url.url;
           }
         }
-        if (textPart && imgUrl) {
-          const pathMatch = textPart.match(/\[Image from (.+)\]/);
+        if (imageLabel && imgUrl) {
+          const pathMatch = imageLabel.match(/\[Image from (.+)\]/);
           if (pathMatch && pathMatch[1] === imagePath) {
             // Find the last tool card for read_file with this path and inject the image
             const toolCards = target.querySelectorAll(".tool-card");

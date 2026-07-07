@@ -180,6 +180,7 @@ function sanitizeTree(node: any): any {
   return out;
 }
 const PERSIST_KEY = "ziva:input-state-v1";
+const ACTIVE_SID_KEY = "ziva:active-sid-v1";
 try {
   const saved = localStorage.getItem(PERSIST_KEY);
   if (saved) {
@@ -193,6 +194,10 @@ try {
       });
     }
   }
+  const savedActiveSid = localStorage.getItem(ACTIVE_SID_KEY);
+  if (savedActiveSid) {
+    store.set({ activeSid: savedActiveSid });
+  }
 } catch { /* corrupt or localStorage unavailable — start fresh */ }
 
 store.subscribe(() => {
@@ -204,5 +209,8 @@ store.subscribe(() => {
       pendingMessages: sanitizeTree(s.pendingMessages),
       promptDrafts: sanitizeTree(s.promptDrafts),
     }));
+    // Persist the active session so reopening Ziva restores the conversation.
+    if (s.activeSid) localStorage.setItem(ACTIVE_SID_KEY, s.activeSid);
+    else localStorage.removeItem(ACTIVE_SID_KEY);
   } catch { /* quota exceeded (large images) — best effort */ }
 });

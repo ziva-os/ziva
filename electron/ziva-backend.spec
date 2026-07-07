@@ -123,6 +123,11 @@ a = Analysis(
         'numba',
         'numba.core',
         'more_itertools',
+        # Plugins are bundled as data and loaded dynamically, so PyInstaller's
+        # static analyzer misses their imports. The old web_fetch plugin
+        # imported html.parser; include it defensively so dynamic plugin loads
+        # don't fail in the frozen binary.
+        'html.parser',
     ],
     hookspath=[],
     hooksconfig={},
@@ -134,7 +139,15 @@ a = Analysis(
     # the cryptic OSError("could not get source code") raised by
     # inspect.py:1081. Force-include the hook so packaged backend behaves
     # the same as the dev run.
-    runtime_hooks=[str(_PYI_RTHOOKS / 'pyi_rth_inspect.py')],
+    #
+    # Also include the multiprocessing hooks. mlx_whisper and other libraries
+    # spawn subprocesses; without these hooks the frozen binary fails to start
+    # the multiprocessing resource tracker and worker processes, showing errors
+    # like "invalid choice: 'from multiprocessing.resource_tracker import main'".
+    runtime_hooks=[
+        str(_PYI_RTHOOKS / 'pyi_rth_inspect.py'),
+        str(_PYI_RTHOOKS / 'pyi_rth_multiprocessing.py'),
+    ],
     excludes=[
         'tkinter',
         'matplotlib',

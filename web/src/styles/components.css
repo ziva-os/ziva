@@ -2341,7 +2341,7 @@ webview.browser-frame {
    `--sidebar-width` CSS variable, which the layout updates as the
    sidebar collapses/expands. */
 .fullpage-overlay {
-  position: fixed;
+  position: absolute;
   top: 0;
   right: 0;
   bottom: 0;
