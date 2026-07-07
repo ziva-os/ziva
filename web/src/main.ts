@@ -1795,7 +1795,7 @@ async function loadHistoryInto(sid: string, target: HTMLElement): Promise<boolea
 // scaled down via the wrapper's CSS.
 function renderMessages(target: HTMLElement, msgs: any[]): void {
   let pendingToolCalls: { id: string; name: string; arguments: Record<string, unknown> }[] = [];
-  let lastToolCard: HTMLElement | null = null;
+  const toolCardByCallId = new Map<string, HTMLElement>();
 
   for (let mi = 0; mi < msgs.length; mi++) {
     const m = msgs[mi];
@@ -1803,16 +1803,17 @@ function renderMessages(target: HTMLElement, msgs: any[]): void {
 
     if (m.role === "user") {
       if ((m as any)._hidden) {
-        // Attach hidden image messages to the most recent tool card by proximity.
-        // Runtime emits tool messages followed by their hidden image user messages.
+        // Attach hidden image messages to the matching tool card via tool_call_id.
+        // This is robust to parallel tool calls where proximity would mis-associate.
+        const toolCallId = (m as any).tool_call_id as string | undefined;
         const imgUrl = extractImageUrlFromHidden(m.content);
-        if (imgUrl && lastToolCard) {
-          injectImageIntoToolCard(lastToolCard, imgUrl);
+        if (imgUrl && toolCallId) {
+          const card = toolCardByCallId.get(toolCallId);
+          if (card) injectImageIntoToolCard(card, imgUrl);
         }
         continue;
       }
       appendUserMsg(m.content, target);
-      lastToolCard = null;
     } else if (m.role === "assistant") {
       if (isSub) {
         continue;
@@ -1850,7 +1851,6 @@ function renderMessages(target: HTMLElement, msgs: any[]): void {
         appendAssistantMsg(m.content, target, reasoning);
         pendingToolCalls = [];
       }
-      lastToolCard = null;
     } else if (m.role === "tool") {
       const toolName = (m as any).name || "unknown";
 
@@ -1910,11 +1910,11 @@ function renderMessages(target: HTMLElement, msgs: any[]): void {
           card.innerHTML = `<div class="question-text">${esc(q)}</div><div class="question-reply">You: ${esc(answer)}</div>`;
           target.appendChild(card);
         }
-        lastToolCard = null;
         continue;
       }
 
-      lastToolCard = appendToolCard(toolName, args, "success", output, subagentTools, isPruned, target);
+      const card = appendToolCard(toolName, args, "success", output, subagentTools, isPruned, target);
+      if (toolCallId) toolCardByCallId.set(toolCallId, card);
     }
   }
 }
@@ -2152,34 +2152,6 @@ function extractImageUrlFromHidden(content: any): string | null {
   return null;
 }
 
-async function findHiddenImageUrl(sid: string, imagePath?: string): Promise<string | null> {
-  try {
-    const data = await api.getMessages(sid, { includeDropped: true });
-    const msgs = data.messages || [];
-    for (const m of msgs) {
-      if (m.role === "user" && (m as any)._hidden && Array.isArray(m.content)) {
-        let imageLabel = "";
-        let imgUrl = "";
-        for (const part of m.content) {
-          if (typeof part === "object" && part !== null) {
-            if ((part as any).type === "text") {
-              const text = (part as any).text || "";
-              if (/\[Image from .+\]/.test(text)) imageLabel = text;
-            }
-            if ((part as any).type === "image_url" && (part as any).image_url?.url) {
-              imgUrl = (part as any).image_url.url;
-            }
-          }
-        }
-        if (imgUrl && (!imagePath || imageLabel.includes(imagePath))) {
-          return imgUrl;
-        }
-      }
-    }
-  } catch { /* best-effort */ }
-  return null;
-}
-
 function injectImageIntoToolCard(card: HTMLElement, imgUrl: string): void {
   const body = card.querySelector(".tool-card-body");
   if (body && !body.querySelector("img")) {
@@ -2248,8 +2220,14 @@ function appendToolCard(
       // rendering the page URL as <img> produced a broken-image icon
       // instead of the fetched markdown (which lives in `_text`).
       const imgUrl = (output as any).image_url || "";
-      if (imgUrl) {
+      const outText = (output as any)._text ? String((output as any)._text) : "";
+      if (outText || imgUrl) {
         body += `<div class="section-label">Output</div>`;
+      }
+      if (outText) {
+        body += `<div class="section-content"><pre>${esc(outText)}</pre></div>`;
+      }
+      if (imgUrl) {
         body += `<div class="section-content tool-output-image"><img src="${esc(imgUrl)}" alt="tool output" loading="lazy" /></div>`;
       }
     } else if (typeof output === "string" && /^data:image\//.test(output)) {
@@ -3034,19 +3012,15 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
         const output = (ev.output || {}) as Record<string, unknown>;
         subagentTools = output.tools_summary as Record<string, number> | undefined;
       }
-      // Image tool_end events have type:"image" but no image_url (stripped
-      // to keep SSE payloads small). Fetch the image from _hidden messages.
+      // Image tool_end events carry image_url directly so the card can be
+      // rendered immediately without a deferred history lookup. Record the
+      // card by call_id in case later events need to reference it.
       let output = ev.output;
       const card = appendToolCard(ev.tool as string, (ev.arguments || {}) as Record<string, unknown>, status, output, subagentTools);
-      if (output && typeof output === "object" && (output as any).type === "image" && !(output as any).image_url) {
-        const imgMeta = (output as any).metadata || {};
-        const imgPath = imgMeta.path || "";
-        if (imgPath) {
-          findHiddenImageUrl(sid, imgPath).then((imgUrl) => {
-            if (imgUrl) injectImageIntoToolCard(card, imgUrl);
-          });
-        }
-      }
+      const callId = (ev.call_id || "") as string;
+      if (callId) streamCtx(sid).toolCards.set(callId, card);
+      // Image tools now carry image_url in the tool_end output so the card
+      // is rendered immediately; no need for a deferred history lookup.
       // Update plan tab if this is an update_plan tool. Pass the
       // owning sid so the cache key is per-session; the renderer in
       // right-panel.ts reads/writes store.currentPlanSteps[sid] and

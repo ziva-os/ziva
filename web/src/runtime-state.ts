@@ -164,11 +164,11 @@ export function clearAllPending(sid: string): void {
 // cards colliding. The streaming text buffers (_main / _reasoning) live on
 // the assistant DOM element itself, so isolating `assistantEl` +
 // `pendingTools` per sid is enough for correct concurrent streaming.
-interface StreamCtx { assistantEl: HTMLElement | null; pendingTools: Map<string, HTMLElement>; }
+interface StreamCtx { assistantEl: HTMLElement | null; pendingTools: Map<string, HTMLElement>; toolCards: Map<string, HTMLElement>; }
 const _streamCtx = new Map<string, StreamCtx>();
 export function streamCtx(sid: string): StreamCtx {
   let c = _streamCtx.get(sid);
-  if (!c) { c = { assistantEl: null, pendingTools: new Map() }; _streamCtx.set(sid, c); }
+  if (!c) { c = { assistantEl: null, pendingTools: new Map(), toolCards: new Map() }; _streamCtx.set(sid, c); }
   return c;
 }
 export function clearStreamCtx(sid: string): void {

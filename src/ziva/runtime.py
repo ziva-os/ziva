@@ -1302,8 +1302,13 @@ class Runtime:
                     self._persist_message(session_id, tool_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
                 raise
 
-            # Step 3: emit tool_end and process results in original order
+            # Step 3: build tool/image messages, persist, then emit tool_end events.
+            # We emit tool_end *after* persisting so the frontend can always resolve
+            # image messages by their tool_call_id, and parallel tool calls cannot
+            # swap image positions. Images are still grouped after tool messages
+            # in working history to stay compatible with OpenAI-style APIs.
             deferred_images: list[ChatMessage] = []
+            tool_end_events: list[dict] = []
             for tool_output, tc in tool_results:
                 is_not_found = tool_output.error and "tool_not_found" in tool_output.text
 
@@ -1312,7 +1317,12 @@ class Runtime:
                 sse_output["_text"] = tool_output.text
                 sse_output["_error"] = tool_output.error
                 if tool_output.images:
-                    sse_output = {"type": "image", "metadata": tool_output.metadata}
+                    sse_output = {
+                        "type": "image",
+                        "metadata": tool_output.metadata,
+                        "image_url": tool_output.images[0],
+                        "_text": tool_output.text,
+                    }
 
                 event = {
                     "type": "tool_end",
@@ -1323,9 +1333,12 @@ class Runtime:
                     "error_class": "tool_not_found" if is_not_found else None,
                     "call_id": tc.id,
                 }
-                yield _flag(event)
-                await self._emit(session_id, event)
+
                 if is_not_found:
+                    # Not-found is a terminal error for this round; emit immediately
+                    # and do not persist any further tool state.
+                    yield _flag(event)
+                    await self._emit(session_id, event)
                     event = {"type": "round_complete", "round": round_idx}
                     yield _flag(event)
                     await self._emit(session_id, event)
@@ -1341,17 +1354,19 @@ class Runtime:
                 if tool_output.images:
                     # Put the tool's text output in the tool message itself so the
                     # model sees it as the actual tool result. The image is attached
-                    # in a separate hidden user message below.
+                    # in a separate hidden user message keyed by tool_call_id so the
+                    # frontend can always map it to the right card, even with
+                    # parallel tool calls.
                     tool_text = tool_output.text or f"[Image file read: {tool_output.metadata.get('path', 'unknown')}]"
                     tool_msg = ChatMessage(role="tool", content=tool_text, tool_call_id=tc.id, name=tc.name)
                     working.append(tool_msg)
                     self._get_session(session_id).history.append(tool_msg)
                     self._persist_message(session_id, tool_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
                     image_parts: list = [
-                        {"type": "text", "text": f"[Image from {tool_output.metadata.get('path', 'file')}]"},
+                        {"type": "text", "text": f"[Image from {tool_output.metadata.get('path', 'file')} | call_id={tc.id}]"},
                         {"type": "image_url", "image_url": {"url": tool_output.images[0]}},
                     ]
-                    img_msg = ChatMessage(role="user", content=image_parts, _hidden=True)
+                    img_msg = ChatMessage(role="user", content=image_parts, _hidden=True, tool_call_id=tc.id)
                     deferred_images.append(img_msg)
                 else:
                     tool_msg = ChatMessage(role="tool", content=tool_output.text, tool_call_id=tc.id, name=tc.name)
@@ -1359,11 +1374,18 @@ class Runtime:
                     self._get_session(session_id).history.append(tool_msg)
                     self._persist_message(session_id, tool_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
 
-            # Append deferred image messages after all tool results
+                tool_end_events.append(event)
+
+            # Persist all image messages after tool messages so history order is stable.
             for img_msg in deferred_images:
                 working.append(img_msg)
                 self._get_session(session_id).history.append(img_msg)
                 self._persist_message(session_id, img_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
+
+            # Now that every message is on disk, emit tool_end events in order.
+            for event in tool_end_events:
+                yield _flag(event)
+                await self._emit(session_id, event)
 
             latency_ms = int((time.perf_counter() - round_start) * 1000)
             event = {"type": "round_complete", "round": round_idx, "latency_ms": latency_ms, "usage": final_usage}
