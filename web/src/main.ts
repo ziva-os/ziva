@@ -1795,38 +1795,24 @@ async function loadHistoryInto(sid: string, target: HTMLElement): Promise<boolea
 // scaled down via the wrapper's CSS.
 function renderMessages(target: HTMLElement, msgs: any[]): void {
   let pendingToolCalls: { id: string; name: string; arguments: Record<string, unknown> }[] = [];
-
-  // Build index of _hidden image URLs keyed by "[Image file read: <path>]" text
-  const hiddenImages = new Map<string, string>();
-  for (const m of msgs) {
-    if (m.role === "user" && (m as any)._hidden && Array.isArray(m.content)) {
-      let imageLabel = "";
-      let imgUrl = "";
-      for (const part of m.content) {
-        if (typeof part === "object" && part !== null) {
-          if ((part as any).type === "text") {
-            const text = (part as any).text || "";
-            // Prefer the text block that matches the expected image label.
-            if (/\[Image from .+\]/.test(text)) imageLabel = text;
-          }
-          if ((part as any).type === "image_url" && (part as any).image_url?.url) imgUrl = (part as any).image_url.url;
-        }
-      }
-      if (imageLabel && imgUrl) {
-        // imageLabel is like "[Image from path]" — match to tool content "[Image file read: path]"
-        const pathMatch = imageLabel.match(/\[Image from (.+)\]/);
-        if (pathMatch) hiddenImages.set(`[Image file read: ${pathMatch[1]}]`, imgUrl);
-      }
-    }
-  }
+  let lastToolCard: HTMLElement | null = null;
 
   for (let mi = 0; mi < msgs.length; mi++) {
     const m = msgs[mi];
     const isSub = (m as any)._subagent === true;
 
     if (m.role === "user") {
-      if ((m as any)._hidden) continue;
+      if ((m as any)._hidden) {
+        // Attach hidden image messages to the most recent tool card by proximity.
+        // Runtime emits tool messages followed by their hidden image user messages.
+        const imgUrl = extractImageUrlFromHidden(m.content);
+        if (imgUrl && lastToolCard) {
+          injectImageIntoToolCard(lastToolCard, imgUrl);
+        }
+        continue;
+      }
       appendUserMsg(m.content, target);
+      lastToolCard = null;
     } else if (m.role === "assistant") {
       if (isSub) {
         continue;
@@ -1864,6 +1850,7 @@ function renderMessages(target: HTMLElement, msgs: any[]): void {
         appendAssistantMsg(m.content, target, reasoning);
         pendingToolCalls = [];
       }
+      lastToolCard = null;
     } else if (m.role === "tool") {
       const toolName = (m as any).name || "unknown";
 
@@ -1884,13 +1871,6 @@ function renderMessages(target: HTMLElement, msgs: any[]): void {
       const isPruned = typeof m.content === "string" && m.content === "[pruned]";
       if (!isPruned) {
         try { output = JSON.parse(m.content); } catch {}
-      }
-
-      // If tool content is "[Image file read: ...]", look up the image URL
-      // from hiddenImages map (populated from _hidden user messages).
-      if (typeof output === "string" && output.startsWith("[Image file read:")) {
-        const imgUrl = hiddenImages.get(output);
-        if (imgUrl) output = { type: "image", image_url: imgUrl };
       }
 
       let subagentTools: Record<string, number> | undefined;
@@ -1930,10 +1910,11 @@ function renderMessages(target: HTMLElement, msgs: any[]): void {
           card.innerHTML = `<div class="question-text">${esc(q)}</div><div class="question-reply">You: ${esc(answer)}</div>`;
           target.appendChild(card);
         }
+        lastToolCard = null;
         continue;
       }
 
-      appendToolCard(toolName, args, "success", output, subagentTools, isPruned, target);
+      lastToolCard = appendToolCard(toolName, args, "success", output, subagentTools, isPruned, target);
     }
   }
 }
@@ -2156,7 +2137,22 @@ function getAbbreviatedArg(args: Record<string, unknown>): string {
   return JSON.stringify(args).slice(0, 50);
 }
 
-async function loadHiddenImageForTool(sid: string, imagePath: string, target: HTMLElement = $("messages")) {
+function extractImageUrlFromHidden(content: any): string | null {
+  if (!Array.isArray(content)) return null;
+  for (const part of content) {
+    if (
+      typeof part === "object" &&
+      part !== null &&
+      (part as any).type === "image_url" &&
+      (part as any).image_url?.url
+    ) {
+      return (part as any).image_url.url as string;
+    }
+  }
+  return null;
+}
+
+async function findHiddenImageUrl(sid: string, imagePath?: string): Promise<string | null> {
   try {
     const data = await api.getMessages(sid, { includeDropped: true });
     const msgs = data.messages || [];
@@ -2170,34 +2166,28 @@ async function loadHiddenImageForTool(sid: string, imagePath: string, target: HT
               const text = (part as any).text || "";
               if (/\[Image from .+\]/.test(text)) imageLabel = text;
             }
-            if ((part as any).type === "image_url" && (part as any).image_url?.url) imgUrl = (part as any).image_url.url;
+            if ((part as any).type === "image_url" && (part as any).image_url?.url) {
+              imgUrl = (part as any).image_url.url;
+            }
           }
         }
-        if (imageLabel && imgUrl) {
-          const pathMatch = imageLabel.match(/\[Image from (.+)\]/);
-          if (pathMatch && pathMatch[1] === imagePath) {
-            // Find the last tool card for read_file with this path and inject the image
-            const toolCards = target.querySelectorAll(".tool-card");
-            for (let i = toolCards.length - 1; i >= 0; i--) {
-              const card = toolCards[i];
-              const argsEl = card.querySelector(".tool-args");
-              if (argsEl && argsEl.textContent?.includes(imagePath)) {
-                const body = card.querySelector(".tool-card-body");
-                if (body && !body.querySelector("img")) {
-                  const imgDiv = document.createElement("div");
-                  imgDiv.className = "section-content tool-output-image";
-                  imgDiv.innerHTML = `<img src="${esc(imgUrl)}" alt="tool output" loading="lazy" />`;
-                  body.appendChild(imgDiv);
-                }
-                break;
-              }
-            }
-            return;
-          }
+        if (imgUrl && (!imagePath || imageLabel.includes(imagePath))) {
+          return imgUrl;
         }
       }
     }
   } catch { /* best-effort */ }
+  return null;
+}
+
+function injectImageIntoToolCard(card: HTMLElement, imgUrl: string): void {
+  const body = card.querySelector(".tool-card-body");
+  if (body && !body.querySelector("img")) {
+    const imgDiv = document.createElement("div");
+    imgDiv.className = "section-content tool-output-image";
+    imgDiv.innerHTML = `<img src="${esc(imgUrl)}" alt="tool output" loading="lazy" />`;
+    body.appendChild(imgDiv);
+  }
 }
 
 function updateToolCardStatus(card: HTMLElement, status: "running" | "success" | "error" | "cancelled"): void {
@@ -3047,17 +3037,16 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
       // Image tool_end events have type:"image" but no image_url (stripped
       // to keep SSE payloads small). Fetch the image from _hidden messages.
       let output = ev.output;
+      const card = appendToolCard(ev.tool as string, (ev.arguments || {}) as Record<string, unknown>, status, output, subagentTools);
       if (output && typeof output === "object" && (output as any).type === "image" && !(output as any).image_url) {
         const imgMeta = (output as any).metadata || {};
         const imgPath = imgMeta.path || "";
         if (imgPath) {
-          // Load _hidden messages to find the image URL (this session's).
-          loadHiddenImageForTool(sid, imgPath, target);
-          // Show placeholder while loading
-          output = { type: "image", metadata: imgMeta };
+          findHiddenImageUrl(sid, imgPath).then((imgUrl) => {
+            if (imgUrl) injectImageIntoToolCard(card, imgUrl);
+          });
         }
       }
-      appendToolCard(ev.tool as string, (ev.arguments || {}) as Record<string, unknown>, status, output, subagentTools);
       // Update plan tab if this is an update_plan tool. Pass the
       // owning sid so the cache key is per-session; the renderer in
       // right-panel.ts reads/writes store.currentPlanSteps[sid] and

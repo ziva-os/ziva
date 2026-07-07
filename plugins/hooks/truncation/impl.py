@@ -27,25 +27,21 @@ class TruncationHook:
         tool_name = payload.get("tool", "")
 
         if isinstance(output, ToolResult):
-            if output.error or output.images:
+            # Structured / multimodal tool outputs (images, audio, resources)
+            # should not be flattened into a single text file. Keep them intact
+            # so the model can see the media directly.
+            if (
+                output.error
+                or output.images
+                or output.metadata.get("audio")
+                or output.metadata.get("resources")
+            ):
                 return payload
             text = output.text
         else:
             return payload
 
         if tool_name in _UNLIMITED:
-            return payload
-
-        # Safety net: if the tool text contains embedded image data URLs,
-        # extract them as images so they are not lost during truncation.
-        from ziva.adapters.mcp.client import _extract_image_data_urls
-        cleaned_text, extracted_images = _extract_image_data_urls(text)
-        if extracted_images:
-            output.images.extend(extracted_images)
-            output.text = cleaned_text
-            text = cleaned_text
-
-        if output.images:
             return payload
 
         limit = _TOOL_LIMITS.get(tool_name, _DEFAULT_LIMIT)

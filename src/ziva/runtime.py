@@ -1339,20 +1339,18 @@ class Runtime:
 
                 # Image handling
                 if tool_output.images:
-                    summary = f"[Image file read: {tool_output.metadata.get('path', 'unknown')}]"
-                    tool_msg = ChatMessage(role="tool", content=summary, tool_call_id=tc.id, name=tc.name)
+                    # Put the tool's text output in the tool message itself so the
+                    # model sees it as the actual tool result. The image is attached
+                    # in a separate hidden user message below.
+                    tool_text = tool_output.text or f"[Image file read: {tool_output.metadata.get('path', 'unknown')}]"
+                    tool_msg = ChatMessage(role="tool", content=tool_text, tool_call_id=tc.id, name=tc.name)
                     working.append(tool_msg)
                     self._get_session(session_id).history.append(tool_msg)
                     self._persist_message(session_id, tool_msg, is_subagent=is_sub, sub_call_id=sub_call_id)
-                    image_label = f"[Image from {tool_output.metadata.get('path', 'file')}]"
-                    image_parts: list = []
-                    if tool_output.text:
-                        image_parts.append({"type": "text", "text": tool_output.text})
-                    # Keep the image label as the last text block so the frontend's
-                    # '[Image from ...]' regex can still map this hidden message to
-                    # the corresponding '[Image file read: ...]' tool message.
-                    image_parts.append({"type": "text", "text": image_label})
-                    image_parts.append({"type": "image_url", "image_url": {"url": tool_output.images[0]}})
+                    image_parts: list = [
+                        {"type": "text", "text": f"[Image from {tool_output.metadata.get('path', 'file')}]"},
+                        {"type": "image_url", "image_url": {"url": tool_output.images[0]}},
+                    ]
                     img_msg = ChatMessage(role="user", content=image_parts, _hidden=True)
                     deferred_images.append(img_msg)
                 else:
