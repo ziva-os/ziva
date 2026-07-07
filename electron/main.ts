@@ -299,7 +299,7 @@ async function createMainWindow() {
   // window isn't blank while the PyInstaller backend cold-starts. The real
   // UI is swapped in from app.whenReady once the backend is up.
   const loadingHtml = "data:text/html;charset=utf-8," + encodeURIComponent(
-    "<html><body style='margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#1e1e1e;color:#aaa;font-family:-apple-system,system-ui,sans-serif'><div style='font-size:28px;font-weight:600'>Ziva</div><div style='color:#666;margin-top:10px;font-size:13px'>启动中…</div></body></html>"
+    "<html><body style='margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#141414;color:#aaa;font-family:-apple-system,system-ui,sans-serif'><div style='font-size:28px;font-weight:600'>Ziva</div><div style='color:#666;margin-top:10px;font-size:13px'>启动中…</div></body></html>"
   );
   mainWindow.loadURL(loadingHtml);
 
