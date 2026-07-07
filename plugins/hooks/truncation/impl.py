@@ -36,6 +36,18 @@ class TruncationHook:
         if tool_name in _UNLIMITED:
             return payload
 
+        # Safety net: if the tool text contains embedded image data URLs,
+        # extract them as images so they are not lost during truncation.
+        from ziva.adapters.mcp.client import _extract_image_data_urls
+        cleaned_text, extracted_images = _extract_image_data_urls(text)
+        if extracted_images:
+            output.images.extend(extracted_images)
+            output.text = cleaned_text
+            text = cleaned_text
+
+        if output.images:
+            return payload
+
         limit = _TOOL_LIMITS.get(tool_name, _DEFAULT_LIMIT)
         if len(text) <= limit:
             return payload

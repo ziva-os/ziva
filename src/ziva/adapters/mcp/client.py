@@ -229,9 +229,22 @@ def _parse_content_item(item: Any) -> tuple[list[str], list[str], list[str], lis
             texts.append(cleaned_text)
         images.extend(extracted_images)
     elif item_type == "image":
-        data = _get_field(item, "data")
-        mime_type = _get_field(item, "mimeType", "mime_type", default="image/png")
+        data = _get_field(item, "data", "image", "source", "blob", "base64")
+        mime_type = _get_field(
+            item, "mimeType", "mime_type", "mime", "contentType", "content_type", "type",
+            default="image/png",
+        )
         url = _data_url(data, str(mime_type))
+        if url:
+            images.append(url)
+    elif item_type == "image_url":
+        url_field = _get_field(item, "image_url", "url", default="")
+        if isinstance(url_field, dict):
+            url = url_field.get("url", "")
+        elif isinstance(url_field, str):
+            url = url_field
+        else:
+            url = ""
         if url:
             images.append(url)
     elif item_type == "audio":
@@ -251,7 +264,15 @@ def _parse_content_item(item: Any) -> tuple[list[str], list[str], list[str], lis
             resources.append(_to_plain_data(resource))
             if text is not None:
                 prefix = f"Resource {uri}:\n" if uri else "Resource:\n"
-                texts.append(prefix + str(text))
+                raw_text = str(text)
+                # Some servers put image data URLs inside the resource text field.
+                # Extract them so they are treated as images, not truncated text.
+                if str(mime_type).startswith("image/"):
+                    cleaned_text, extracted_images = _extract_image_data_urls(raw_text)
+                    images.extend(extracted_images)
+                    texts.append(prefix + cleaned_text)
+                else:
+                    texts.append(prefix + raw_text)
             elif blob is not None:
                 try:
                     # attempt to decode base64 text if mime_type hints at text
