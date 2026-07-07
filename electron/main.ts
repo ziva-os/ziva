@@ -464,13 +464,29 @@ ipcMain.handle("browser-close-tab", (_e, id: string) => {
   return true;
 });
 
+let backendStarting = false;
+
 async function ensureBackendReady(): Promise<void> {
   const alreadyRunning = await checkBackendHealth();
   if (alreadyRunning) {
     console.log("[backend] reusing existing backend on port", PORT);
     return;
   }
-  await startPythonBackend();
+  if (backendStarting) {
+    // Wait for the in-flight startup to finish instead of spawning a second process.
+    const waitStart = Date.now();
+    while (backendStarting && Date.now() - waitStart < 60000) {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    if (await checkBackendHealth()) return;
+    throw new Error("Backend startup failed");
+  }
+  backendStarting = true;
+  try {
+    await startPythonBackend();
+  } finally {
+    backendStarting = false;
+  }
 }
 
 function loadBackendUrlInto(window: BrowserWindow | null): void {
