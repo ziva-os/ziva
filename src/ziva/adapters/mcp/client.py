@@ -161,6 +161,53 @@ def _extract_contents(result: Any) -> list[Any]:
     return []
 
 
+def _extract_image_data_urls(text: str) -> tuple[str, list[str]]:
+    """Extract data:image/...;base64,... URLs from plain text.
+
+    Some MCP servers (and misbehaving clients) embed image base64 blobs
+    inside ``type: "text"`` content items. If left as text, those huge
+    blobs inflate the token count and can be truncated by compaction or
+    other hooks, leaving the multimodal model with no usable image.
+
+    Returns the cleaned text (with image URLs replaced by placeholders)
+    and a list of extracted data URLs that can be placed in
+    ``ToolResult.images`` instead.
+    """
+    import re
+
+    images: list[str] = []
+    cleaned_parts: list[str] = []
+    last_end = 0
+
+    # Markdown image syntax: ![alt](data:image/...;base64,...)
+    md_pattern = re.compile(
+        r"!\[([^\]]*)\]\((data:image/[a-zA-Z0-9+.-]+;base64,[A-Za-z0-9+/]+={0,2})\)"
+    )
+    for match in md_pattern.finditer(text):
+        start, end = match.span()
+        images.append(match.group(2))
+        cleaned_parts.append(text[last_end:start])
+        alt = match.group(1).strip()
+        cleaned_parts.append(f"[Image: {alt}]" if alt else "[Image]")
+        last_end = end
+
+    # Raw data URLs that are not inside markdown images.
+    data_url_pattern = re.compile(
+        r"data:image/[a-zA-Z0-9+.-]+;base64,[A-Za-z0-9+/]+={0,2}"
+    )
+    remainder = text[last_end:]
+    last_end = 0
+    for match in data_url_pattern.finditer(remainder):
+        start, end = match.span()
+        images.append(match.group(0))
+        cleaned_parts.append(remainder[last_end:start])
+        cleaned_parts.append("[Image]")
+        last_end = end
+    cleaned_parts.append(remainder[last_end:])
+
+    return "".join(cleaned_parts), images
+
+
 def _parse_content_item(item: Any) -> tuple[list[str], list[str], list[str], list[dict]]:
     """Parse a single MCP content item into text, image, audio, and resource parts."""
     texts: list[str] = []
@@ -176,7 +223,11 @@ def _parse_content_item(item: Any) -> tuple[list[str], list[str], list[str], lis
     item_type = _get_field(item, "type", default="")
 
     if item_type == "text":
-        texts.append(str(_get_field(item, "text", default="")))
+        raw_text = str(_get_field(item, "text", default=""))
+        cleaned_text, extracted_images = _extract_image_data_urls(raw_text)
+        if cleaned_text:
+            texts.append(cleaned_text)
+        images.extend(extracted_images)
     elif item_type == "image":
         data = _get_field(item, "data")
         mime_type = _get_field(item, "mimeType", "mime_type", default="image/png")
