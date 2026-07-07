@@ -260,6 +260,7 @@ async function createMainWindow() {
     minWidth: 900,
     minHeight: 600,
     title: "Ziva",
+    backgroundColor: "#141414",
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     trafficLightPosition: { x: 16, y: 16 },
     webPreferences: {
@@ -334,6 +335,12 @@ ipcMain.handle("open-external", (_event, url: string) => {
 });
 
 ipcMain.handle("get-cdp-port", () => cdpBridge?.port ?? null);
+
+ipcMain.handle("set-theme", (_event, theme: string) => {
+  const color = theme === "light" ? "#f5f5f5" : "#141414";
+  mainWindow?.setBackgroundColor(color);
+  return true;
+});
 
 // Absolute path of the webview preload script. The renderer sets this
 // as <webview>.preload so the webview's pages can intercept <a> clicks

@@ -509,6 +509,7 @@ function bindEvents() {
     store.set({ theme: next });
     document.documentElement.setAttribute("data-theme", next);
     localStorage.setItem("ziva-theme", next);
+    (window as any).electronAPI?.setTheme?.(next);
   };
 
   $("btnFilterSessions").onclick = () => {
@@ -616,6 +617,7 @@ function bindEvents() {
   if (savedTheme) {
     store.set({ theme: savedTheme });
     document.documentElement.setAttribute("data-theme", savedTheme);
+    (window as any).electronAPI?.setTheme?.(savedTheme);
   }
   // Mic is handled per-composer by bindComposerEvents (startComposerMic).
 }

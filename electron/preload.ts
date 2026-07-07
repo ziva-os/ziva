@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   isElectron: () => ipcRenderer.invoke("is-electron"),
   openExternal: (url: string) => ipcRenderer.invoke("open-external", url),
   getCdpPort: () => ipcRenderer.invoke("get-cdp-port"),
+  setTheme: (theme: string) => ipcRenderer.invoke("set-theme", theme),
   // ---- Embedded Chromium browser (WebContentsView) ----
   // The renderer is the host shell; it asks the main process to create/show/
   // navigate/close native browser views and reports the rectangle where the
