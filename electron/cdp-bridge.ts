@@ -410,10 +410,13 @@ export class CdpBridge {
   }
 
   private async handleSessionMessage(ws: WebSocket, sess: any, innerMsg: any, sessionId: string, outerMsgId: number | undefined) {
-    const paramsPreview = String(innerMsg.method).startsWith("Accessibility.")
-      ? "<accessibility-params>"
-      : JSON.stringify(innerMsg.params);
-    console.log(`[cdp-bridge] session msg method=${innerMsg.method} id=${innerMsg.id} sessionId=${sessionId} params=${paramsPreview}`);
+    const noisy = this.isNoisyMethod(innerMsg.method);
+    if (!noisy) {
+      const paramsPreview = String(innerMsg.method).startsWith("Accessibility.")
+        ? "<accessibility-params>"
+        : JSON.stringify(innerMsg.params);
+      console.log(`[cdp-bridge] session msg method=${innerMsg.method} id=${innerMsg.id} sessionId=${sessionId} params=${paramsPreview}`);
+    }
     try {
       let result: any;
       if (innerMsg.method === "Page.navigate" && innerMsg.params?.url) {
@@ -446,17 +449,17 @@ export class CdpBridge {
       }
 
       if (sess.flatten) {
-        this.respond(ws, outerMsgId !== undefined ? outerMsgId : innerMsg.id, result, sessionId);
+        this.respond(ws, outerMsgId !== undefined ? outerMsgId : innerMsg.id, result, sessionId, noisy);
       } else {
-        if (outerMsgId !== undefined) this.respond(ws, outerMsgId, {});
+        if (outerMsgId !== undefined) this.respond(ws, outerMsgId, {}, undefined, noisy);
         this.sendInnerResponseAsEvent(sess, innerMsg.id, result, undefined);
       }
     } catch (err: any) {
       const message = err?.message || String(err);
       if (sess.flatten) {
-        this.respondError(ws, outerMsgId !== undefined ? outerMsgId : innerMsg.id, -32000, message, sessionId);
+        this.respondError(ws, outerMsgId !== undefined ? outerMsgId : innerMsg.id, -32000, message, sessionId, noisy);
       } else {
-        if (outerMsgId !== undefined) this.respond(ws, outerMsgId, {});
+        if (outerMsgId !== undefined) this.respond(ws, outerMsgId, {}, undefined, noisy);
         this.sendInnerResponseAsEvent(sess, innerMsg.id, undefined, message);
       }
     }
@@ -489,7 +492,10 @@ export class CdpBridge {
   }
 
   private async handleBrowserMessage(ws: WebSocket, msg: any) {
-    console.log(`[cdp-bridge] browser msg method=${msg.method} id=${msg.id} sessionId=${msg.sessionId} params=${JSON.stringify(msg.params)}`);
+    const isBrowserLevel = !msg.sessionId || String(msg.method).startsWith("Target.");
+    if (isBrowserLevel) {
+      console.log(`[cdp-bridge] browser msg method=${msg.method} id=${msg.id} sessionId=${msg.sessionId} params=${JSON.stringify(msg.params)}`);
+    }
     // The Target domain is browser-level: even if the client mistakenly sends a
     // top-level sessionId, commands like Target.detachFromTarget must be handled
     // here, not routed to the session. Session-only domains (Page, Runtime, ...)
@@ -871,20 +877,24 @@ export class CdpBridge {
     }
   }
 
-  private respond(ws: WebSocket, id: number, result: any, sessionId?: string) {
+  private respond(ws: WebSocket, id: number, result: any, sessionId?: string, quiet?: boolean) {
     if (ws.readyState !== WebSocket.OPEN) return;
     const msg = sessionId ? { id, result, sessionId } : { id, result };
     const raw = JSON.stringify(msg);
-    console.log(`SEND: ${this.truncateForLog(raw)}`);
+    if (!quiet) console.log(`SEND: ${this.truncateForLog(raw)}`);
     ws.send(raw);
   }
 
-  private respondError(ws: WebSocket, id: number, code: number, message: string, sessionId?: string) {
+  private respondError(ws: WebSocket, id: number, code: number, message: string, sessionId?: string, quiet?: boolean) {
     if (ws.readyState !== WebSocket.OPEN) return;
     const msg = sessionId ? { id, error: { code, message }, sessionId } : { id, error: { code, message } };
     const raw = JSON.stringify(msg);
-    console.log(`SEND: ${this.truncateForLog(raw)}`);
+    if (!quiet) console.log(`SEND: ${this.truncateForLog(raw)}`);
     ws.send(raw);
+  }
+
+  private isNoisyMethod(method: string): boolean {
+    return /^(Debugger|Storage|HeapProfiler|Profiler|CSS|Overlay|Animation|Performance|Audits|Memory|Tracing|DOMSnapshot|Accessibility)\./.test(String(method));
   }
 
   private truncateForLog(raw: string, maxLen: number = 800): string {
