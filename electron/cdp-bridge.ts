@@ -410,7 +410,10 @@ export class CdpBridge {
   }
 
   private async handleSessionMessage(ws: WebSocket, sess: any, innerMsg: any, sessionId: string, outerMsgId: number | undefined) {
-    console.log(`[cdp-bridge] session msg method=${innerMsg.method} id=${innerMsg.id} sessionId=${sessionId} params=${JSON.stringify(innerMsg.params)}`);
+    const paramsPreview = String(innerMsg.method).startsWith("Accessibility.")
+      ? "<accessibility-params>"
+      : JSON.stringify(innerMsg.params);
+    console.log(`[cdp-bridge] session msg method=${innerMsg.method} id=${innerMsg.id} sessionId=${sessionId} params=${paramsPreview}`);
     try {
       let result: any;
       if (innerMsg.method === "Page.navigate" && innerMsg.params?.url) {
@@ -871,15 +874,22 @@ export class CdpBridge {
   private respond(ws: WebSocket, id: number, result: any, sessionId?: string) {
     if (ws.readyState !== WebSocket.OPEN) return;
     const msg = sessionId ? { id, result, sessionId } : { id, result };
-    console.log("SEND:", JSON.stringify(msg));
-    ws.send(JSON.stringify(msg));
+    const raw = JSON.stringify(msg);
+    console.log(`SEND: ${this.truncateForLog(raw)}`);
+    ws.send(raw);
   }
 
   private respondError(ws: WebSocket, id: number, code: number, message: string, sessionId?: string) {
     if (ws.readyState !== WebSocket.OPEN) return;
     const msg = sessionId ? { id, error: { code, message }, sessionId } : { id, error: { code, message } };
-    console.log("SEND:", JSON.stringify(msg));
-    ws.send(JSON.stringify(msg));
+    const raw = JSON.stringify(msg);
+    console.log(`SEND: ${this.truncateForLog(raw)}`);
+    ws.send(raw);
+  }
+
+  private truncateForLog(raw: string, maxLen: number = 800): string {
+    if (raw.length <= maxLen) return raw;
+    return raw.slice(0, maxLen) + `... (${raw.length - maxLen} more chars)`;
   }
 
   private hasAnyClientFor(wc: WebContents): boolean {
