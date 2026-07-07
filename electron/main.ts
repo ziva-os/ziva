@@ -261,7 +261,7 @@ async function createMainWindow() {
     minHeight: 600,
     title: "Ziva",
     backgroundColor: "#141414",
-    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
+    titleBarStyle: process.platform === "darwin" ? "hidden" : "default",
     trafficLightPosition: { x: 16, y: 16 },
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),

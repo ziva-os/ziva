@@ -33,7 +33,7 @@
   overflow-y: hidden;
   scrollbar-width: thin;
 }
-/* Leave room for the macOS traffic lights (hiddenInset @ 16,16). */
+/* Leave room for the macOS traffic lights (positioned at 16,16). */
 body.electron-darwin .browser-tabstrip { padding-left: 80px; }
 
 .b-tab,
