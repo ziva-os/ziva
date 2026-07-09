@@ -29,6 +29,7 @@ export interface Automation {
   last_run?: number;
   last_result?: string;
   last_error?: string;
+  runs?: Array<{ id: string; ts: number; prompt: string; result: string | null; error: string | null; status: string }>;
   schedule_time?: string;
   run_count?: number;
   created_at?: number;
@@ -86,8 +87,9 @@ export async function listSessions(): Promise<Session[]> {
   return data.sessions || [];
 }
 
-export async function createSession(): Promise<string> {
-  const data = await api<{ id: string }>("POST", "/sessions", {});
+export async function createSession(modelName?: string): Promise<string> {
+  const body = modelName ? { model_name: modelName } : {};
+  const data = await api<{ id: string }>("POST", "/sessions", body);
   return data.id;
 }
 
@@ -249,8 +251,9 @@ export async function updateAutomation(aid: string, patch: { name?: string; prom
   return data.automation;
 }
 
-export async function runAutomationNow(aid: string): Promise<{ ok: boolean; result?: { role: string; content: string; finish_reason?: string }; automation: Automation }> {
-  return api("POST", `/automations/${aid}/run`, {}, 300_000);
+export async function runAutomationNow(aid: string, opts?: { session_id?: string }): Promise<{ ok: boolean; result?: { role: string; content: string; finish_reason?: string }; automation: Automation }> {
+  const body = opts?.session_id ? { session_id: opts.session_id } : {};
+  return api("POST", `/automations/${aid}/run`, body, 300_000);
 }
 
 export async function deleteAutomation(aid: string): Promise<void> {

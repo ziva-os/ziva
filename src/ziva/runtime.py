@@ -466,18 +466,61 @@ class Runtime:
             # `model_name` via PATCH /sessions/{sid}; the in-memory state
             # here mirrors that on first access.
             try:
-                meta = self.storage.get_session(
-                    self._resolve_project_id(session_id), session_id
-                ) or {}
+                # The session may live in a different workspace than the
+                # currently-focused one (e.g. an automation's backing
+                # session created in workspace A, running while the user has
+                # switched to B). Search known workspaces for its REAL
+                # project so we read the right file and so
+                # _resolve_project_id returns the correct pid for all
+                # subsequent disk ops — otherwise chat()'s "create if
+                # missing" branch would write a NEW session file in the
+                # wrong project, leaking the backing session into the sidebar.
+                pid = self._find_session_project(session_id)
+                meta = self.storage.get_session(pid, session_id) or {}
                 saved = meta.get("model_name")
                 if isinstance(saved, str) and saved:
                     sess.model_name = saved
+                saved_ws = meta.get("workspace_root")
+                if isinstance(saved_ws, str) and saved_ws:
+                    sess.workspace_root = saved_ws
+                    sess.project_id = _project_hash(Path(saved_ws))
+                elif pid != self._project_id:
+                    sess.project_id = pid
             except Exception:
                 # Disk read is best-effort; fall through with model_name=None
                 # so chat() falls back to the runtime config.
                 pass
             self._sessions[session_id] = sess
         return self._sessions[session_id]
+
+    def _find_session_project(self, session_id: str) -> str:
+        """Find the project_id that actually owns this session by searching
+        known workspace directories on disk. Falls back to the runtime's
+        current project_id. Needed because a session may belong to a
+        different workspace than the currently-focused one."""
+        from pathlib import Path
+        import json as _json
+        workspaces = [str(self.workspace_root)]
+        try:
+            rp = Path.home() / ".ziva" / "recent_workspaces.json"
+            if rp.exists():
+                data = _json.loads(rp.read_text())
+                if isinstance(data, list):
+                    workspaces += [str(p) for p in data if p]
+        except Exception:
+            pass
+        seen: set = set()
+        for ws in workspaces:
+            if not ws or ws in seen:
+                continue
+            seen.add(ws)
+            try:
+                pid = _project_hash(Path(ws))
+                if self.storage.get_session(pid, session_id):
+                    return pid
+            except Exception:
+                continue
+        return self.project_id
 
     def _resolve_project_id(self, session_id: str) -> str:
         """Resolve project_id from session context, falling back to global."""
@@ -750,12 +793,18 @@ class Runtime:
         new_messages = list(messages)
         ctx = RuntimeContext(session_id=sid, config=self.config)
         ctx.metadata["_runtime"] = self
+        session = self._get_session(sid)
+        # Resolve paths against the session's OWN workspace (the one it was
+        # created in), not runtime.workspace_root — the latter tracks the
+        # currently-focused workspace and would be wrong if the user switches
+        # workspaces and then runs a session created elsewhere. Falls back to
+        # the runtime workspace for sessions created before this field existed.
+        ctx.metadata["_workspace_root"] = session.workspace_root or str(self.workspace_root)
 
         # Load session history from disk if not already loaded.
         # Serialize the check+load+extend under a per-session lock so that
         # two concurrent chat() calls for the same session cannot both see
         # an empty history and duplicate the loaded messages.
-        session = self._get_session(sid)
         async with session.load_lock:
             if not session.history:
                 loaded = self._load_session_from_disk(sid)
@@ -839,7 +888,14 @@ class Runtime:
         final_usage = None
         final_finish_reason = "stop"
         cancelled = False
-        async for event in self._run_model_tool_loop(rendered_messages, sid, ctx, model_cfg=model_cfg, model_adapter=turn_adapter):
+        # Pass the session's cancel token so the polling checkpoints inside
+        # _run_model_tool_loop (between streamed deltas / at each round) can
+        # react to "stop" immediately. desktop_api's create_turn stashes the
+        # CancellationToken on session.cancel_token; without forwarding it
+        # here, those checkpoints never fire and cancellation only happens
+        # via task.cancel()'s CancelledError at an await boundary — which is
+        # why stop felt slow (the current tool had to finish first).
+        async for event in self._run_model_tool_loop(rendered_messages, sid, ctx, cancellation_token=session.cancel_token, model_cfg=model_cfg, model_adapter=turn_adapter):
             if event.get("type") == "model_response":
                 final_content = event.get("content", "")
                 final_usage = event.get("usage")
@@ -906,8 +962,11 @@ class Runtime:
         new_messages = list(messages)
         ctx = RuntimeContext(session_id=sid, config=self.config)
         ctx.metadata["_runtime"] = self
-
         session = self._get_session(sid)
+        # Mirror of chat(): use the session's own workspace (creation-time),
+        # not runtime.workspace_root.
+        ctx.metadata["_workspace_root"] = session.workspace_root or str(self.workspace_root)
+
         async with session.load_lock:
             if not session.history:
                 loaded = self._load_session_from_disk(sid)
@@ -1003,19 +1062,21 @@ class Runtime:
         session_id: str,
         ctx: RuntimeContext,
         cancellation_token: CancellationToken | None = None,
-        model_cfg: Dict[str, Any] | None = None,
-        model_adapter: ModelAdapter | None = None,
+        *,
+        model_cfg: Dict[str, Any],
+        model_adapter: "ModelAdapter",
     ) -> AsyncIterator[Dict[str, Any]]:
 
         await self._connect_mcp_if_needed(session_id)
         is_sub = ctx.metadata.get("_subagent", False) if ctx else False
         sub_call_id = ctx.metadata.get("_subagent_call_id") if ctx else None
-        # Use the snapshot from the turn entry point if provided;
-        # otherwise fall back to current config (for backward compat).
-        if model_cfg is None:
-            model_cfg = dict(self.config.get("model", {}))
-        if model_adapter is None:
-            model_adapter = _create_adapter(self.config)
+        # Both model_cfg and model_adapter MUST be passed in. Callers that
+        # used to omit them were silently using the runtime's global
+        # `config["model"]` — which ignored any per-session `model_name`
+        # pinned via PATCH /sessions. Today the only known callers are
+        # `chat()` / `chat_streaming()` (turn entry points) and
+        # `spawn_agent` (sub-agent entry point); both now build a
+        # session-aware turn_config and pass it explicitly.
         raw_max = self.config.get("tool", {}).get("max_rounds", 10)
         max_rounds = None if raw_max in (0, None, "0") else int(raw_max or 10)
         context_window = int(self.config.get("memory", {}).get("context_window_tokens", 200000) or 200000)
@@ -1103,8 +1164,14 @@ class Runtime:
 
             round_start = time.perf_counter()
             base_prompt = self.config.get("prompt", {}).get("system_prompt") or ""
-            instructions = load_layered_instructions(self.workspace_root)
-            env_context = self._build_environment_context()
+            # Use the session's OWN workspace (creation-time) for the system
+            # prompt's `cwd:` line and layered AGENTS.md instructions — not
+            # runtime.workspace_root, which tracks the currently-focused
+            # workspace and would tell the model the wrong directory when the
+            # user switches workspaces and then runs a session created elsewhere.
+            session_ws = ctx.metadata.get("_workspace_root") or str(self.workspace_root)
+            instructions = load_layered_instructions(Path(str(session_ws)))
+            env_context = self._build_environment_context(session_ws)
             parts = [p for p in [base_prompt, instructions] if p]
             parts.append(env_context)
             skill_index = self.build_skill_index()
@@ -1773,14 +1840,26 @@ class Runtime:
         from ziva.adapters.retry import _is_retryable
         return _is_retryable(exc)
 
-    def _build_environment_context(self) -> str:
+    def _build_environment_context(self, workspace_root: str | None = None) -> str:
         timezone = _detect_timezone()
         shell = os.environ.get("SHELL", "")
         model_cfg = self.config.get("model", {})
         model_name = model_cfg.get("name", "unknown")
+        # Prefer the caller-supplied workspace (the session's own) over the
+        # runtime's currently-focused workspace, so the `cwd:` line reflects
+        # where this session lives, not where the user last switched to.
+        ws = workspace_root or str(self.workspace_root)
         lines = [
             "## Environment",
-            f"cwd: {self.workspace_root}",
+            # Defensive cleanup of the workspace path before it reaches the
+            # system prompt. Without this, sessions started before the
+            # `expanduser().resolve()` fix may have a workspace_root like
+            # `/Users/<u>/~/code/x` (literal ~ in the middle, because
+            # Path('~/x').resolve() doesn't expand ~). expanduser alone
+            # won't help because ~ isn't at the start, so we string-replace
+            # the broken `/~/` segment with the user's home dir. For the
+            # common case (already a clean absolute path) this is a no-op.
+            f"cwd: {_clean_workspace_path_for_display(ws)}",
             f"shell: {Path(shell).name if shell else ''}",
             f"current_date: {_current_date_for_timezone(timezone)}",
             f"timezone: {timezone}",
@@ -1982,4 +2061,34 @@ class Runtime:
                     await session.mcp_client.cleanup()
                 except Exception:
                     pass
-                session.mcp_status = MCPConnectStatus.DISCONNECTED
+            session.mcp_status = MCPConnectStatus.DISCONNECTED
+
+
+def _clean_workspace_path_for_display(workspace_root) -> str:
+    """Return a navigable absolute path string for the system prompt.
+
+    Defends against two pre-fix forms that can land in `workspace_root`:
+
+    1. Leading ``~`` (``~/code/x``): ``Path(s).expanduser()`` handles this.
+    2. ``$HOME/~/code/x`` (literal ``~`` injected in the middle by
+       ``Path('~/x').resolve()`` before the fix landed): ``expanduser``
+       doesn't touch ``~`` in the middle, so we strip the broken
+       ``$HOME/~/`` prefix (the ``$HOME`` part was CWD-relative glue
+       from the buggy resolve, not part of the user's intent) and return
+       ``$HOME/<rest>`` — the path the user originally typed.
+
+    For the common case (a clean absolute path) both branches are
+    no-ops and the input is returned unchanged.
+    """
+    if workspace_root is None:
+        return ""
+    p = str(workspace_root)
+    home = str(Path.home())
+    broken_prefix = f"{home}/~/"
+    if p.startswith(broken_prefix):
+        # Strip the prepended CWD-relative glue; the user's actual intent
+        # was the `~/...` portion, which expands to $HOME/...
+        p = f"{home}/{p[len(broken_prefix):]}"
+    elif p.startswith("~"):
+        p = str(Path(p).expanduser())
+    return p

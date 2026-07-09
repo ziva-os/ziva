@@ -136,6 +136,15 @@ class MCPServer:
     async def call_tool(self, tool_name: str, arguments: Optional[dict[str, Any]]) -> Any:
         if self.session is None:
             raise RuntimeError(f"MCP server {self._name!r} not connected")
+        # Drop arguments whose value is an empty string. LLMs sometimes
+        # pass "" for optional params (e.g. chrome-devtools new_page's
+        # isolatedContext), and some MCP servers treat "" as a meaningful
+        # value — chrome-devtools creates an isolated browser context for
+        # any non-None isolatedContext including "", which then fails with
+        # "Target.createBrowserContext: Method not handled". Treating "" as
+        # "not provided" matches the common intent and fixes that.
+        if arguments:
+            arguments = {k: v for k, v in arguments.items() if v != ""}
         # Retry transient failures with exponential backoff, then map transport
         # errors to readable messages (mirrors agents.mcp _run_with_retries +
         # _raise_user_error_for_http_error).

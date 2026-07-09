@@ -11,7 +11,6 @@ import shlex
 import struct
 import subprocess
 import sys
-import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -42,6 +41,10 @@ class Automation:
     last_error: str | None = None
     next_run: float | None = None
     run_count: int = 0
+    # History of recent runs, newest first. Each: {id, ts, prompt, result,
+    # error, status}. Capped to bound storage. Shown as cards in the
+    # automation detail view — click a card to see input + output.
+    runs: list = field(default_factory=list)
     schedule_time: str | None = None  # HH:MM:SS format for daily runs
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
@@ -60,6 +63,7 @@ class Automation:
             last_error=data.get("last_error"),
             next_run=data.get("next_run"),
             run_count=int(data.get("run_count") or 0),
+            runs=list(data.get("runs") or []),
             schedule_time=data.get("schedule_time"),
             created_at=float(data.get("created_at") or time.time()),
             updated_at=float(data.get("updated_at") or time.time()),
@@ -88,6 +92,10 @@ class SessionStore:
         FileStorage.create_session(self.runtime.project_id, {
             "id": sid,
             "time": {"created": int(time.time() * 1000), "updated": int(time.time() * 1000)},
+            # Record the workspace this session was created in so tools
+            # resolve cwd/relative paths against it even after the user
+            # switches to another workspace. See SessionState.workspace_root.
+            "workspace_root": str(self.runtime.workspace_root),
         })
         return sid
 
@@ -141,10 +149,10 @@ class DesktopAPIServer:
         self.automations: Dict[str, Automation] = {}
         self._automation_tasks: Dict[str, asyncio.Task] = {}
         self._runner: web.AppRunner | None = None
-        # Set when STT warmup finishes (or fails). The frontend can poll
-        # /api/stt/status to render a "preparing voice input…" hint while
-        # the model is loading. None == unknown / not started yet.
-        self._stt_status: str = "idle"
+        # STT warmup status is owned by ``stt_warmup`` module (started
+        # even before this server exists). The frontend polls
+        # /api/stt/status to render a "preparing voice input…" hint
+        # while the model is loading.
         self._setup_app()
 
     def _pid_for(self, sid: str) -> str:
@@ -314,22 +322,45 @@ class DesktopAPIServer:
                 return
             await self._run_automation_once(automation, scheduled=True)
 
-    async def _run_automation_once(self, automation: Automation, *, scheduled: bool) -> ChatResult | None:
+    async def _run_automation_once(self, automation: Automation, *, scheduled: bool, session_id: str | None = None) -> ChatResult | None:
+        # Manual runs (Run now) execute in the caller-chosen session so the
+        # streaming process shows up in the chat UI; scheduled runs use the
+        # automation's own (hidden, is_automation) session so they stay in
+        # the background and only their final result reaches the Automations UI.
+        sid = session_id or automation.session_id
         try:
-            if not self.store.exists(automation.session_id):
-                FileStorage.create_session(self._pid_for(automation.session_id), {
-                    "id": automation.session_id,
+            # Resolve the backing session's REAL project (it may live in a
+            # different workspace than the currently-focused one) and only
+            # create it if it genuinely doesn't exist. store.exists() uses
+            # runtime.project_id (the focused workspace), so after a workspace
+            # switch it wrongly reports "not found" and create_session would
+            # OVERWRITE the backing session — clobbering its is_automation
+            # marker / workspace_root and letting it leak into the sidebar.
+            # _pid_for searches disk across known workspaces instead.
+            backing_pid = self._pid_for(sid)
+            if not FileStorage.get_session(backing_pid, sid):
+                FileStorage.create_session(backing_pid, {
+                    "id": sid,
                     "time": {"created": int(time.time() * 1000), "updated": int(time.time() * 1000)},
                 })
             messages = [ChatMessage(role="user", content=automation.prompt)]
-            result = await self.runtime.chat(messages, session_id=automation.session_id)
+            result = await self.runtime.chat(messages, session_id=sid)
             automation.last_run = time.time()
             automation.last_result = result.content
             automation.last_error = None
             automation.run_count += 1
+            automation.runs.insert(0, {
+                "id": str(uuid.uuid4()),
+                "ts": automation.last_run,
+                "prompt": automation.prompt,
+                "result": result.content,
+                "error": None,
+                "status": "done",
+            })
+            automation.runs = automation.runs[:50]
             automation.next_run = self._next_run_timestamp(automation.schedule_time, automation.interval_seconds) if automation.enabled else None
             self._persist_automation(automation)
-            await self.runtime._emit(automation.session_id, {
+            await self.runtime._emit(sid, {
                 "type": "automation_run",
                 "automation_id": automation.id,
                 "name": automation.name,
@@ -340,9 +371,18 @@ class DesktopAPIServer:
         except Exception as exc:
             automation.last_run = time.time()
             automation.last_error = str(exc)
+            automation.runs.insert(0, {
+                "id": str(uuid.uuid4()),
+                "ts": automation.last_run,
+                "prompt": automation.prompt,
+                "result": None,
+                "error": str(exc),
+                "status": "failed",
+            })
+            automation.runs = automation.runs[:50]
             automation.next_run = self._next_run_timestamp(automation.schedule_time, automation.interval_seconds) if automation.enabled else None
             self._persist_automation(automation)
-            await self.runtime._emit(automation.session_id, {
+            await self.runtime._emit(sid, {
                 "type": "automation_run",
                 "automation_id": automation.id,
                 "name": automation.name,
@@ -442,6 +482,11 @@ class DesktopAPIServer:
                 for s in FileStorage.list_sessions(pid):
                     if "id" not in s:
                         continue
+                    # Hide automation backing sessions from the sidebar —
+                    # scheduled runs happen in the background and surface
+                    # only their result in the Automations UI.
+                    if s.get("is_automation"):
+                        continue
                     items.append({
                         "id": s["id"],
                         "time": s.get("time"),
@@ -505,6 +550,7 @@ class DesktopAPIServer:
             FileStorage.create_session(self.runtime.project_id, {
                 "id": sid,
                 "time": {"created": int(time.time() * 1000), "updated": int(time.time() * 1000)},
+                "workspace_root": str(self.runtime.workspace_root),
             })
 
         # Reject if a turn is already in-flight for this session.
@@ -990,6 +1036,11 @@ class DesktopAPIServer:
 
         aid = str(uuid.uuid4())
         sid = self.store.create()
+        # Mark this session as an automation's hidden backing session so the
+        # sidebar (list_sessions) excludes it — scheduled runs must stay in
+        # the background. Manual "Run now" runs in the user's active session
+        # instead, so this one is only ever used by the timer.
+        FileStorage.update_session(self.runtime.project_id, sid, {"is_automation": True})
         now = time.time()
         next_run = now if run_immediately else self._next_run_timestamp(schedule_time, interval)
         automation = Automation(
@@ -1056,8 +1107,21 @@ class DesktopAPIServer:
         if not automation:
             return web.json_response({"error": "not_found"}, status=404)
 
+        # Optional target session: when the frontend passes the user's active
+        # session id, the run executes there so the streaming process shows
+        # up in the chat (manual "Run now"). Without it the run falls back
+        # to the automation's hidden backing session.
+        target_session_id: str | None = None
+        if request.body_exists:
+            try:
+                payload = await request.json()
+                if isinstance(payload, dict) and isinstance(payload.get("session_id"), str):
+                    target_session_id = payload["session_id"]
+            except Exception:
+                pass
+
         async def _run_and_emit():
-            await self._run_automation_once(automation, scheduled=False)
+            await self._run_automation_once(automation, scheduled=False, session_id=target_session_id)
             # Result is already persisted on the automation object and
             # emitted via the automation_run SSE event by _run_automation_once.
 
@@ -1074,8 +1138,16 @@ class DesktopAPIServer:
         task = self._automation_tasks.pop(aid, None)
         if task:
             task.cancel()
+        backing_sid = automation.session_id
         del self.automations[aid]
         FileStorage.delete_automation(self.runtime.project_id, aid)
+        # Also delete the backing session so it doesn't linger in the
+        # sidebar. Manual "Run now" runs in the user's active session, not
+        # this one, so this only removes the hidden scheduled-run session.
+        try:
+            FileStorage.delete_session(self._pid_for(backing_sid), backing_sid)
+        except Exception:
+            pass
         return web.json_response({"deleted": True})
 
     async def permission_reply(self, request: web.Request) -> web.Response:
@@ -1292,18 +1364,22 @@ class DesktopAPIServer:
             updates["name"] = payload["name"]
         if "model_name" in payload:
             updates["model_name"] = payload["model_name"]
-        # Allow the sidebar to rename sessions in any project.
-        target_pid = self.runtime.project_id
+        # Resolve the project_id the session actually lives in. Sessions
+        # can belong to any of the known workspaces (active + recently
+        # visited); using the runtime's current project_id here would
+        # 404 a cross-workspace PATCH even when the session file is
+        # sitting right there in another project's directory.
+        #
+        # An explicit `workspace` field in the payload still wins — the
+        # sidebar uses it to rename sessions in non-active projects.
+        target_pid = self._pid_for(sid)
         ws = payload.get("workspace")
         if isinstance(ws, str) and ws:
             try:
                 target_pid = _project_hash(Path(ws))
             except Exception:
                 pass
-        # For the active project we still validate via the in-memory store
-        # so a stale UI cannot rename a session that no longer exists; for
-        # other projects we trust the file storage directly.
-        if target_pid == self.runtime.project_id and not self.store.exists(sid):
+        if not FileStorage.get_session(target_pid, sid):
             return web.json_response({"error": "session_not_found"}, status=404)
         if updates:
             FileStorage.update_session(target_pid, sid, updates)
@@ -1312,7 +1388,7 @@ class DesktopAPIServer:
         # disk reload on the next _get_session. Only the active
         # project's sessions live in memory; sessions from other
         # projects will be populated from disk when they're loaded.
-        if "model_name" in updates and target_pid == self.runtime.project_id:
+        if "model_name" in updates:
             sess = self.runtime._sessions.get(sid)
             if sess is not None:
                 sess.model_name = updates["model_name"]
@@ -1539,7 +1615,7 @@ class DesktopAPIServer:
         if not new_path:
             return web.json_response({"error": "Missing path"}, status=400)
 
-        target = Path(new_path).resolve()
+        target = Path(new_path).expanduser().resolve()
         if not target.is_dir():
             return web.json_response({"error": "Not a valid directory"}, status=400)
 
@@ -1678,85 +1754,20 @@ class DesktopAPIServer:
         # plus previously-switched workspaces; a desktop app reusing this
         # backend would not see sessions from A unless we record it here.
         self._register_current_workspace()
-        # Kick off STT warmup in a background daemon thread. The first
-        # user-driven /api/stt call would otherwise pay a 5+ second cold
-        # start (import mlx_whisper + 461MB model load + Metal shader JIT
-        # + numba JIT). By starting warmup here, that cost overlaps with
-        # the user's normal app-launch idle time instead of being
-        # sandwiched between "stop talking" and "see transcribed text".
-        # Warmup failure is non-fatal — speech_to_text still works, it
-        # just takes a few seconds on the first request.
-        self._stt_status = "warming"
-        threading.Thread(
-            target=self._warmup_stt,
-            name="stt-warmup",
-            daemon=True,
-        ).start()
+        # STT warmup is started even earlier (see app.cli start_stt_warmup,
+        # called right after Runtime is constructed). It runs in a daemon
+        # thread that survives this method, so by the time the frontend
+        # can hit /api/stt the model may already be loaded — see
+        # /api/stt/status for the live state.
 
     def _warmup_stt(self) -> None:
-        """Load the STT model in the background so the first user
-        transcription is fast. Runs in a daemon thread; exceptions are
-        logged but never re-raised.
-
-        Mirrors the model-resolution logic in speech_to_text so we
-        warm up the same model the user will hit. If the model isn't
-        on disk yet (will be downloaded on first real use), this is a
-        no-op — we'd rather not block startup on a multi-GB download.
+        """Legacy method kept for backward compatibility. The actual
+        warmup logic now lives in ``stt_warmup._warmup_stt`` and is
+        kicked off in ``app.cli`` before the server is even constructed.
+        Calling this method delegates to the new module.
         """
-        try:
-            # Resolve the same model path speech_to_text would use.
-            models_dir = Path.home() / ".ziva" / "models"
-            stt_model = self.runtime.config.get("stt", {}).get(
-                "model", "whisper-small-mlx"
-            )
-            local_path = None
-            for candidate in [models_dir / stt_model, models_dir / "mlx-community" / stt_model]:
-                if candidate.exists() and (candidate / "weights.npz").exists():
-                    local_path = candidate
-                    break
-            if local_path is None:
-                # Model not downloaded yet — let the first real request
-                # trigger the download + warmup. That's the only way to
-                # know what the user actually wants.
-                self._stt_status = "needs_download"
-                return
-
-            # Imports here (not at module top) because mlx_whisper pulls
-            # in a heavy Metal/native stack that's only meaningful when
-            # we're actually going to run STT.
-            import imageio_ffmpeg
-            ffmpeg_dir = str(Path(imageio_ffmpeg.get_ffmpeg_exe()).parent)
-            os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
-
-            import mlx_whisper  # noqa: F401  — import alone warms Metal/native stack
-            # Force the model load + decoder warmup by transcribing a
-            # 1-second silent wav. This populates ModelHolder.model and
-            # JIT-compiles the Metal kernels.
-            import wave, tempfile
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                with wave.open(tmp, "wb") as w:
-                    w.setnchannels(1)
-                    w.setsampwidth(2)
-                    w.setframerate(16000)
-                    w.writeframes(b"\x00\x00" * 16000)  # 1s silence
-                tmp_path = tmp.name
-            try:
-                mlx_whisper.transcribe(
-                    tmp_path,
-                    path_or_hf_repo=str(local_path),
-                    language=None,
-                )
-                self._stt_status = "ready"
-            finally:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-        except Exception as exc:
-            # Warmup is best-effort. Log so it shows up in backend.log
-            # (Electron's main.ts pipes stderr there) but don't crash.
-            logger.warning("STT warmup failed (first /api/stt will be slow): %s", exc)
-            self._stt_status = "error"
+        from .stt_warmup import start_stt_warmup  # local import to avoid circulars
+        start_stt_warmup(self.runtime)
 
     async def stop(self) -> None:
         """Gracefully stop the server."""
@@ -1980,8 +1991,15 @@ class DesktopAPIServer:
           - needs_download  : model not on disk yet; first request will
                               download + warm up (~minutes for 461 MB)
           - error           : warmup raised; check backend.log
+
+        The state lives in :mod:`ziva.transports.desktop_api.stt_warmup`
+        because the warmup is kicked off in ``app.cli`` *before* this
+        server is constructed — running the warmup later (after
+        ``site.start``) would lose the seconds spent during
+        ``Runtime`` construction and ``BrowserWindow`` setup.
         """
-        return web.json_response({"status": self._stt_status})
+        from .stt_warmup import stt_status as _stt_status
+        return web.json_response({"status": _stt_status})
 
     async def speech_to_text(self, request: web.Request) -> web.Response:
         """Transcribe audio using mlx-whisper (Apple Silicon GPU-accelerated)."""

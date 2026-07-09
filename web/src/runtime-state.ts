@@ -199,6 +199,19 @@ export function setLiveStreamTarget(t: HTMLElement | null): void { liveStreamTar
 export function invalidateLiveStreamEl(): void {
   if (liveStreamSid) streamCtx(liveStreamSid).assistantEl = null;
 }
+// Like invalidateLiveStreamEl but for an explicit sid. Needed when we want
+// to drop a session's assistant element from the streaming context outside
+// of an event handler — e.g. when the user clicks Stop, by which point
+// `liveStreamSid` is already null (set in handleSessionEvent's finally),
+// so invalidateLiveStreamEl() silently no-ops and the next turn's deltas
+// flow into the cancelled turn's bubble ("first message appears after the
+// answer"). Note: only nulls the ctx reference; the old DOM element is
+// kept in place so the user still sees the partial response.
+export function invalidateStreamCtx(sid: string): void {
+  if (!sid) return;
+  const c = _streamCtx.get(sid);
+  if (c) c.assistantEl = null;
+}
 
 // --- Per-session image attachments (single source of truth) ---
 // Live (in-composer, editable) attachments ride on the prompt draft;

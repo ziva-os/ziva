@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 from plugins.tools._shared.diff_utils import create_diff
-from ziva.shared_types import ToolResult
+from ziva.shared_types import ToolResult, resolve_workspace_cwd
 
 
 class WriteFileTool:
@@ -30,6 +30,10 @@ class WriteFileTool:
 
         try:
             path = Path(file_path)
+            # Resolve relative paths against the session's workspace, not the
+            # backend process's os.getcwd(). Absolute paths are untouched.
+            if not path.is_absolute():
+                path = Path(resolve_workspace_cwd(ctx)) / path
 
             # Create parent directories if they don't exist
             parent_dir = path.parent

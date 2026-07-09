@@ -496,6 +496,44 @@ async function ensureBackendReady(): Promise<void> {
   }
 }
 
+// Wait for the STT (voice input) model to finish warming up before swapping
+// the loading screen for the real UI, so the user never lands on a chat
+// window whose mic button doesn't work yet. The mlx-whisper cold start
+// (load 459MB weights + JIT-compile Metal kernels) takes ~10–15s on every
+// launch; the model is already on disk, so there's no download — just load
+// + compile. We poll /api/stt/status and proceed once it reaches a terminal
+// state. A 120s ceiling ensures a stuck warmup never leaves the app stuck
+// on the loading screen forever.
+async function waitForSttReady(): Promise<void> {
+  const start = Date.now();
+  const timeout = 120000;
+  const interval = 500;
+  const query = (): Promise<string> => new Promise((resolve) => {
+    const req = http.get(`http://127.0.0.1:${PORT}/api/stt/status`, { timeout: 2000 }, (res) => {
+      let body = "";
+      res.on("data", (chunk) => { body += chunk; });
+      res.on("end", () => {
+        try { resolve((JSON.parse(body).status as string) || ""); } catch { resolve(""); }
+      });
+    });
+    req.on("error", () => resolve(""));
+    req.on("timeout", () => { req.destroy(); resolve(""); });
+  });
+  while (Date.now() - start < timeout) {
+    let status = "";
+    try { status = await query(); } catch { /* keep polling */ }
+    // ready = success; error / needs_download won't improve by waiting.
+    // idle / warming / "" → keep polling.
+    if (status === "ready") return;
+    if (status === "error" || status === "needs_download") {
+      console.warn(`[stt] warmup ended in non-ready state: ${status}; loading UI anyway`);
+      return;
+    }
+    await new Promise((r) => setTimeout(r, interval));
+  }
+  console.warn("[stt] timed out waiting for warmup; loading UI anyway");
+}
+
 function loadBackendUrlInto(window: BrowserWindow | null): void {
   if (!window) return;
   const backendUrl = `http://127.0.0.1:${PORT}`;
@@ -527,6 +565,8 @@ app.whenReady().then(async () => {
   createWindow(); // show the loading window immediately (not a blank screen)
   try {
     await ensureBackendReady();
+    // Hold the loading screen until voice input is usable — see waitForSttReady.
+    await waitForSttReady();
     loadBackendUrlInto(mainWindow);
   } catch (err) {
     console.error("Failed to start backend:", err);

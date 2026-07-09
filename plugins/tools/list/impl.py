@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict
 
-from ziva.shared_types import ToolResult
+from ziva.shared_types import ToolResult, resolve_workspace_cwd
 
 
 class ListTool:
@@ -24,7 +24,7 @@ class ListTool:
         }
 
     async def run(self, input_data: Dict[str, Any], ctx: Any) -> ToolResult:
-        path_str = input_data.get("path", ".")
+        path_str = input_data.get("path") or resolve_workspace_cwd(ctx)
         show_hidden = input_data.get("all", False)
 
         path = Path(path_str)

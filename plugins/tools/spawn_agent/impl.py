@@ -22,7 +22,7 @@ _TOOL_ALIASES = {
 
 
 def _summarize_tools(tool_names: list[str]) -> dict[str, int]:
-    """Group tool calls by name, e.g. ['grep','grep','read_file'] -> {'grep':2,'read_file':1}.
+    """Group tool calls by name, e.g. ['grep','grep','read_file'] -> {'grep':3,'read_file':1}.
 
     Shown to the user (in the UI) grouped by tool name rather than in call
     order, so a long run reads as "grep ×3, read_file ×5" instead of a flat
@@ -32,6 +32,33 @@ def _summarize_tools(tool_names: list[str]) -> dict[str, int]:
     for n in tool_names:
         summary[n] = summary.get(n, 0) + 1
     return summary
+
+
+def _child_turn(runtime, parent_session_id: str):
+    """Build a session-aware (model_cfg, model_adapter) pair for a child run.
+
+    The child session is brand new (no model_name on disk), but its parent
+    may have pinned a model via PATCH /sessions. Without this helper the
+    sub-agent silently falls back to the runtime's global `config["model"]`,
+    so a parent pinned to model B still spawns children running model A.
+
+    Returns:
+        (model_cfg, model_adapter): both ready to pass to
+        ``runtime._run_model_tool_loop(... model_cfg=..., model_adapter=...)``.
+
+    Resolution order matches chat() / chat_streaming():
+        1. Parent session's pinned model_name (if any)
+        2. Runtime global config["model"] (the active default)
+    """
+    from ziva.runtime import _create_adapter
+
+    parent = runtime._get_session(parent_session_id)
+    model_cfg = dict(runtime.config.get("model", {}))
+    if parent.model_name:
+        model_cfg["name"] = parent.model_name
+    turn_config = dict(runtime.config)
+    turn_config["model"] = model_cfg
+    return model_cfg, _create_adapter(turn_config)
 
 
 class SpawnAgentTool:
@@ -147,6 +174,11 @@ class SpawnAgentTool:
             "_subagent": True,
             "_subagent_call_id": call_id,
             "_spawn_tool_call_id": ctx.metadata.get("_tool_call_id"),
+            # Inherit the parent turn's workspace snapshot so the sub-agent's
+            # file tools run in the parent session's workspace. child_meta is a
+            # fresh dict (does NOT spread ctx.metadata), so this must be
+            # explicit — otherwise the child silently falls back to os.getcwd().
+            "_workspace_root": ctx.metadata.get("_workspace_root"),
         }
         if tool_whitelist is not None:
             resolved = set()
@@ -182,12 +214,19 @@ class SpawnAgentTool:
                 "subagent_session_id": child_sid,
             })
 
+        # Sub-agent must inherit the PARENT session's pinned model — not
+        # the runtime's global default — otherwise switching model A→B
+        # on the parent and then spawning a sub-agent would silently run
+        # the sub-agent on A.
+        model_cfg, model_adapter = _child_turn(runtime, session_id)
+
         result_content = ""
         tool_count = 0
         tool_names: list[str] = []
         try:
             async for event in runtime._run_model_tool_loop(
                 child_messages, child_ctx.session_id, child_ctx,
+                model_cfg=model_cfg, model_adapter=model_adapter,
             ):
                 t = event.get("type")
                 if t == "model_response":
@@ -265,12 +304,17 @@ class SpawnAgentTool:
             # simultaneously-active background agents. Spawning is not
             # blocked — only the work inside _run is gated.
             async with runtime._agent_concurrency:
+                # Same parent-model-inheritance as _run_foreground —
+                # background sub-agents must use the parent's pinned
+                # model too. See the long-form note in _child_turn.
+                model_cfg, model_adapter = _child_turn(runtime, session_id)
                 result_content = ""
                 tool_count = 0
                 tool_names: list[str] = []
                 try:
                     async for event in runtime._run_model_tool_loop(
                         child_messages, child_ctx.session_id, child_ctx,
+                        model_cfg=model_cfg, model_adapter=model_adapter,
                     ):
                         if runtime._background_agents.get(agent_id, {}).get("status") == "cancelled":
                             break

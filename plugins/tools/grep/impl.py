@@ -3,7 +3,7 @@ import os
 import re
 import shutil
 
-from ziva.shared_types import ToolResult
+from ziva.shared_types import ToolResult, resolve_workspace_cwd
 
 
 # Matches Claude Code's Grep tool interface. Key behaviour:
@@ -124,7 +124,7 @@ class GrepTool:
 
     async def run(self, input_data, ctx):
         pattern = input_data.get("pattern", "")
-        path = input_data.get("path", ".")
+        path = input_data.get("path") or resolve_workspace_cwd(ctx)
         head_limit = input_data.get("head_limit", 200)
         include = input_data.get("include", "")
         context_lines = input_data.get("context_lines", 0)

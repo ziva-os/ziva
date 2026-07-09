@@ -14,6 +14,7 @@ from ziva.protocols.acp import ACPServer, serve_stdio
 from ziva.runtime import Runtime
 from ziva.shared_types import ChatMessage
 from ziva.transports.desktop_api.server import DesktopAPIServer
+from ziva.transports.desktop_api.stt_warmup import start_stt_warmup
 
 
 logger = logging.getLogger(__name__)
@@ -57,7 +58,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _runtime_for_workspace(path: str, session_override: dict | None = None) -> Runtime:
-    workspace = Path(path).resolve()
+    # expanduser() must come before resolve(): Path("~/x").resolve() yields
+    # "/Users/<u>/~/x" (literal ~ in the middle, because resolve() treats ~
+    # as a normal character when the path is relative), which then gets
+    # stored verbatim as the session's cwd and surfaces in the system
+    # prompt + shell tool subprocess calls.
+    workspace = Path(path).expanduser().resolve()
     global_config = Path.home() / ".ziva" / "config.yaml"
     return Runtime.create(
         workspace_root=workspace,
@@ -482,6 +488,16 @@ async def run_async(argv: list[str] | None = None) -> int:
     if args.command == "desktop" and args.desktop_command == "serve":
         _suppress_anyio_cancel_scope()
         runtime = _runtime_for_workspace(args.workspace)
+        # Start the STT model warmup as early as possible — immediately
+        # after Runtime is constructed, before DesktopAPIServer is even
+        # instantiated. The warmup loads the 461 MB whisper weights +
+        # JIT-compiles Metal kernels, which on a packaged Electron backend
+        # takes 10–15 s on a cold start. Starting it here means the cost
+        # overlaps with Electron's createWindow / loadURL / UI render,
+        # so by the time the user sees the mic button the model is most
+        # likely already loaded — instead of the first mic click paying
+        # the full warmup cost. Failures are logged but never crash.
+        start_stt_warmup(runtime)
         server = DesktopAPIServer(runtime)
         import signal
         stop_event = asyncio.Event()

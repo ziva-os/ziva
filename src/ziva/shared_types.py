@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
@@ -39,6 +40,34 @@ class RuntimeContext:
     session_id: str
     config: Dict[str, Any]
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+def resolve_workspace_cwd(ctx) -> str:
+    """Resolve the effective working directory for a tool call.
+
+    Tools (shell/edit_file/glob/list/grep/read_file/write_file) must run in the
+    session's workspace, not the backend process's ``os.getcwd()`` (which is
+    ``$HOME`` in the PyInstaller bundle or the repo root in dev). Each turn
+    snapshots ``runtime.workspace_root`` into ``ctx.metadata["_workspace_root"]``
+    at turn start (see ``runtime.chat`` / ``chat_streaming``) so the directory is
+    stable for the whole turn — switching workspaces mid-turn doesn't relocate
+    already-running tools.
+
+    Priority:
+      1. ``ctx.metadata["_workspace_root"]`` — turn-start snapshot (preferred).
+      2. ``ctx.metadata["_runtime"].workspace_root`` — live runtime value.
+      3. ``os.getcwd()`` — last-resort fallback (CLI/tests without a runtime).
+    """
+    if ctx is not None:
+        meta = getattr(ctx, "metadata", None) or {}
+        ws = meta.get("_workspace_root")
+        if ws:
+            return str(ws)
+        runtime = meta.get("_runtime")
+        wr = getattr(runtime, "workspace_root", None)
+        if wr is not None:
+            return str(wr)
+    return os.getcwd()
 
 
 @dataclass
@@ -150,6 +179,11 @@ class SessionState:
     event_queue: asyncio.Queue | None = None
     event_history: deque = field(default_factory=lambda: deque(maxlen=100))
     model_name: str | None = None
+    # The workspace directory this session was created in. Tools resolve
+    # cwd / relative paths against THIS, not runtime.workspace_root (which
+    # tracks the currently-focused workspace and would be wrong if the user
+    # switches workspaces and then runs a session created elsewhere).
+    workspace_root: str | None = None
     load_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     plan: list[dict] | None = None
     plan_last_updated: float = 0.0

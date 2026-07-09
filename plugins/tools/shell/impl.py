@@ -2,8 +2,9 @@ import asyncio
 import os
 import re
 import shutil
+import signal
 
-from ziva.shared_types import ToolResult
+from ziva.shared_types import ToolResult, resolve_workspace_cwd
 
 
 # ANSI escape code pattern - improved to handle OSC 133 sequences
@@ -68,7 +69,7 @@ class ShellTool:
         # wait_for, driven by this tool's `timeout` parameter) — no inner
         # wait_for here, which avoids a double-layered timeout where the
         # executor's default would cut off a longer timeout the caller asked for.
-        workdir = input_data.get("workdir", os.getcwd())
+        workdir = input_data.get("workdir") or resolve_workspace_cwd(ctx)
 
         try:
             # Load .env if exists
@@ -84,16 +85,30 @@ class ShellTool:
                 cwd=workdir,
                 env=env,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE  # Separate stderr
+                stderr=asyncio.subprocess.PIPE,  # Separate stderr
+                # Make the child a new session/process-group leader so on
+                # cancel we can kill the ENTIRE group: `zsh -c "<cmd>"`
+                # forks the real command as a grandchild, and killing only
+                # the shell leaves the actual long-running command (dev
+                # server, build, ...) orphaned and still running — which is
+                # why "stop" felt slow.
+                start_new_session=True,
             )
 
             try:
                 stdout, stderr = await proc.communicate()
                 exit_code = proc.returncode if proc.returncode is not None else 0
             except asyncio.CancelledError:
-                # Executor timeout or user cancel — kill the child so it
-                # doesn't outlive the tool call.
-                proc.kill()
+                # User clicked stop / executor timeout. Kill the WHOLE
+                # process group so grandchildren (the real command the
+                # shell forked) die with the shell, not just the shell.
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
                 try:
                     await proc.wait()
                 except Exception:

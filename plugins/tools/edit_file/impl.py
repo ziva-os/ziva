@@ -1,8 +1,7 @@
-import os
 import re
 from pathlib import Path
 
-from ziva.shared_types import ToolResult
+from ziva.shared_types import ToolResult, resolve_workspace_cwd
 
 
 def levenshtein(a: str, b: str) -> int:
@@ -391,14 +390,14 @@ class EditFileTool:
                     },
                     "cwd": {
                         "type": "string",
-                        "description": "Current working directory for resolving relative paths (default: os.getcwd()).",
+                        "description": "Current working directory for resolving relative paths (default: the session's workspace directory).",
                     },
                 },
                 "required": ["file_path", "old_string", "new_string"],
             },
         }
 
-    async def run(self, input_data, _ctx):
+    async def run(self, input_data, ctx):
         file_path_str = input_data.get("file_path")
         if not file_path_str:
             return ToolResult(text="Error: file_path is required", error=True)
@@ -411,7 +410,7 @@ class EditFileTool:
             
         replace_all = bool(input_data.get("replace_all", False))
         
-        cwd = input_data.get("cwd", os.getcwd())
+        cwd = input_data.get("cwd") or resolve_workspace_cwd(ctx)
         file_path = Path(cwd) / file_path_str
         
         if not file_path.exists():

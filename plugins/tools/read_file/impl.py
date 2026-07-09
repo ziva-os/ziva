@@ -2,7 +2,7 @@ import asyncio
 import base64
 from pathlib import Path
 
-from ziva.shared_types import ToolResult
+from ziva.shared_types import ToolResult, resolve_workspace_cwd
 
 IMAGE_EXTENSIONS = {
     ".png": "image/png",
@@ -125,6 +125,10 @@ class ReadFileTool:
             return ToolResult(text="Error: invalid_input\noffset must be >= 1", error=True)
 
         path = Path(file_path)
+        # Resolve relative paths against the session's workspace, not the
+        # backend process's os.getcwd(). Absolute paths are untouched.
+        if not path.is_absolute():
+            path = Path(resolve_workspace_cwd(ctx)) / path
 
         try:
             # Check if path exists

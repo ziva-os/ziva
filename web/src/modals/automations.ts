@@ -2,6 +2,7 @@
 
 import * as api from "../api";
 import { stripThinking } from "../main";
+import { renderMarkdown } from "../markdown";
 import { esc } from "../dom";
 import { closeAllFullpageOverlays } from "../modals";
 import type { AppState, Store } from "../state";
@@ -46,8 +47,77 @@ export function closeAutomationsModal() {
   document.getElementById("automationsModalBackdrop")?.remove();
 }
 
+// When a detail page is open, this holds a closure that re-fetches the
+// automation and re-renders its body. Set on open, cleared on close, and
+// invoked by main.ts's `automation_run` SSE handler so a run that finishes
+// in the background updates the open detail view (last_result / last_run)
+// without the user reopening it. The run-now endpoint is fire-and-forget,
+// so the result only ever arrives via that SSE event.
+let _detailRefresh: (() => void) | null = null;
+
+// Called from main.ts when an `automation_run` SSE event arrives. No-op if
+// no detail page is open. Also re-renders the list modal if it's open so
+// the row previews (last run / last output) stay fresh.
+export function refreshAutomationDetailIfOpen() {
+  if (_detailRefresh) void _detailRefresh();
+}
+
 function closeAutomationDetail() {
+  _detailRefresh = null;
   document.getElementById("automationDetailBackdrop")?.remove();
+}
+
+function closeRunDetail() {
+  document.getElementById("automationRunDetailBackdrop")?.remove();
+}
+
+// Open a fullpage view for a single run's input + output (markdown) + error.
+// Clicking a run card in the automation detail navigates here instead of
+// expanding inline, so long outputs stay readable on their own screen.
+function openRunDetail(run: NonNullable<api.Automation["runs"]>[number]) {
+  closeRunDetail();
+  const ok = run.status === "done";
+  const time = run.ts ? new Date(run.ts * 1000).toLocaleString() : "—";
+  const outputHtml = run.result ? renderMarkdown(stripThinking(run.result)) : "";
+  const backdrop = document.createElement("div");
+  backdrop.className = "fullpage-overlay";
+  backdrop.id = "automationRunDetailBackdrop";
+  const shell = document.createElement("div");
+  shell.className = "fullpage-shell";
+  shell.innerHTML = `
+    <div class="fullpage-topbar">
+      <button class="fullpage-back-btn" id="runDetailBackBtn" title="Back">← Back</button>
+      <div class="fullpage-title">Run · ${esc(time)}</div>
+      <div class="fullpage-topbar-spacer"></div>
+    </div>
+    <div class="fullpage-body">
+      <div class="automation-run-detail">
+        <div class="automation-run-detail-status ${ok ? "ok" : "fail"}">${ok ? "✓ Completed" : "✗ Failed"}</div>
+        <div class="automation-detail-section">
+          <div class="automation-detail-section-header">📝 Input</div>
+          <pre class="automation-detail-block"></pre>
+        </div>
+        <div class="automation-detail-section">
+          <div class="automation-detail-section-header">📤 Output</div>
+          <div class="run-output-host"></div>
+        </div>
+        ${run.error ? `<div class="automation-detail-section"><div class="automation-detail-section-header">⚠️ Error</div><pre class="automation-detail-block error"></pre></div>` : ""}
+      </div>
+    </div>`;
+  // Set untrusted text via textContent, markdown output via innerHTML
+  // (renderMarkdown is the same path the chat view uses for model output).
+  const inputPre = shell.querySelector<HTMLElement>(".automation-detail-block:not(.error)");
+  if (inputPre) inputPre.textContent = run.prompt || "";
+  const outputHost = shell.querySelector<HTMLElement>(".run-output-host");
+  if (outputHost) {
+    if (outputHtml) outputHost.innerHTML = `<div class="markdown-body run-output-markdown">${outputHtml}</div>`;
+    else outputHost.textContent = "(no output)";
+  }
+  const errorPre = shell.querySelector<HTMLElement>("pre.error");
+  if (errorPre) errorPre.textContent = run.error || "";
+  backdrop.appendChild(shell);
+  document.body.appendChild(backdrop);
+  document.getElementById("runDetailBackBtn")!.onclick = () => closeRunDetail();
 }
 
 
@@ -83,10 +153,23 @@ function renderAutomationDetailBody(a: api.Automation): string {
   const scheduleLabel = a.schedule_time ? ` at ${esc(a.schedule_time)}` : "";
   const lastRunLabel = a.last_run ? _deps.formatRelativeTime(Math.floor(a.last_run)) || "just now" : "never";
   const promptText = a.prompt || "(no prompt)";
-  const cleanedResult = stripThinking(a.last_result || "");
-  const errorText = a.last_error || "";
+  const runs = a.runs || [];
   const createdLabel = a.created_at ? new Date(a.created_at * 1000).toLocaleString() : "";
-  const updatedLabel = a.updated_at ? new Date(a.updated_at * 1000).toLocaleString() : "";
+  const runsHtml = runs.length === 0
+    ? `<div class="automation-detail-block muted">No runs yet — click ▶ Run now, or wait for the schedule.</div>`
+    : runs.map((r) => {
+        const time = r.ts ? new Date(r.ts * 1000).toLocaleString() : "—";
+        const ok = r.status === "done";
+        const previewText = (r.result || r.error || "").replace(/\s+/g, " ").trim();
+        const preview = previewText.slice(0, 160);
+        return `<div class="automation-run-card" data-run-id="${esc(r.id)}" tabindex="0" role="button" aria-label="Open run details">
+          <div class="automation-run-card-row">
+            <span class="automation-run-status ${ok ? "ok" : "fail"}">${ok ? "✓" : "✗"}</span>
+            <span class="automation-run-time">${esc(time)}</span>
+          </div>
+          <div class="automation-run-preview">${preview ? esc(preview) + (previewText.length > 160 ? "…" : "") : '<span class="muted">(no output)</span>'}</div>
+        </div>`;
+      }).join("");
   return `
     <div class="automation-detail">
       <div class="automation-detail-header">
@@ -102,23 +185,15 @@ function renderAutomationDetailBody(a: api.Automation): string {
         <div class="automation-detail-meta-item"><span class="automation-detail-meta-label">Last run</span><span class="automation-detail-meta-value">${esc(lastRunLabel)}</span></div>
         <div class="automation-detail-meta-item"><span class="automation-detail-meta-label">Run count</span><span class="automation-detail-meta-value">${a.run_count ?? 0}</span></div>
         ${createdLabel ? `<div class="automation-detail-meta-item"><span class="automation-detail-meta-label">Created</span><span class="automation-detail-meta-value">${esc(createdLabel)}</span></div>` : ""}
-        ${updatedLabel ? `<div class="automation-detail-meta-item"><span class="automation-detail-meta-label">Updated</span><span class="automation-detail-meta-value">${esc(updatedLabel)}</span></div>` : ""}
       </div>
       <div class="automation-detail-section">
         <div class="automation-detail-section-header">📝 Prompt</div>
         <pre class="automation-detail-block">${esc(promptText)}</pre>
       </div>
       <div class="automation-detail-section">
-        <div class="automation-detail-section-header">📤 Last output</div>
-        ${cleanedResult
-          ? `<pre class="automation-detail-block">${esc(cleanedResult)}</pre>`
-          : `<div class="automation-detail-block muted">No runs yet</div>`}
+        <div class="automation-detail-section-header">📤 Runs (${runs.length})</div>
+        <div class="automation-runs-list">${runsHtml}</div>
       </div>
-      ${errorText ? `
-      <div class="automation-detail-section">
-        <div class="automation-detail-section-header">⚠️ Last error</div>
-        <pre class="automation-detail-block error">${esc(errorText)}</pre>
-      </div>` : ""}
     </div>`;
 }
 
@@ -140,6 +215,10 @@ function wireAutomationDetailActions(initial: api.Automation) {
     } catch { return null; }
   };
 
+  // Expose a refresh closure so the SSE `automation_run` handler can update
+  // this detail page when a background run completes.
+  _detailRefresh = async () => { await refetch(); rerender(); };
+
   const wire = () => {
     const back = document.getElementById("automationDetailBackBtn") as HTMLElement | null;
     if (back) back.onclick = () => {
@@ -147,15 +226,29 @@ function wireAutomationDetailActions(initial: api.Automation) {
       // Refresh the list behind us so any state change shows up.
       void loadAutomationsIntoModal();
     };
+    // Click a run card → open a fullpage view of that run's input/output.
+    document.querySelectorAll<HTMLElement>("#automationDetailBody .automation-run-card").forEach((card) => {
+      card.onclick = () => {
+        const runId = card.dataset.runId;
+        const run = current.runs?.find((r) => r.id === runId);
+        if (run) openRunDetail(run);
+      };
+    });
     const run = document.getElementById("automationRunNowBtn") as HTMLButtonElement | null;
     if (run) run.onclick = async (e) => {
       const btn = e.currentTarget as HTMLButtonElement;
       btn.disabled = true;
       btn.textContent = "▶ Running…";
       try {
+        // Run in the automation's hidden backing session — runs (manual and
+        // scheduled) surface as cards in this detail view, not in the chat.
         await api.runAutomationNow(current.id);
-        // Server runs async — result comes via SSE automation_run event
-        setTimeout(() => { btn.disabled = false; btn.textContent = "▶ Run now"; }, 3000);
+        // Server runs the turn async; the result arrives via the SSE
+        // `automation_run` event, which calls refreshAutomationDetailIfOpen
+        // → refetch + rerender, rebuilding this button (so it resets to
+        // "Run now") and showing the new last_result. Keep a long safety
+        // timeout in case the event is missed so the button isn't stuck.
+        setTimeout(() => { btn.disabled = false; btn.textContent = "▶ Run now"; }, 300000);
       } catch (err) {
         alert(`Run failed: ${(err as Error).message}`);
         btn.disabled = false;

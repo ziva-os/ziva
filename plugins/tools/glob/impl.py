@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict
 
-from ziva.shared_types import ToolResult
+from ziva.shared_types import ToolResult, resolve_workspace_cwd
 
 
 class GlobTool:
@@ -35,7 +35,8 @@ class GlobTool:
         if not pattern:
             return ToolResult(text="Error: invalid_input\npattern is required", error=True)
 
-        root_path = Path(input_data.get("path", ".")).resolve()
+        root = input_data.get("path") or resolve_workspace_cwd(ctx)
+        root_path = Path(root).resolve()
 
         if not root_path.exists():
             return ToolResult(text=f"Error: path_not_found\nPath not found: {root_path}", error=True)

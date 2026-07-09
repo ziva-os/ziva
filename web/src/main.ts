@@ -20,7 +20,7 @@ import { initBrowserShell, openInBrowserTab } from "./browser-shell";
 import { closeAllFullpageOverlays } from "./modals";
 import { openSkillsBrowser, closeSkillViewer } from "./modals/skills";
 import { openSettingsModal, setSettingsDeps } from "./modals/settings";
-import { openAutomationsModal, closeAutomationsModal, loadAutomationsIntoModal, setAutomationsDeps } from "./modals/automations";
+import { openAutomationsModal, closeAutomationsModal, loadAutomationsIntoModal, setAutomationsDeps, refreshAutomationDetailIfOpen } from "./modals/automations";
 import { formatRelativeTime } from "./format";
 import { refreshStatus, refreshMCPStatus, updateConnStatus, setStatusDeps } from "./status";
 import {   toggleRightPanel, initResizablePanel, updatePlanTabContent, scheduleDiffRefresh, refreshActiveReviewTabs, refreshActivePlanTab, ensurePlanSubscriber } from "./right-panel";
@@ -29,7 +29,7 @@ import {
   setSessionRunning, isSessionRunning, getSessionPending, setSessionPending,
   generatePendingId, enqueuePending, getPendingQueue, updatePendingItem,
   removePendingItem, clearAllPending,
-  streamCtx, clearStreamCtx, invalidateLiveStreamEl,
+  streamCtx, clearStreamCtx, invalidateLiveStreamEl, invalidateStreamCtx,
   getLiveStreamSid, setLiveStreamSid, getLiveStreamTarget, setLiveStreamTarget,
   draftImages, setDraftImages, draftText, setDraftText,
   queuedImages,
@@ -321,16 +321,43 @@ async function startComposerMic(sid: string, btn: HTMLButtonElement) {
         const formData = new FormData();
         formData.append("audio", blob, "recording.webm");
         const res = await fetch("/api/stt", { method: "POST", body: formData });
+        // Surface backend errors as visible cards. Previously these were
+        // swallowed by `catch (err)` and the only signal was a console
+        // log, so a failed /api/stt looked indistinguishable from a
+        // successful but empty transcription — both showed nothing.
+        if (!res.ok) {
+          let detail = "";
+          try { detail = (await res.text()).slice(0, 200); } catch {}
+          appendError(`STT failed (${res.status}): ${detail || res.statusText}`);
+          return;
+        }
         const data = await res.json();
-        if (data.text) {
+        const text = typeof data.text === "string" ? data.text.trim() : "";
+        if (text) {
           const ta = composerTextarea(sid);
           if (ta) {
-            ta.value = ta.value ? ta.value + "\n" + data.text : data.text;
+            ta.value = ta.value ? ta.value + "\n" + text : text;
             ta.dispatchEvent(new Event("input"));
             ta.focus();
           }
+        } else {
+          // Whisper returned an empty string — recording was too short,
+          // silent, or no speech detected. Surface a hint so the user
+          // doesn't think the button is broken.
+          const ta = composerTextarea(sid);
+          const hint = "Voice input: no speech detected — try again, speak louder or hold the mic closer.";
+          if (ta) {
+            ta.placeholder = hint;
+            setTimeout(() => {
+              if (ta.placeholder === hint) ta.placeholder = "";
+            }, 5000);
+          } else {
+            appendError(hint);
+          }
+          console.warn("STT returned empty text — recording likely had no detectable speech.");
         }
       } catch (err: any) {
+        appendError(`STT failed: ${err?.message || err}`);
         console.error("STT failed:", err);
       } finally {
         btn.title = "Voice input";
@@ -428,24 +455,47 @@ function bindComposerEvents() {
   document.addEventListener("change", async (e) => {
     const target = e.target as HTMLElement;
     if (target.classList.contains("pane-model")) {
-      const sid = (target as HTMLSelectElement).dataset.sid || "";
-      const model = (target as HTMLSelectElement).value;
+      const sel = target as HTMLSelectElement;
+      const sid = sel.dataset.sid || "";
+      const model = sel.value;
       if (sid) {
-        try { await api.updateSession(sid, { model_name: model }); } catch { /* ignore */ }
+        // Capture the previous value so we can revert on PATCH failure
+        // — silently swallowing the error (old behavior) left the UI
+        // and the backend out of sync: subsequent turns used the old
+        // model even though the dropdown showed the new one.
         const { sessions } = store.get();
         const s = sessions.find(x => x.id === sid);
-        if (s) (s as any).model_name = model;
+        const prevModel = s ? (s as any).model_name : undefined;
+        try {
+          await api.updateSession(sid, { model_name: model });
+          if (s) (s as any).model_name = model;
+        } catch (err: any) {
+          // Roll back UI to match server state.
+          if (s && prevModel !== undefined) (s as any).model_name = prevModel;
+          sel.value = prevModel ?? sel.value;
+          appendError(`Failed to switch model: ${err?.message || err}`);
+          console.error("updateSession(model_name) failed:", err);
+        }
       }
       return;
     }
     if (target.classList.contains("pane-approval")) {
-      const sid = (target as HTMLSelectElement).dataset.sid || "";
-      const policy = (target as HTMLSelectElement).value;
+      const sel = target as HTMLSelectElement;
+      const sid = sel.dataset.sid || "";
+      const policy = sel.value;
       if (sid) {
-        try { await api.updateSession(sid, { approval_policy: policy }); } catch { /* ignore */ }
         const { sessions } = store.get();
         const s = sessions.find(x => x.id === sid);
-        if (s) (s as any).approval_policy = policy;
+        const prevPolicy = s ? (s as any).approval_policy : undefined;
+        try {
+          await api.updateSession(sid, { approval_policy: policy });
+          if (s) (s as any).approval_policy = policy;
+        } catch (err: any) {
+          if (s && prevPolicy !== undefined) (s as any).approval_policy = prevPolicy;
+          sel.value = prevPolicy ?? sel.value;
+          appendError(`Failed to change approval: ${err?.message || err}`);
+          console.error("updateSession(approval_policy) failed:", err);
+        }
       }
       return;
     }
@@ -1495,13 +1545,24 @@ function _doRenderSessions() {
 
 async function createSession() {
   closeAllFullpageOverlays();
-  const id = await api.createSession();
+  // Pin the new session to a concrete model up front. Without this the
+  // session is created with model_name=None, and when the first message is
+  // sent the backend falls back to the global config.model.name — but the
+  // composer dropdown shows the DOM-default first option (or config.model),
+  // so the two can disagree: the dropdown shows MiniMax-M3 while the
+  // backend actually runs the config default (e.g. a leftover kimi model),
+  // producing "shows A, calls B" errors. Resolve to the configured default,
+  // or the first available model when no default is set.
+  const { config } = store.get();
+  const models = (config as any).modelDetails || [];
+  const modelName = (config as any).model || (models[0] && models[0].name);
+  const id = await api.createSession(modelName);
   // New sessions always belong to the active workspace, so tag them here
   // so they show up in the right project group without waiting for the
   // next /sessions refresh.
   const activeWs = store.get().config.workspace || "";
   const sessions = [...store.get().sessions];
-  sessions.unshift({ id, turnCount: 0, status: "idle", preview: "Empty session", workspace: activeWs });
+  sessions.unshift({ id, turnCount: 0, status: "idle", preview: "Empty session", workspace: activeWs, model_name: modelName } as any);
   store.set({ sessions });
   renderSessions();
   await switchSession(id);
@@ -1526,9 +1587,16 @@ async function switchSession(sid: string, opts: { skipGitRefresh?: boolean } = {
   const oldSid = store.get().activeSid;
   if (oldSid && oldSid !== sid) {
     // Persist whatever model the leaving session had selected in its composer.
+    // Don't swallow errors here: if the PATCH fails (e.g. session belongs
+    // to a different workspace and the server returns 404), surface it so
+    // the user knows the model they picked won't apply to the next turn.
     const sel = composerModelSelect(oldSid);
     if (sel && sel.value) {
-      try { await api.updateSession(oldSid, { model_name: sel.value }); } catch { /* ignore */ }
+      try {
+        await api.updateSession(oldSid, { model_name: sel.value });
+      } catch (err: any) {
+        console.error("updateSession(model_name) failed on session switch:", err);
+      }
     }
     // Stash the current prompt (text + attached images) under the
     // session we're leaving so switching back restores it verbatim.
@@ -1731,8 +1799,22 @@ async function loadHistoryInto(sid: string, target: HTMLElement): Promise<boolea
     }
     // Sync the active composer's model dropdown to the loaded session.
     const modelSel = composerModelSelect(sid);
-    if (modelSel && fullData.model_name) {
-      if (Array.from(modelSel.options).some((o) => o.value === fullData.model_name)) {
+    if (fullData.model_name) {
+      // Mirror the server-side model_name into the store, not just the
+      // <select>'s .value. hydrateComposer re-renders the dropdown from
+      // `session.model_name || config.model`; if the store stays stale
+      // (undefined) while the select's value is set, the next render falls
+      // through to config.model or the DOM-default first option — so the
+      // dropdown shows one model while the backend runs the session's
+      // actual binding.
+      const { sessions } = store.get();
+      const si = sessions.findIndex(x => x.id === sid);
+      if (si !== -1 && (sessions[si] as any).model_name !== fullData.model_name) {
+        const next = [...sessions];
+        (next[si] as any).model_name = fullData.model_name;
+        store.set({ sessions: next });
+      }
+      if (modelSel && Array.from(modelSel.options).some((o) => o.value === fullData.model_name)) {
         if (modelSel.value !== fullData.model_name) {
           modelSel.value = fullData.model_name;
         }
@@ -3197,17 +3279,25 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
     // fail). OUTSIDE the activeSid guard (matches turn_end) so a queued
     // message still flushes even if the user switched sessions. Runs after
     // invalidateLiveStreamEl above (when active), so the next message's
-    // assistant stream lands in a fresh element. 200ms lets the server
-    // clear turn_task before the next createTurn.
+    // assistant stream lands in a fresh element.
+    // The previous 200ms delay was meant to let the server clear
+    // turn_task, but cancel_turn already does that synchronously, so the
+    // queue can flush immediately — the user clicked stop, they expect
+    // the queued follow-up to fire right away.
     if (shouldClobber) {
-      flushComposerQueue(sid, 200);
+      flushComposerQueue(sid, 0);
     }
   } else if (t === "automation_run") {
-    // Refresh automation list when a run completes/fails
-    const modal = $("automationModal");
-    if (modal && modal.classList.contains("show")) {
+    // A background automation run finished. Refresh the list modal (if
+    // open) so row previews update, and refresh any open detail page so
+    // its last_result shows without reopening. Previously this referenced
+    // the wrong element id ("automationModal") and a non-existent ".show"
+    // class, so the refresh never fired and the final result never
+    // appeared in the UI even though the backend had persisted it.
+    if (document.getElementById("automationsModalBackdrop")) {
       void loadAutomationsIntoModal();
     }
+    refreshAutomationDetailIfOpen();
   }
 
   updateConnStatus(sse.isConnected());
@@ -3641,15 +3731,22 @@ function cancelComposerTurn(sid: string) {
   markSidCancelled(sid);
   setSessionRunning(sid, false);
   setComposerRunning(sid, false);
-  invalidateLiveStreamEl();
+  // Invalidate the streamCtx for THIS sid, not liveStreamSid — the latter
+  // is null outside an event handler so cancel arrives with no live stream
+  // and invalidateLiveStreamEl would silently no-op. Next turn creates a
+  // fresh assistant element instead of appending into the cancelled bubble.
+  invalidateStreamCtx(sid);
   const messagesEl = sessionMessagesEl(sid);
   if (messagesEl) removeTyping(messagesEl);
   renderSessions();
-  
-  // Flush immediately! If the server hasn't fully cancelled the previous turn,
-  // createTurn will return 429 and the queue's built-in retry mechanism will
-  // automatically try again. This gives the user immediate visual feedback.
-  flushComposerQueue(sid, 0);
+
+  // Do NOT flush the queue here. Flushing immediately races the cancel
+  // HTTP with createTurn, producing two cancelled shells (the queued
+  // createTurn wins the 429 retry, gets cancelled by the in-flight
+  // cancel, then the original turn's belated turn_cancelled arrives
+  // and gets visualised as a second "cancelled" card). Instead, the SSE
+  // `turn_cancelled` handler (handleSessionEvent → flushComposerQueue
+  // with 200ms delay) flushes once the server confirms cancellation.
 }
 
 function clearComposerPending(sid: string) {
@@ -4080,20 +4177,36 @@ async function openProjectInSidebar(
     }
     return;
   }
-  // If the current active session is empty (no messages sent yet), delete
-  // it before switching workspaces so we don't leave a stray "Empty session"
-  // behind in the old project.
-  const { activeSid, sessions } = store.get();
+  // If the current active session is empty AND has no unsent draft text /
+  // pending image attachments, delete it before switching workspaces so we
+  // don't leave a stray "Empty session" behind in the old project. Sessions
+  // the user has typed into but not sent (draft text or attached images)
+  // must survive the workspace switch — otherwise the composer input is
+  // silently lost on every project hop.
+  const { activeSid, sessions, promptDrafts } = store.get();
   if (activeSid) {
-    try {
-      const msgData = await api.getMessages(activeSid);
-      if ((msgData.messages || []).length === 0) {
-        await api.deleteSession(activeSid);
+    const draft = promptDrafts[activeSid];
+    // An image that is still uploading lives in `inFlightUploads`, not
+    // `promptDrafts` (it only lands in the draft on the upload-finish
+    // callback). Without this check, attaching an image and switching
+    // workspaces before the upload completes deletes the empty session and
+    // aborts the in-flight upload, silently losing both.
+    const hasInFlightUpload = inFlightUploads.some(u => u.sid === activeSid);
+    const hasDraftInput =
+      !!((draft?.text || "").trim()) ||
+      (draft?.images?.length ?? 0) > 0 ||
+      hasInFlightUpload;
+    if (!hasDraftInput) {
+      try {
+        const msgData = await api.getMessages(activeSid);
+        if ((msgData.messages || []).length === 0) {
+          await api.deleteSession(activeSid);
+          store.set({ sessions: sessions.filter(s => s.id !== activeSid) });
+        }
+      } catch {
+        // Session not persisted yet — just drop it from local state.
         store.set({ sessions: sessions.filter(s => s.id !== activeSid) });
       }
-    } catch {
-      // Session not persisted yet — just drop it from local state.
-      store.set({ sessions: sessions.filter(s => s.id !== activeSid) });
     }
   }
 
