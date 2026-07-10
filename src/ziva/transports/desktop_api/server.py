@@ -343,6 +343,14 @@ class DesktopAPIServer:
                     "id": sid,
                     "time": {"created": int(time.time() * 1000), "updated": int(time.time() * 1000)},
                 })
+            # Mark the in-memory session as an automation backing session
+            # so runtime._emit() suppresses streaming events for it. The
+            # on-disk marker (is_automation) was already set at automation
+            # creation time so the sidebar hides this session; this flag
+            # is what prevents chat deltas / tool cards from leaking into
+            # the user's currently-open session via the global SSE stream.
+            backing_sess = self.runtime._get_session(sid)
+            backing_sess.is_automation = True
             messages = [ChatMessage(role="user", content=automation.prompt)]
             result = await self.runtime.chat(messages, session_id=sid)
             automation.last_run = time.time()

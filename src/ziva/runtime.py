@@ -486,6 +486,13 @@ class Runtime:
                     sess.project_id = _project_hash(Path(saved_ws))
                 elif pid != self._project_id:
                     sess.project_id = pid
+                # Restore the is_automation marker so backing sessions
+                # created before this runtime started still get their
+                # chat events suppressed on subsequent runs. Without
+                # this, restarting the server would re-leak automation
+                # streaming into the user's active session.
+                if meta.get("is_automation") is True:
+                    sess.is_automation = True
             except Exception:
                 # Disk read is best-effort; fall through with model_name=None
                 # so chat() falls back to the runtime config.
@@ -1559,6 +1566,19 @@ class Runtime:
 
     async def _emit(self, session_id: str, event: Dict[str, Any]) -> None:
         session = self._get_session(session_id)
+        # Automation backing sessions run in the background and must not
+        # leak streaming into another session's chat UI. We suppress every
+        # intermediate chat event (delta / tool_start / tool_end /
+        # model_response / reasoning_delta / ask_user_question /
+        # permission_request / turn_start / turn_end / turn_error /
+        # stream_reset / round_complete / context_compacted / ...) and
+        # let only the dedicated `automation_run` summary through to
+        # subscribers — that's what the Automations panel listens for.
+        # The chat history itself is still persisted on disk so the run
+        # is fully reproducible; only the live broadcast is suppressed.
+        if session.is_automation and event.get("type") != "automation_run":
+            session.event_seq += 1
+            return
         session.event_seq += 1
         seq = session.event_seq
         payload = {"session_id": session_id, "seq": seq, "ts": int(time.time() * 1000)}

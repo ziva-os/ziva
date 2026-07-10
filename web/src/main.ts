@@ -2885,9 +2885,26 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
   // But let subagent_start / subagent_end through for background agent display.
   if ((ev as any)._subagent && ev.type !== "subagent_start" && ev.type !== "subagent_end") return;
 
-  const target = sessionMessagesEl(sid) || $("messages");
-  setLiveStreamTarget(target);
   const t = ev.type as string;
+  const target = sessionMessagesEl(sid);
+  // No DOM container for this session — typically a hidden automation
+  // backing session. The legacy `|| $("messages")` fallback leaked
+  // automation streaming into the user's active session whenever the
+  // runtime emitted chat events for a sid that wasn't open in the UI.
+  // Only bail for events that actually paint into the messages pane;
+  // routing-only events (`automation_run`, `turn_start`, usage updates,
+  // round_complete, doom_loop_detected, status/context_compacted) still
+  // need to fire so the Automations modal refreshes and the sidebar
+  // tracks session status.
+  const needsTarget =
+    t === "subagent_start" || t === "subagent_end" ||
+    t === "delta" || t === "reasoning_delta" || t === "model_response" ||
+    t === "ask_user_question" ||
+    t === "tool_start" || t === "tool_end" ||
+    t === "stream_reset" || t === "turn_end" ||
+    t === "turn_cancelled" || t === "turn_failed" || t === "turn_error";
+  if (needsTarget && !target) return;
+  setLiveStreamTarget(target);
   const { activeSid, sessions } = store.get();
 
   if (t === "subagent_start") {

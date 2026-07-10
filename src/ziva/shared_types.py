@@ -187,4 +187,11 @@ class SessionState:
     load_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     plan: list[dict] | None = None
     plan_last_updated: float = 0.0
+    # True for the hidden backing session of a scheduled automation. The
+    # runtime skips broadcasting intermediate chat events (delta,
+    # tool_start/tool_end, model_response, etc.) for these sessions so
+    # they stay in the background and never leak into another session's
+    # chat UI — only the final `automation_run` summary event reaches
+    # the Automations panel. See runtime._emit().
+    is_automation: bool = False
     plan_tool_calls_since_update: int = 0

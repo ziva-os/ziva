@@ -2646,36 +2646,71 @@ textarea.settings-input, .settings-agent-instructions { width: 100%; box-sizing:
   margin-bottom: 18px;
 }
 .automations-list {
-  display: flex; flex-direction: column; gap: 8px;
+  display: flex; flex-direction: column; gap: 10px;
   margin-bottom: 18px;
 }
+/* Scheduled-task card. Modern flat card with status accent stripe,
+ * soft background, and a polished hover (lift + accent border). The
+ * stripe color reflects the on/off state so the user can scan the
+ * list at a glance. */
 .automation-row {
-  display: flex; align-items: flex-start; gap: 10px;
-  padding: 10px 12px; border: 1px solid var(--line);
-  border-radius: 6px; background: var(--surface-alt);
+  position: relative;
+  display: flex; align-items: stretch; gap: 0;
+  padding: 12px 14px 12px 18px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: linear-gradient(180deg, var(--surface-alt) 0%, var(--bg) 100%);
+  transition: border-color 0.15s, background 0.15s, transform 0.15s;
+  cursor: pointer;
+  overflow: hidden;
 }
-.automation-row-main { flex: 1; min-width: 0; }
+.automation-row::before {
+  /* Left status stripe (green for running, gray for stopped) */
+  content: "";
+  position: absolute;
+  top: 10px; bottom: 10px; left: 6px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--muted);
+  opacity: 0.55;
+  transition: opacity 0.15s, background 0.15s;
+}
+.automation-row[data-enabled="true"]::before { background: var(--green); opacity: 1; }
+.automation-row[data-enabled="false"]::before { background: var(--muted); }
+.automation-row-main { flex: 1; min-width: 0; padding-left: 4px; }
 .automation-row-name {
-  font-size: 13px; font-weight: 500; color: var(--ink);
-  margin-bottom: 4px; word-break: break-word;
+  font-size: 14px; font-weight: 600; color: var(--ink);
+  margin-bottom: 6px; word-break: break-word;
+  letter-spacing: -0.005em;
 }
 .automation-row-meta {
-  display: flex; flex-wrap: wrap; gap: 10px;
+  display: flex; flex-wrap: wrap; gap: 8px;
   font-size: 11px; color: var(--muted);
-  margin-bottom: 6px;
+  margin-bottom: 8px;
+  align-items: center;
+}
+.automation-row-meta-item {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  font-size: 10.5px;
+  color: var(--ink-secondary);
 }
 .automation-row-interval { font-family: ui-monospace, SFMono-Regular, monospace; }
-.automation-row-status.on { color: var(--accent, #7aa2f7); }
+.automation-row-status.on { color: var(--green); }
 .automation-row-status.off { color: var(--muted); }
 /* Compact preview rows inside each card (prompt + result) */
 .automation-row-preview {
   display: flex; align-items: flex-start; gap: 6px;
-  font-size: 11px; color: var(--ink);
+  font-size: 11.5px; color: var(--ink-secondary);
   background: var(--bg);
-  padding: 5px 8px; border-radius: 4px;
+  padding: 7px 10px; border-radius: 6px;
   border: 1px solid var(--line);
   font-family: ui-monospace, SFMono-Regular, monospace;
-  margin-top: 4px;
+  margin-top: 6px;
+  line-height: 1.45;
 }
 .automation-row-preview-prompt .automation-row-preview-text {
   display: -webkit-box;
@@ -2698,23 +2733,150 @@ textarea.settings-input, .settings-agent-instructions { width: 100%; box-sizing:
 .automation-row-preview-icon { flex-shrink: 0; line-height: 1.4; }
 .automation-row-preview-text { flex: 1; min-width: 0; line-height: 1.45; white-space: pre-wrap; }
 
-/* Make the whole card a click target */
-.automation-row { cursor: pointer; transition: border-color 0.15s, background 0.15s; }
+/* Hover: lift slightly and accent the border so it's clear the whole
+ * card is the click target. The status stripe also brightens. */
 .automation-row:hover,
 .automation-row:focus-visible {
-  border-color: var(--line-strong);
-  background: var(--bg);
+  border-color: var(--accent);
+  background: linear-gradient(180deg, var(--surface-hover) 0%, var(--surface-alt) 100%);
+  transform: translateY(-1px);
   outline: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+}
+.automation-row:hover::before { opacity: 1; }
+.automation-row-actions {
+  display: flex; align-items: flex-start; padding-left: 10px;
 }
 .automation-row-delete {
   background: transparent; border: 1px solid transparent;
   color: var(--muted); cursor: pointer; padding: 4px 6px;
-  border-radius: 4px; font-size: 14px; line-height: 1;
+  border-radius: 5px; font-size: 14px; line-height: 1;
   flex-shrink: 0;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 .automation-row-delete:hover {
-  background: rgba(242, 139, 130, 0.12); color: var(--red); border-color: var(--red);
+  background: rgba(242, 139, 130, 0.14); color: var(--red); border-color: var(--red);
 }
+
+/* Run history — grid of compact cards. Each card summarizes one run
+ * (status + time + short preview) and is itself clickable, opening
+ * the full run detail page. */
+.automation-runs-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+  margin-top: 4px;
+}
+.automation-run-card {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 14px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.15s;
+  position: relative;
+}
+.automation-run-card:hover,
+.automation-run-card:focus-visible {
+  border-color: var(--accent);
+  background: var(--surface-alt);
+  transform: translateY(-1px);
+  outline: none;
+}
+.automation-run-card-row {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px; color: var(--muted);
+}
+.automation-run-status {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  font-size: 11px; font-weight: 600;
+  flex-shrink: 0;
+}
+.automation-run-status.ok {
+  background: rgba(129, 201, 149, 0.14);
+  color: var(--green);
+}
+.automation-run-status.fail {
+  background: rgba(242, 139, 130, 0.14);
+  color: var(--red);
+}
+.automation-run-time {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  color: var(--ink-secondary);
+}
+.automation-run-preview {
+  font-size: 12px; color: var(--ink-secondary);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+.automation-run-preview.muted { color: var(--muted); font-style: italic; }
+.automation-run-card .automation-run-arrow {
+  position: absolute;
+  top: 12px; right: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  transition: color 0.15s, transform 0.15s;
+}
+.automation-run-card:hover .automation-run-arrow {
+  color: var(--accent);
+  transform: translateX(2px);
+}
+
+/* Run detail (fullpage). Shows the input prompt, the markdown-rendered
+ * output, and any error, each in its own card-like section. */
+.automation-run-detail {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 24px 28px 60px;
+  display: flex; flex-direction: column; gap: 18px;
+}
+.automation-run-detail-status {
+  display: inline-flex; align-items: center; gap: 8px;
+  align-self: flex-start;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid var(--line);
+  background: var(--surface-alt);
+}
+.automation-run-detail-status.ok {
+  background: rgba(129, 201, 149, 0.10);
+  color: var(--green);
+  border-color: rgba(129, 201, 149, 0.35);
+}
+.automation-run-detail-status.fail {
+  background: rgba(242, 139, 130, 0.10);
+  color: var(--red);
+  border-color: rgba(242, 139, 130, 0.35);
+}
+.automation-run-detail-status .automation-run-detail-status-time {
+  color: var(--muted);
+  font-weight: 400;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  margin-left: 6px;
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
+}
+.run-output-host {
+  /* Markdown rendering area — uses the .md class so it inherits the
+   * chat-style typography (headings, code blocks, lists, blockquote,
+   * etc.) instead of needing its own copy. Just pad it nicely. */
+  padding: 4px 2px;
+  font-size: 13px;
+}
+.run-output-markdown { color: var(--ink); }
 
 /* ============ Automation detail (fullpage) ============ */
 .fullpage-back-btn {

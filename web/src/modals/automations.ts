@@ -92,7 +92,10 @@ function openRunDetail(run: NonNullable<api.Automation["runs"]>[number]) {
     </div>
     <div class="fullpage-body">
       <div class="automation-run-detail">
-        <div class="automation-run-detail-status ${ok ? "ok" : "fail"}">${ok ? "✓ Completed" : "✗ Failed"}</div>
+        <div class="automation-run-detail-status ${ok ? "ok" : "fail"}">
+          <span>${ok ? "✓ Completed" : "✗ Failed"}</span>
+          <span class="automation-run-detail-status-time">${esc(time)}</span>
+        </div>
         <div class="automation-detail-section">
           <div class="automation-detail-section-header">📝 Input</div>
           <pre class="automation-detail-block"></pre>
@@ -110,7 +113,7 @@ function openRunDetail(run: NonNullable<api.Automation["runs"]>[number]) {
   if (inputPre) inputPre.textContent = run.prompt || "";
   const outputHost = shell.querySelector<HTMLElement>(".run-output-host");
   if (outputHost) {
-    if (outputHtml) outputHost.innerHTML = `<div class="markdown-body run-output-markdown">${outputHtml}</div>`;
+    if (outputHtml) outputHost.innerHTML = `<div class="md run-output-markdown">${outputHtml}</div>`;
     else outputHost.textContent = "(no output)";
   }
   const errorPre = shell.querySelector<HTMLElement>("pre.error");
@@ -166,6 +169,7 @@ function renderAutomationDetailBody(a: api.Automation): string {
           <div class="automation-run-card-row">
             <span class="automation-run-status ${ok ? "ok" : "fail"}">${ok ? "✓" : "✗"}</span>
             <span class="automation-run-time">${esc(time)}</span>
+            <span class="automation-run-arrow" aria-hidden="true">→</span>
           </div>
           <div class="automation-run-preview">${preview ? esc(preview) + (previewText.length > 160 ? "…" : "") : '<span class="muted">(no output)</span>'}</div>
         </div>`;
@@ -427,13 +431,13 @@ function renderAutomationRow(a: api.Automation): string {
   const resultText = cleanedResult || "No runs yet";
   const hasResult = !!cleanedResult;
   return `
-    <div class="automation-row" data-aid="${esc(a.id)}" tabindex="0" role="button" aria-label="Open automation details">
+    <div class="automation-row" data-aid="${esc(a.id)}" data-enabled="${a.enabled ? "true" : "false"}" tabindex="0" role="button" aria-label="Open automation details">
       <div class="automation-row-main">
         <div class="automation-row-name">${esc(a.name)}</div>
         <div class="automation-row-meta">
-          <span class="automation-row-interval">⏰ ${esc(intervalLabel)}${scheduleLabel}</span>
-          <span class="automation-row-lastrun">Last run: ${esc(lastRunLabel)}</span>
-          <span class="automation-row-status ${a.enabled ? "on" : "off"}">${a.enabled ? "● running" : "○ stopped"}</span>
+          <span class="automation-row-meta-item">⏰ ${esc(intervalLabel)}${scheduleLabel}</span>
+          <span class="automation-row-meta-item">Last run · ${esc(lastRunLabel)}</span>
+          <span class="automation-row-meta-item automation-row-status ${a.enabled ? "on" : "off"}">${a.enabled ? "● running" : "○ stopped"}</span>
         </div>
         <div class="automation-row-preview automation-row-preview-prompt" title="${esc(promptText)}">
           <span class="automation-row-preview-icon">📝</span><span class="automation-row-preview-text">${esc(promptText)}</span>
@@ -442,7 +446,9 @@ function renderAutomationRow(a: api.Automation): string {
           <span class="automation-row-preview-icon">📤</span><span class="automation-row-preview-text">${esc(resultText)}</span>
         </div>
       </div>
-      <button class="automation-row-delete" data-aid="${esc(a.id)}" data-name="${esc(a.name)}" title="Delete">🗑</button>
+      <div class="automation-row-actions">
+        <button class="automation-row-delete" data-aid="${esc(a.id)}" data-name="${esc(a.name)}" title="Delete">🗑</button>
+      </div>
     </div>`;
 }
 
