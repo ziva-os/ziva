@@ -23,7 +23,7 @@ export function initMessageLinkInterceptor(): void {
     const target = e.target as HTMLElement;
     const anchor = target.closest("a") as HTMLAnchorElement | null;
     if (!anchor) return;
-    if (!anchor.closest(".msg-inner, .compact-dropped, .tool-card-body, .panel-content")) return;
+    if (!anchor.closest(".msg-inner, .compact-dropped, .tool-card-body, .panel-content, .run-output-markdown")) return;
     const href = anchor.getAttribute("href");
     if (!href) return;
     if (href.startsWith("#") || href.startsWith("mailto:") || href.startsWith("tel:") || href.startsWith("javascript:")) return;

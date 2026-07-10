@@ -2886,7 +2886,7 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
   if ((ev as any)._subagent && ev.type !== "subagent_start" && ev.type !== "subagent_end") return;
 
   const t = ev.type as string;
-  const target = sessionMessagesEl(sid);
+  const targetRaw = sessionMessagesEl(sid);
   // No DOM container for this session — typically a hidden automation
   // backing session. The legacy `|| $("messages")` fallback leaked
   // automation streaming into the user's active session whenever the
@@ -2903,7 +2903,14 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
     t === "tool_start" || t === "tool_end" ||
     t === "stream_reset" || t === "turn_end" ||
     t === "turn_cancelled" || t === "turn_failed" || t === "turn_error";
-  if (needsTarget && !target) return;
+  if (needsTarget && !targetRaw) return;
+  // For every needsTarget branch below, targetRaw is guaranteed non-null
+  // (we just returned otherwise). TS can't carry that narrowing across the
+  // computed `needsTarget` flag, so bind a narrowed alias once — this lets
+  // the rest of the function use `target` without per-call `!` assertions.
+  // Non-needsTarget branches (automation_run, turn_start, usage, ...) never
+  // touch `target`, so casting there is harmless.
+  const target = targetRaw as HTMLElement;
   setLiveStreamTarget(target);
   const { activeSid, sessions } = store.get();
 
@@ -2926,8 +2933,8 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
         </div>
         <div class="agent-card-task">${esc(taskDesc)}</div>
       `;
-      target.appendChild(card);
-      if (updateScroll) scrollBottom(target);
+      target!.appendChild(card);
+      if (updateScroll) scrollBottom(target!);
     }
     return;
   } else if (t === "subagent_end") {
@@ -2976,7 +2983,7 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
           ${resultPreview ? `<div class="agent-card-result">${renderMarkdown(resultPreview)}</div>` : ''}
         `;
       }
-      if (updateScroll) scrollBottom(target);
+      if (updateScroll) scrollBottom(target!);
     }
     return;
   }
@@ -3017,10 +3024,10 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
     // refresh mid-retry would still show the right state.
     resetStreamingState(sid);
   } else if (t === "delta") {
-    removeTyping(target);
-    clearPaneEmptyPlaceholder(target);
+    removeTyping(target!);
+    clearPaneEmptyPlaceholder(target!);
     if (target === $("messages")) showEmptyState(false);
-    const el = getOrCreateAssistantEl(sid, target);
+    const el = getOrCreateAssistantEl(sid, target!);
     const content = (ev.content as string) || "";
     (el as any)._main += content;
     // Throttle expensive DOM operations during streaming
@@ -3028,7 +3035,7 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
       (el as any)._renderTimer = setTimeout(() => {
         (el as any)._renderTimer = null;
         renderAssistantContent(el);
-        if (updateScroll) scrollBottom(target);
+        if (updateScroll) scrollBottom(target!);
       }, 80);
     }
   } else if (t === "reasoning_delta") {
@@ -3038,25 +3045,25 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
     // main content; renderAssistantContent() merges both into the
     // thinking card. We share the same throttle timer as the main
     // `delta` handler so a fast reasoning burst doesn't double-render.
-    removeTyping(target);
-    clearPaneEmptyPlaceholder(target);
+    removeTyping(target!);
+    clearPaneEmptyPlaceholder(target!);
     if (target === $("messages")) showEmptyState(false);
-    const el = getOrCreateAssistantEl(sid, target);
+    const el = getOrCreateAssistantEl(sid, target!);
     const content = (ev.content as string) || "";
     (el as any)._reasoning += content;
     if (!(el as any)._renderTimer) {
       (el as any)._renderTimer = setTimeout(() => {
         (el as any)._renderTimer = null;
         renderAssistantContent(el);
-        if (updateScroll) scrollBottom(target);
+        if (updateScroll) scrollBottom(target!);
       }, 80);
     }
   } else if (t === "model_response") {
     // Final full response; ensure _main matches exactly to avoid drift from deltas
-    removeTyping(target);
-    clearPaneEmptyPlaceholder(target);
+    removeTyping(target!);
+    clearPaneEmptyPlaceholder(target!);
     if (target === $("messages")) showEmptyState(false);
-    const el = getOrCreateAssistantEl(sid, target);
+    const el = getOrCreateAssistantEl(sid, target!);
     // Cancel any pending throttle timer so it doesn't overwrite the final render
     if ((el as any)._renderTimer) {
       clearTimeout((el as any)._renderTimer);
@@ -3072,8 +3079,8 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
     highlightCode(el.parentElement!);
     if (updateScroll) scrollBottom(target);
   } else if (t === "ask_user_question") {
-    removeTyping(target);
-    clearPaneEmptyPlaceholder(target);
+    removeTyping(target!);
+    clearPaneEmptyPlaceholder(target!);
     const q = String((ev.question as string) || "");
     const opts = (ev.options as unknown[]) || [];
     const ms = !!ev.multi_select;
