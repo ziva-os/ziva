@@ -34,7 +34,6 @@ class Automation:
     name: str
     prompt: str
     interval_seconds: int
-    session_id: str
     enabled: bool = True
     last_run: float | None = None
     last_result: str | None = None
@@ -48,15 +47,22 @@ class Automation:
     schedule_time: str | None = None  # HH:MM:SS format for daily runs
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
+    # Deprecated: kept as an optional field only for backward compat
+    # with previously persisted automation records that were created
+    # with a long-lived backing session. New automations never set
+    # this; _run_automation_once allocates a fresh ephemeral sid per
+    # run to keep histories isolated.
+    session_id: str = ""
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Automation":
+        # Ignore the legacy session_id from older persisted records —
+        # we always run against a fresh sid now.
         return cls(
             id=str(data.get("id") or uuid.uuid4()),
             name=str(data.get("name") or "unnamed"),
             prompt=str(data.get("prompt") or ""),
             interval_seconds=max(1, int(data.get("interval_seconds") or 300)),
-            session_id=str(data.get("session_id") or uuid.uuid4()),
             enabled=bool(data.get("enabled", True)),
             last_run=data.get("last_run"),
             last_result=data.get("last_result"),
@@ -67,10 +73,18 @@ class Automation:
             schedule_time=data.get("schedule_time"),
             created_at=float(data.get("created_at") or time.time()),
             updated_at=float(data.get("updated_at") or time.time()),
+            session_id=str(data.get("session_id") or ""),
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        # Drop the empty deprecated session_id from the response so
+        # callers don't see a stale "" value lying around. Persisted
+        # disk records still keep it for older builds that may try to
+        # load this file.
+        d = asdict(self)
+        if not d.get("session_id"):
+            d.pop("session_id", None)
+        return d
 
 
 @dataclass
@@ -323,34 +337,37 @@ class DesktopAPIServer:
             await self._run_automation_once(automation, scheduled=True)
 
     async def _run_automation_once(self, automation: Automation, *, scheduled: bool, session_id: str | None = None) -> ChatResult | None:
-        # Manual runs (Run now) execute in the caller-chosen session so the
-        # streaming process shows up in the chat UI; scheduled runs use the
-        # automation's own (hidden, is_automation) session so they stay in
-        # the background and only their final result reaches the Automations UI.
-        sid = session_id or automation.session_id
+        # Resolution order for the run target sid:
+        #   1. caller-supplied `session_id` — the frontend can opt to run
+        #      "Run now" inside the user's currently-active chat so the
+        #      stream shows up there (streaming is NOT suppressed for
+        #      such sessions because they're ordinary user sessions).
+        #   2. a brand-new ephemeral sid created for this run only.
+        #
+        # We deliberately do NOT reuse automation.session_id across runs:
+        # chat() loads the session's history from disk every time, so a
+        # shared backing session would silently accumulate every prior
+        # run's prompt + response + tool calls as context for the next
+        # run — classic cross-run pollution that grows unbounded until
+        # the model starts tripping its context window. A fresh sid
+        # per run gives every run an empty history. The session is
+        # still marked `is_automation: True` so the sidebar hides it
+        # and runtime._emit() suppresses its streaming events.
+        if session_id:
+            sid = session_id
+            in_user_session = True
+        else:
+            sid = self.store.create()
+            in_user_session = False
+            FileStorage.update_session(self.runtime.project_id, sid, {"is_automation": True})
         try:
-            # Resolve the backing session's REAL project (it may live in a
-            # different workspace than the currently-focused one) and only
-            # create it if it genuinely doesn't exist. store.exists() uses
-            # runtime.project_id (the focused workspace), so after a workspace
-            # switch it wrongly reports "not found" and create_session would
-            # OVERWRITE the backing session — clobbering its is_automation
-            # marker / workspace_root and letting it leak into the sidebar.
-            # _pid_for searches disk across known workspaces instead.
-            backing_pid = self._pid_for(sid)
-            if not FileStorage.get_session(backing_pid, sid):
-                FileStorage.create_session(backing_pid, {
-                    "id": sid,
-                    "time": {"created": int(time.time() * 1000), "updated": int(time.time() * 1000)},
-                })
             # Mark the in-memory session as an automation backing session
-            # so runtime._emit() suppresses streaming events for it. The
-            # on-disk marker (is_automation) was already set at automation
-            # creation time so the sidebar hides this session; this flag
-            # is what prevents chat deltas / tool cards from leaking into
-            # the user's currently-open session via the global SSE stream.
+            # so runtime._emit() suppresses streaming events for it.
+            # Skipped for caller-supplied user sessions — those should
+            # stream normally into the user's active chat.
             backing_sess = self.runtime._get_session(sid)
-            backing_sess.is_automation = True
+            if not in_user_session:
+                backing_sess.is_automation = True
             messages = [ChatMessage(role="user", content=automation.prompt)]
             result = await self.runtime.chat(messages, session_id=sid)
             automation.last_run = time.time()
@@ -1043,27 +1060,27 @@ class DesktopAPIServer:
             return web.json_response({"error": "prompt is required"}, status=400)
 
         aid = str(uuid.uuid4())
-        sid = self.store.create()
-        # Mark this session as an automation's hidden backing session so the
-        # sidebar (list_sessions) excludes it — scheduled runs must stay in
-        # the background. Manual "Run now" runs in the user's active session
-        # instead, so this one is only ever used by the timer.
-        FileStorage.update_session(self.runtime.project_id, sid, {"is_automation": True})
         now = time.time()
         next_run = now if run_immediately else self._next_run_timestamp(schedule_time, interval)
+        # No backing session is created up-front: each run gets its own
+        # ephemeral sid inside _run_automation_once to avoid cross-run
+        # context pollution. session_id is kept as an optional field
+        # on Automation for backward compatibility with previously
+        # persisted automation records (older builds reserved one
+        # session per automation).
         automation = Automation(
             id=aid,
             name=name,
             prompt=prompt,
             interval_seconds=interval,
-            session_id=sid,
+            session_id="",  # deprecated; see _run_automation_once
             schedule_time=schedule_time,
             next_run=next_run,
         )
         self.automations[aid] = automation
         self._persist_automation(automation)
         self._schedule_automation(automation)
-        return web.json_response({"id": aid, "session_id": sid, "automation": self._automation_payload(automation)})
+        return web.json_response({"id": aid, "automation": self._automation_payload(automation)})
 
     async def list_automations(self, _request: web.Request) -> web.Response:
         self._load_persisted_automations()
@@ -1146,16 +1163,14 @@ class DesktopAPIServer:
         task = self._automation_tasks.pop(aid, None)
         if task:
             task.cancel()
-        backing_sid = automation.session_id
         del self.automations[aid]
         FileStorage.delete_automation(self.runtime.project_id, aid)
-        # Also delete the backing session so it doesn't linger in the
-        # sidebar. Manual "Run now" runs in the user's active session, not
-        # this one, so this only removes the hidden scheduled-run session.
-        try:
-            FileStorage.delete_session(self._pid_for(backing_sid), backing_sid)
-        except Exception:
-            pass
+        # Per-run sessions (each ephemeral, marked is_automation) are
+        # left on disk intentionally: they're hidden from the sidebar
+        # and reloading them won't pollute any new run (every new run
+        # gets its own sid). Older automations persisted with a
+        # long-lived session_id have that session already cleared by
+        # the is_automation / hidden filter; nothing else to clean up.
         return web.json_response({"deleted": True})
 
     async def permission_reply(self, request: web.Request) -> web.Response:
