@@ -32,8 +32,17 @@ def get_base_dir() -> Path:
 
 
 def _project_hash(workspace_root: Path) -> str:
-    """Generate a stable project ID from workspace path."""
-    return hashlib.sha256(str(workspace_root).encode()).hexdigest()[:16]
+    """Generate a stable, human-readable project ID from workspace path.
+
+    Format: ``<basename>-<short_hash>`` (e.g. ``ziva-e4d21244``). The
+    basename makes the ``sessions/<id>/`` directory readable at a glance;
+    the 8-char hash disambiguates same-named workspaces in different
+    locations. Non-alphanumeric chars in the basename become ``-``.
+    """
+    base = workspace_root.name or "root"
+    safe = "".join(c if c.isalnum() else "-" for c in base.lower()).strip("-") or "ws"
+    short = hashlib.sha256(str(workspace_root).encode()).hexdigest()[:8]
+    return f"{safe}-{short}"
 
 
 class FileStorage:

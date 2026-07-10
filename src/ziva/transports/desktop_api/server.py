@@ -377,6 +377,7 @@ class DesktopAPIServer:
             automation.runs.insert(0, {
                 "id": str(uuid.uuid4()),
                 "ts": automation.last_run,
+                "sid": sid,
                 "prompt": automation.prompt,
                 "result": result.content,
                 "error": None,
@@ -399,6 +400,7 @@ class DesktopAPIServer:
             automation.runs.insert(0, {
                 "id": str(uuid.uuid4()),
                 "ts": automation.last_run,
+                "sid": sid,
                 "prompt": automation.prompt,
                 "result": None,
                 "error": str(exc),
