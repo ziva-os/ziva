@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict
 
-from ziva.shared_types import ToolResult, resolve_workspace_cwd
+from ziva.shared_types import ToolResult, resolve_tool_path
 
 
 class GlobTool:
@@ -24,7 +24,7 @@ class GlobTool:
                 "type": "object",
                 "properties": {
                     "pattern": {"type": "string", "description": "Glob pattern (e.g., '**/*.py', 'src/**/*.ts')"},
-                    "path": {"type": "string", "description": "Root directory to search (default '.')"},
+                    "path": {"type": "string", "description": "Root directory to search (default: the session's workspace directory)"},
                 },
                 "required": ["pattern"],
             },
@@ -35,8 +35,7 @@ class GlobTool:
         if not pattern:
             return ToolResult(text="Error: invalid_input\npattern is required", error=True)
 
-        root = input_data.get("path") or resolve_workspace_cwd(ctx)
-        root_path = Path(root).resolve()
+        root_path = resolve_tool_path(ctx, input_data.get("path")).resolve()
 
         if not root_path.exists():
             return ToolResult(text=f"Error: path_not_found\nPath not found: {root_path}", error=True)

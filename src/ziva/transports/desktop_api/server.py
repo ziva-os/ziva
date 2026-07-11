@@ -452,8 +452,15 @@ class DesktopAPIServer:
                 if isinstance(raw, str) and raw:
                     model_name = raw
         sid = self.store.create()
+        updates: dict[str, Any] = {
+            # Persist the workspace where the session was created so that
+            # a session created in workspace A stays bound to A even if the
+            # user switches to B before the first turn is sent.
+            "workspace_root": str(self.runtime.workspace_root),
+        }
         if model_name is not None:
-            FileStorage.update_session(self.runtime.project_id, sid, {"model_name": model_name})
+            updates["model_name"] = model_name
+        FileStorage.update_session(self.runtime.project_id, sid, updates)
         return web.json_response({"id": sid, "model_name": model_name})
 
     @staticmethod

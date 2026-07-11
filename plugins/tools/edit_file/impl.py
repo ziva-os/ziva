@@ -1,7 +1,7 @@
 import re
 from pathlib import Path
 
-from ziva.shared_types import ToolResult, resolve_workspace_cwd
+from ziva.shared_types import ToolResult, resolve_tool_path
 
 
 def levenshtein(a: str, b: str) -> int:
@@ -410,7 +410,7 @@ class EditFileTool:
             
         replace_all = bool(input_data.get("replace_all", False))
         
-        cwd = input_data.get("cwd") or resolve_workspace_cwd(ctx)
+        cwd = str(resolve_tool_path(ctx, input_data.get("cwd")))
         file_path = Path(cwd) / file_path_str
         
         if not file_path.exists():

@@ -5,6 +5,7 @@ import os
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 ApprovalPolicy = Literal["suggest", "auto-edit", "full-auto"]
@@ -68,6 +69,22 @@ def resolve_workspace_cwd(ctx) -> str:
         if wr is not None:
             return str(wr)
     return os.getcwd()
+
+
+def resolve_tool_path(ctx, path: str | None = None) -> Path:
+    """Resolve a tool path argument against the session workspace.
+
+    If ``path`` is missing/empty/relative, it is resolved relative to the
+    session's workspace (see ``resolve_workspace_cwd``). Absolute paths are
+    left untouched. This mirrors the behavior of ``read_file`` / ``write_file``
+    so that tools like ``list``, ``glob``, ``grep`` and ``shell`` treat an
+    explicit ``.`` or a relative directory the same as the default workspace.
+    """
+    base = Path(resolve_workspace_cwd(ctx))
+    if not path:
+        return base
+    p = Path(path)
+    return p if p.is_absolute() else base / p
 
 
 @dataclass

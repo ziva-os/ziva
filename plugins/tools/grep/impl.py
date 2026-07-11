@@ -3,7 +3,7 @@ import os
 import re
 import shutil
 
-from ziva.shared_types import ToolResult, resolve_workspace_cwd
+from ziva.shared_types import ToolResult, resolve_tool_path
 
 
 # Matches Claude Code's Grep tool interface. Key behaviour:
@@ -62,7 +62,7 @@ class GrepTool:
                         "type": "string",
                         "description": (
                             "File or directory to search in. Defaults to the "
-                            "current working directory. When a file is given, "
+                            "session's workspace directory. When a file is given, "
                             "only that file is searched and `glob` is ignored."
                         ),
                     },
@@ -124,7 +124,7 @@ class GrepTool:
 
     async def run(self, input_data, ctx):
         pattern = input_data.get("pattern", "")
-        path = input_data.get("path") or resolve_workspace_cwd(ctx)
+        path = input_data.get("path")
         head_limit = input_data.get("head_limit", 200)
         include = input_data.get("include", "")
         context_lines = input_data.get("context_lines", 0)
@@ -153,7 +153,7 @@ class GrepTool:
         except re.error as e:
             return ToolResult(text=f"Error: invalid_regex\n{e}", error=True)
 
-        path = os.path.abspath(path)
+        path = os.path.abspath(resolve_tool_path(ctx, path))
 
         if not os.path.exists(path):
             return ToolResult(

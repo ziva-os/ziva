@@ -4,7 +4,7 @@ import re
 import shutil
 import signal
 
-from ziva.shared_types import ToolResult, resolve_workspace_cwd
+from ziva.shared_types import ToolResult, resolve_tool_path
 
 
 # ANSI escape code pattern - improved to handle OSC 133 sequences
@@ -38,7 +38,7 @@ class ShellTool:
                 "properties": {
                     "command": {"type": "string", "description": "Shell command to execute"},
                     "timeout": {"type": "integer", "description": "Timeout in seconds (default 30, max 600)"},
-                    "workdir": {"type": "string", "description": "The working directory to run the command in. Use this instead of 'cd' commands"},
+                    "workdir": {"type": "string", "description": "The working directory to run the command in. Defaults to the session's workspace directory. Use this instead of 'cd' commands"},
                 },
                 "required": ["command"],
             },
@@ -69,7 +69,9 @@ class ShellTool:
         # wait_for, driven by this tool's `timeout` parameter) — no inner
         # wait_for here, which avoids a double-layered timeout where the
         # executor's default would cut off a longer timeout the caller asked for.
-        workdir = input_data.get("workdir") or resolve_workspace_cwd(ctx)
+        # Resolve workdir relative to the session workspace; if the caller
+        # passed an absolute path, leave it untouched.
+        workdir = str(resolve_tool_path(ctx, input_data.get("workdir")))
 
         try:
             # Load .env if exists

@@ -1178,7 +1178,7 @@ class Runtime:
             # user switches workspaces and then runs a session created elsewhere.
             session_ws = ctx.metadata.get("_workspace_root") or str(self.workspace_root)
             instructions = load_layered_instructions(Path(str(session_ws)))
-            env_context = self._build_environment_context(session_ws)
+            env_context = self._build_environment_context(session_ws, model_cfg)
             parts = [p for p in [base_prompt, instructions] if p]
             parts.append(env_context)
             skill_index = self.build_skill_index()
@@ -1860,11 +1860,14 @@ class Runtime:
         from ziva.adapters.retry import _is_retryable
         return _is_retryable(exc)
 
-    def _build_environment_context(self, workspace_root: str | None = None) -> str:
+    def _build_environment_context(self, workspace_root: str | None = None, model_cfg: dict | None = None) -> str:
         timezone = _detect_timezone()
         shell = os.environ.get("SHELL", "")
-        model_cfg = self.config.get("model", {})
-        model_name = model_cfg.get("name", "unknown")
+        # Use the per-turn model config (which includes session.model_name
+        # overrides) instead of the runtime's global config["model"] so the
+        # system prompt reflects the model that will actually handle this turn.
+        effective_model_cfg = model_cfg or self.config.get("model", {})
+        model_name = effective_model_cfg.get("name", "unknown")
         # Prefer the caller-supplied workspace (the session's own) over the
         # runtime's currently-focused workspace, so the `cwd:` line reflects
         # where this session lives, not where the user last switched to.
@@ -1884,7 +1887,7 @@ class Runtime:
             f"current_date: {_current_date_for_timezone(timezone)}",
             f"timezone: {timezone}",
             f"model: {model_name}",
-            f"supports_image: {str(self._current_model_supports_image()).lower()}",
+            f"supports_image: {str(self._model_supports_image(model_name)).lower()}",
         ]
         return "\n".join(lines)
 

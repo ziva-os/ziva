@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict
 
-from ziva.shared_types import ToolResult, resolve_workspace_cwd
+from ziva.shared_types import ToolResult, resolve_tool_path
 
 
 class ListTool:
@@ -16,7 +16,7 @@ class ListTool:
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Directory path to list (default '.')"},
+                    "path": {"type": "string", "description": "Directory path to list (default: the session's workspace directory)"},
                     "all": {"type": "boolean", "description": "Show hidden files (default false)"},
                 },
                 "required": [],
@@ -24,10 +24,10 @@ class ListTool:
         }
 
     async def run(self, input_data: Dict[str, Any], ctx: Any) -> ToolResult:
-        path_str = input_data.get("path") or resolve_workspace_cwd(ctx)
+        path = resolve_tool_path(ctx, input_data.get("path"))
         show_hidden = input_data.get("all", False)
 
-        path = Path(path_str)
+        path_str = str(path)
 
         if not path.exists():
             return ToolResult(text=f"Error: path_not_found\nPath not found: {path_str}", error=True)
