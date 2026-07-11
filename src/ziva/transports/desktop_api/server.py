@@ -683,6 +683,8 @@ class DesktopAPIServer:
                 record["reasoning_signature"] = m.reasoning_signature
             if m._compaction_summary:
                 record["_compaction_summary"] = True
+            if m._hidden:
+                record["_hidden"] = True
             records.append(record)
         FileStorage.replace_messages(self._pid_for(sid), sid, records)
 
