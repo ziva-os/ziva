@@ -139,6 +139,19 @@ export async function pruneSession(sid: string): Promise<{ success: boolean; mes
   return r.json();
 }
 
+export async function rewindSession(sid: string, upToIndex: number): Promise<{ rewound: boolean; kind?: string; removed_count?: number; removed_user_content?: string; removed_user_images?: string[] }> {
+  const r = await fetch(`/sessions/${sid}/rewind`, {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ up_to_index: upToIndex }),
+  });
+  if (!r.ok) {
+    const text = await r.text();
+    throw new Error(text || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
 export async function cancelTurn(sid: string): Promise<void> {
   await api("POST", `/sessions/${sid}/cancel`);
 }

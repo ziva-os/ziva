@@ -208,6 +208,7 @@ class DesktopAPIServer:
         self.app.router.add_post("/sessions/{sid}/turns", self.create_turn)
         self.app.router.add_post("/sessions/{sid}/compact", self.compact_session)
         self.app.router.add_post("/sessions/{sid}/prune", self.prune_session)
+        self.app.router.add_post("/sessions/{sid}/rewind", self.rewind_session)
         self.app.router.add_post("/sessions/{sid}/attachments", self.upload_attachment)
         self.app.router.add_get("/attachments", self.serve_attachment)
         self.app.router.add_post("/sessions/{sid}/cancel", self.cancel_turn)
@@ -657,8 +658,11 @@ class DesktopAPIServer:
         session.turn_task = task
         return web.json_response({"accepted": True, "turn_id": turn_id})
 
-    def _apply_post_compact(self, sid: str, working_set: List[ChatMessage]) -> Dict[str, Any]:
-        """Rewrite disk + sync in-memory + runtime cache + refresh last_usage.
+    def _persist_message_set(self, sid: str, working_set: List[ChatMessage]) -> Dict[str, Any]:
+        """Rewrite a session's message list to disk + sync every in-memory
+        cache + refresh last_usage. The generic "persist exactly this message
+        set" used by compact / prune / rewind — anything that replaces the
+        whole on-disk history in one shot.
 
         `last_usage.prompt_tokens` is computed from `_llm_context(working_set)`
         — only the last summary + messages after it, which is the actual cost
@@ -718,7 +722,7 @@ class DesktopAPIServer:
         """Append a single compaction-summary record to the session's message file.
 
         Kept for back-compat with external callers, but /compact now uses
-        `_apply_post_compact` to slot the summary between the older and
+        `_persist_message_set` to slot the summary between the older and
         recent halves of the message list (so the runtime's filter view
         keeps the recent tail).
         """
@@ -747,11 +751,90 @@ class DesktopAPIServer:
         from ziva.session.compaction import prune_messages
         pruned = prune_messages(messages)
 
-        new_usage = self._apply_post_compact(sid, pruned)
+        new_usage = self._persist_message_set(sid, pruned)
         return web.json_response({
             "success": True,
             "message_count": len(pruned),
             "last_usage": new_usage,
+        })
+
+    async def rewind_session(self, request: web.Request) -> web.Response:
+        """POST /sessions/{sid}/rewind {up_to_index} — Claude Code-style rewind.
+
+        Two target kinds:
+        - ``role="user"``: delete that user message AND everything after it,
+          return the user's original text + image attachment paths so the UI
+          drops them back into the composer for editing/resend. Stop, no
+          model run.
+        - ``role="tool"``: snap to the END of that tool-call group (keep the
+          tool result + any sibling parallel tool results from the same
+          assistant tool_calls), delete everything after. Lands on a complete,
+          legally-paired boundary; stop and wait for the user. No composer
+          restore.
+
+        Refuses with 409 if a turn is currently running on this session.
+        """
+        sid = request.match_info["sid"]
+        if not self.store.exists(sid):
+            return web.json_response({"error": "session_not_found"}, status=404)
+        rt_session = self.runtime._sessions.get(sid)
+        if rt_session and rt_session.turn_task is not None and not rt_session.turn_task.done():
+            return web.json_response({"error": "turn_running"}, status=409)
+
+        payload = await request.json()
+        up_to_index = payload.get("up_to_index")
+        if not isinstance(up_to_index, int) or up_to_index < 0:
+            return web.json_response({"error": "invalid up_to_index"}, status=400)
+
+        messages = self._load_session_messages(sid)
+        if up_to_index >= len(messages):
+            return web.json_response({"error": "up_to_index out of range"}, status=400)
+        target = messages[up_to_index]
+        if target.role not in ("user", "tool"):
+            return web.json_response({"error": "rewind target must be a user or tool message"}, status=400)
+
+        # Compute keep_count and extract what to restore to the composer.
+        removed_text = ""
+        removed_images: List[str] = []
+        if target.role == "user":
+            # User rewind: delete this user AND everything after, restore its
+            # original text + image attachment paths into the composer.
+            keep_count = up_to_index
+            content = target.content
+            if isinstance(content, str):
+                removed_text = content
+            elif isinstance(content, list):
+                removed_text = "\n".join(
+                    p.get("text", "")
+                    for p in content
+                    if isinstance(p, dict) and p.get("type") == "text" and p.get("text")
+                )
+                for p in content:
+                    if isinstance(p, dict) and p.get("type") == "image_url":
+                        iu = p.get("image_url")
+                        url = iu.get("url") if isinstance(iu, dict) else iu
+                        if isinstance(url, str) and url:
+                            removed_images.append(url)
+            else:
+                removed_text = str(content)
+        else:
+            # Tool rewind: the user clicked a tool card. Snap to the END of
+            # its tool-call group — keep this tool result AND any sibling
+            # parallel tool results from the same assistant tool_calls, so we
+            # land on a complete, legally-paired boundary. Then stop and wait
+            # for the user (no composer restore).
+            keep_count = up_to_index
+            while keep_count < len(messages) and messages[keep_count].role == "tool":
+                keep_count += 1
+
+        kept = messages[:keep_count]
+        self._persist_message_set(sid, kept)
+        return web.json_response({
+            "rewound": True,
+            "kind": target.role,
+            "removed_count": len(messages) - keep_count,
+            "removed_user_content": removed_text,
+            "removed_user_images": removed_images,
         })
 
     async def compact_session(self, request: web.Request) -> web.Response:
@@ -835,7 +918,7 @@ class DesktopAPIServer:
         on_disk = compose_post_compact_on_disk(
             messages, last_summary_idx, cutoff, summary_list
         )
-        new_usage = self._apply_post_compact(sid, on_disk)
+        new_usage = self._persist_message_set(sid, on_disk)
         return web.json_response({
             "success": True,
             "message_count": len(summary_list),

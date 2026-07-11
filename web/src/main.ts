@@ -259,6 +259,22 @@ function init() {
     initBrowserShell();
   }
   bindEvents();
+  // Rewind button delegation: each user message's "↩ 回退" button carries
+  // the message's global index in its .msg[data-idx]; route the click to
+  // rewindUserMsg (Claude Code-style rewind to that user message).
+  document.addEventListener("click", (e) => {
+    const btn = (e.target as HTMLElement).closest(".rewind-btn, .rewind-btn-tool");
+    if (!btn) return;
+    const msg = btn.closest(".msg, .tool-card");
+    const idx = msg?.getAttribute("data-idx");
+    if (idx == null) return;
+    const paneSid = msg!.closest("[data-sid]")?.getAttribute("data-sid");
+    const sid = paneSid || store.get().activeSid || "";
+    if (!sid) return;
+    e.stopPropagation();
+    const kind = msg!.classList.contains("tool-card") ? "tool" : "user";
+    void rewindUserMsg(sid, Number(idx), kind);
+  });
   refreshStatus();
   refreshMCPStatus();
   refreshConfig();
@@ -1866,7 +1882,7 @@ async function loadHistoryInto(sid: string, target: HTMLElement): Promise<boolea
   // Expanded tail: everything after the last folded summary (or the whole
   // history when there were no summaries).
   if (prev < fullMsgs.length) {
-    renderMessages(target, fullMsgs.slice(prev));
+    renderMessages(target, fullMsgs.slice(prev), prev);
   }
   return true;
 }
@@ -1877,7 +1893,7 @@ async function loadHistoryInto(sid: string, target: HTMLElement): Promise<boolea
 // expand affordance (target = .compact-dropped inside the collapse bar),
 // so the folded messages look identical to the live chat — just visually
 // scaled down via the wrapper's CSS.
-function renderMessages(target: HTMLElement, msgs: any[]): void {
+function renderMessages(target: HTMLElement, msgs: any[], offset: number = 0): void {
   let pendingToolCalls: { id: string; name: string; arguments: Record<string, unknown> }[] = [];
   const toolCardByCallId = new Map<string, HTMLElement>();
 
@@ -1897,7 +1913,7 @@ function renderMessages(target: HTMLElement, msgs: any[]): void {
         }
         continue;
       }
-      appendUserMsg(m.content, target);
+      appendUserMsg(m.content, target, offset + mi);
     } else if (m.role === "assistant") {
       if (isSub) {
         continue;
@@ -1997,7 +2013,7 @@ function renderMessages(target: HTMLElement, msgs: any[]): void {
         continue;
       }
 
-      const card = appendToolCard(toolName, args, "success", output, subagentTools, isPruned, target);
+      const card = appendToolCard(toolName, args, "success", output, subagentTools, isPruned, target, offset + mi);
       if (toolCallId) toolCardByCallId.set(toolCallId, card);
     }
   }
@@ -2070,7 +2086,7 @@ function attachmentUrl(url: string): string {
 // compact-history expand affordance passes a different container so the
 // folded messages reuse the same DOM (and styling) as the live chat,
 // just visually scaled down via a wrapper class.
-function appendUserMsg(text: string | unknown[], target: HTMLElement = (getLiveStreamTarget() || $("messages"))): HTMLElement {
+function appendUserMsg(text: string | unknown[], target: HTMLElement = (getLiveStreamTarget() || $("messages")), globalIndex?: number): HTMLElement {
   showEmptyState(false);
   // In split mode `setPaneEmptyPlaceholder` injects a `.pane-empty-state`
   // placeholder inside the per-pane messages container. `showEmptyState`
@@ -2081,6 +2097,11 @@ function appendUserMsg(text: string | unknown[], target: HTMLElement = (getLiveS
   if (target) clearPaneEmptyPlaceholder(target);
   const div = document.createElement("div");
   div.className = "msg user";
+  // data-idx = the message's global index in the on-disk history (fullMsgs),
+  // so the "rewind to here" button can tell the server exactly which message
+  // to truncate at. Only set when rendering from history (renderMessages
+  // passes offset+mi); the optimistic/streaming append omits it.
+  if (globalIndex !== undefined) div.dataset.idx = String(globalIndex);
   let body = "";
   if (Array.isArray(text)) {
     for (const part of text) {
@@ -2097,6 +2118,13 @@ function appendUserMsg(text: string | unknown[], target: HTMLElement = (getLiveS
     body = renderMarkdown(text);
   }
   div.innerHTML = `<div class="msg-inner"><div class="role-label"><span class="dot"></span> You</div><div class="md">${body}</div></div>`;
+  if (globalIndex !== undefined) {
+    const btn = document.createElement("button");
+    btn.className = "rewind-btn";
+    btn.title = "回退到这里（删除此条及之后，原文回到输入框）";
+    btn.textContent = "↩ 回退";
+    div.querySelector(".msg-inner")?.appendChild(btn);
+  }
   target.appendChild(div);
   invalidateLiveStreamEl();
   highlightCode(div);
@@ -2106,6 +2134,45 @@ function appendUserMsg(text: string | unknown[], target: HTMLElement = (getLiveS
   // for "still pending", instead of chat+queue showing the same
   // message in two places).
   return div;
+}
+
+// Rewind (Claude Code-style): delete the user message at idx and everything
+// after it, then put that user's original text back into the composer for
+// editing/resend. Stops there — does NOT auto-run the model.
+async function rewindUserMsg(sid: string, idx: number, kind: "user" | "tool"): Promise<void> {
+  const tip = kind === "tool"
+    ? "回退到这里？之后的消息都会删除。"
+    : "回退到这里？这条及之后的消息都会删除，内容回到输入框。";
+  if (!confirm(tip)) return;
+  try {
+    const res = await api.rewindSession(sid, idx);
+    await loadHistory(sid);
+    // Tool rewind just reloads history and stops — no composer restore.
+    if (res.kind !== "user") return;
+    const text = res.removed_user_content || "";
+    setDraftText(sid, text);
+    // Restore image attachments too: the attachment files are still on disk
+    // (rewind only truncates messages, not the attachments dir), so the
+    // stored path is still valid.
+    const imgs = (res.removed_user_images || []).map((p: string) => ({
+      path: p, mime: "image/*", size: 0,
+      name: (p.split("/").pop() || "image"),
+      thumbUrl: attachmentUrl(p),
+    }));
+    if (imgs.length) {
+      setDraftImages(sid, imgs);
+      renderComposerPreviews(sid);
+    }
+    const ta = composerTextarea(sid);
+    if (ta) {
+      ta.value = text;
+      ta.style.height = "auto";
+      ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
+      ta.focus();
+    }
+  } catch (e: any) {
+    appendError(`回退失败: ${e?.message || e}`);
+  }
 }
 
 // Combine the provider's `reasoning_content` field (sent as
@@ -2264,8 +2331,11 @@ function appendToolCard(
   subagentTools?: Record<string, number>,
   isPruned: boolean = false,
   target: HTMLElement = (getLiveStreamTarget() || $("messages")),
+  globalIndex?: number,
 ): HTMLElement {
   const card = document.createElement("div");
+  // data-idx for rewind (history render only); the streaming path omits it.
+  if (globalIndex !== undefined) card.dataset.idx = String(globalIndex);
   // spawn_agent cards should default to expanded (open) for both running and success states
   const isOpen = status === "running" || toolName === "spawn_agent";
   card.className = "tool-card" + (isOpen ? " open" : "") + (isPruned ? " pruned" : "");
@@ -2357,6 +2427,20 @@ function appendToolCard(
     navigator.clipboard.writeText(copyText);
   };
 
+  // Rewind button on tool cards (history render only): snaps to the end of
+  // this tool-call group (parallel tool results included) and deletes
+  // everything after. Stop and wait for the user.
+  if (globalIndex !== undefined) {
+    const btn = document.createElement("button");
+    btn.className = "rewind-btn-tool";
+    btn.title = "回退到这里（删除此后的消息，停在这里等你输入）";
+    btn.textContent = "↩";
+    // Place inside the header next to the copy button (flex layout) instead
+    // of an overlay, so it doesn't cover the copy button.
+    const copyBtn = card.querySelector(".copy-tool-btn");
+    const header = card.querySelector(".tool-card-header");
+    if (header && copyBtn) header.insertBefore(btn, copyBtn);
+  }
   target.appendChild(card);
   invalidateLiveStreamEl();
   return card;

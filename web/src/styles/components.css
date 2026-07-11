@@ -1342,6 +1342,28 @@ webview.browser-frame {
 .msg.user .role-label .dot { background: var(--blue); }
 .msg.assistant .role-label .dot { background: var(--accent); }
 .msg.compacting .role-label .dot { background: var(--muted); animation: pulse-dot 1.5s infinite; }
+/* Rewind button (Claude Code-style message rewind): only on user messages,
+   only visible on hover. Clicking deletes that user message + everything
+   after it and restores the original text to the composer. */
+.msg-inner { position: relative; }
+.rewind-btn {
+  position: absolute;
+  top: 2px;
+  right: 0;
+  display: none;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0.75;
+  z-index: 2;
+}
+.msg.user:hover .rewind-btn { display: inline-block; }
+.rewind-btn:hover { opacity: 1; color: var(--blue); border-color: var(--blue); }
 .compact-body { font-size: 14px; color: var(--muted); padding: 4px 0; }
 
 /* Compact progress toast — centered over the message area with circular
@@ -1566,6 +1588,11 @@ webview.browser-frame {
 .tool-card-header .copy-tool-btn { padding: 1px 5px; font-size: 9px; border: none; background: transparent; cursor: pointer; opacity: 0; color: var(--muted); transition: opacity 0.15s; flex-shrink: 0; }
 .tool-card:hover .copy-tool-btn { opacity: 0.6; }
 .tool-card-header .copy-tool-btn:hover { opacity: 1; }
+/* Rewind button on tool cards — sits in the header next to copy, same
+   reveal-on-hover pattern so the two don't fight for the corner. */
+.tool-card-header .rewind-btn-tool { padding: 1px 5px; font-size: 11px; border: none; background: transparent; cursor: pointer; opacity: 0; color: var(--muted); transition: opacity 0.15s; flex-shrink: 0; }
+.tool-card:hover .rewind-btn-tool { opacity: 0.6; }
+.tool-card-header .rewind-btn-tool:hover { opacity: 1; color: var(--blue); }
 
 .tool-card-body {
   padding: 8px 14px; font-family: var(--mono); font-size: 12px;
