@@ -257,6 +257,11 @@ function init() {
   // shell entirely and show the ziva chat UI directly (original layout).
   if ((window as any).electronAPI) {
     initBrowserShell();
+    // Web-tab "send selection to Ziva": drop {text, url, screenshot} into
+    // the active composer.
+    (window as any).electronAPI.onBrowserSelection?.((payload: { text: string; url: string; screenshotDataUrl: string }) => {
+      void insertBrowserSelection(payload);
+    });
   }
   bindEvents();
   // Rewind button delegation: each user message's "↩ 回退" button carries
@@ -2122,8 +2127,8 @@ function appendUserMsg(text: string | unknown[], target: HTMLElement = (getLiveS
     const btn = document.createElement("button");
     btn.className = "rewind-btn";
     btn.title = "回退到这里（删除此条及之后，原文回到输入框）";
-    btn.textContent = "↩ 回退";
-    div.querySelector(".msg-inner")?.appendChild(btn);
+    btn.textContent = "↩";
+    div.querySelector(".role-label")?.appendChild(btn);
   }
   target.appendChild(div);
   invalidateLiveStreamEl();
@@ -2134,6 +2139,57 @@ function appendUserMsg(text: string | unknown[], target: HTMLElement = (getLiveS
   // for "still pending", instead of chat+queue showing the same
   // message in two places).
   return div;
+}
+
+// After a turn finishes, the messages the streaming path appended (optimistic
+// user msg + assistant/tool cards) have NO data-idx — so their rewind buttons
+// are missing. Rather than reload (which clears #messages and flashes), fetch
+// the message list once and stamp data-idx + the ↩ button onto the existing
+// DOM elements in place, matching by document order.
+async function patchRewindButtons(sid: string): Promise<void> {
+  if (sid !== store.get().activeSid) return;
+  let msgs: any[];
+  try {
+    msgs = (await api.getMessages(sid, { includeDropped: true })).messages || [];
+  } catch { return; }
+  const container = document.getElementById("messages");
+  if (!container) return;
+  const userEls = Array.from(container.querySelectorAll<HTMLElement>(".msg.user"));
+  const toolEls = Array.from(container.querySelectorAll<HTMLElement>(".tool-card"));
+  // Walk fullMsgs and the DOM in parallel: each visible user/tool message
+  // maps to the next .msg.user / .tool-card element in document order
+  // (renderMessages renders in order, streaming appends at the end).
+  let ui = 0, ti = 0;
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i];
+    if (m.role === "user" && !m._hidden) {
+      const el = userEls[ui++];
+      if (el && el.dataset.idx == null) {
+        el.dataset.idx = String(i);
+        if (!el.querySelector(".rewind-btn")) {
+          const btn = document.createElement("button");
+          btn.className = "rewind-btn";
+          btn.title = "回退到这里（删除此条及之后，内容回到输入框）";
+          btn.textContent = "↩";
+          el.querySelector(".role-label")?.appendChild(btn);
+        }
+      }
+    } else if (m.role === "tool" && !m._subagent) {
+      const el = toolEls[ti++];
+      if (el && el.dataset.idx == null) {
+        el.dataset.idx = String(i);
+        if (!el.querySelector(".rewind-btn-tool")) {
+          const btn = document.createElement("button");
+          btn.className = "rewind-btn-tool";
+          btn.title = "回退到这里（删除此后的消息，停在这里等你输入）";
+          btn.textContent = "↩";
+          const header = el.querySelector(".tool-card-header");
+          const copyBtn = el.querySelector(".copy-tool-btn");
+          if (header && copyBtn) header.insertBefore(btn, copyBtn);
+        }
+      }
+    }
+  }
 }
 
 // Rewind (Claude Code-style): delete the user message at idx and everything
@@ -2172,6 +2228,35 @@ async function rewindUserMsg(sid: string, idx: number, kind: "user" | "tool"): P
     }
   } catch (e: any) {
     appendError(`回退失败: ${e?.message || e}`);
+  }
+}
+
+// A web tab sent a selection (text + URL + screenshot). Drop it into the
+// active composer as a quoted draft + image attachment, so the user can
+// edit/send it like any other composed message.
+async function insertBrowserSelection({ text, url, screenshotDataUrl }: { text: string; url: string; screenshotDataUrl: string }): Promise<void> {
+  const sid = store.get().activeSid;
+  if (!sid) {
+    appendError("请先打开一个对话，再从网页发送选中内容。");
+    return;
+  }
+  const draft = `> ${text}\n\n来源：${url}`;
+  setDraftText(sid, draft);
+  const ta = composerTextarea(sid);
+  if (ta) {
+    ta.value = draft;
+    ta.style.height = "auto";
+    ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
+    ta.focus();
+  }
+  if (screenshotDataUrl) {
+    try {
+      const blob = await (await fetch(screenshotDataUrl)).blob();
+      const file = new File([blob], "selection.png", { type: "image/png" });
+      await addImageFile(file, sid);
+    } catch (e: any) {
+      appendError(`截图添加失败: ${e?.message || e}`);
+    }
   }
 }
 
@@ -3289,6 +3374,11 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
     // turn_already_running, which strands the rest of the queue (the
     // failed createTurn fires no turn_end to flush the next item).
     flushComposerQueue(sid, 200);
+    // Patch rewind buttons onto the just-finished turn's messages in place
+    // (no reload → no flash). The streaming append path omits data-idx; this
+    // fetches fullMsgs and stamps data-idx + the ↩ button onto the user/tool
+    // elements already in the DOM, in document order.
+    if (sid === store.get().activeSid) patchRewindButtons(sid);
   } else if (t === "round_complete") {
     invalidateLiveStreamEl();
     const usage = ev.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;

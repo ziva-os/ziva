@@ -392,7 +392,14 @@ function createBrowserTab(url?: string): string {
   if (!mainWindow) return "";
   const id = "bv_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6);
   const view = new WebContentsView({
-    webPreferences: { contextIsolation: true, sandbox: true, backgroundThrottling: false },
+    webPreferences: {
+      contextIsolation: true,
+      sandbox: true,
+      backgroundThrottling: false,
+      // Inject the selection-to-Ziva preload into every web tab so the user
+      // can select text and send it (+ URL + screenshot) to the chat.
+      preload: path.join(__dirname, "browser-page-preload.js"),
+    },
   });
   // Honour the system/env proxy on the embedded browser too.
   const envProxy = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
@@ -469,6 +476,35 @@ ipcMain.handle("browser-close-tab", (_e, id: string) => {
   if (view && (view as any)._cdpTargetId && cdpBridge) cdpBridge.removePage((view as any)._cdpTargetId);
   destroyBrowserTab(id);
   return true;
+});
+
+// A web tab's selection-to-Ziva button fired. Find which tab the message
+// came from (by webContents), grab the real URL server-side (don't trust
+// the page), screenshot the selection rect, and forward {text,url,screenshot}
+// to the renderer so it lands in the composer.
+ipcMain.on("ziva:page-selection", async (_event, payload: { text: string; rect: { x: number; y: number; width: number; height: number } }) => {
+  const wc = _event.sender;
+  let id: string | null = null;
+  for (const [tid, view] of browserViews) {
+    if ((view as any).webContents === wc) { id = tid; break; }
+  }
+  if (!id) return;
+  const url = wc.getURL();
+  let screenshotDataUrl = "";
+  try {
+    const view = browserViews.get(id);
+    if (view) {
+      const img = await (view as any).webContents.capturePage(payload.rect);
+      screenshotDataUrl = img.toDataURL();
+    }
+  } catch (err) {
+    console.error("[browser] selection capturePage failed:", err);
+  }
+  mainWindow?.webContents.send("ziva:browser-selection", {
+    text: payload.text,
+    url,
+    screenshotDataUrl,
+  });
 });
 
 let backendStarting = false;

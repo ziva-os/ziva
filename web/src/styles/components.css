@@ -1345,25 +1345,20 @@ webview.browser-frame {
 /* Rewind button (Claude Code-style message rewind): only on user messages,
    only visible on hover. Clicking deletes that user message + everything
    after it and restores the original text to the composer. */
-.msg-inner { position: relative; }
 .rewind-btn {
-  position: absolute;
-  top: 2px;
-  right: 0;
-  display: none;
-  padding: 2px 8px;
+  margin-left: auto;
+  padding: 0 6px;
   font-size: 11px;
-  line-height: 1.5;
   color: var(--muted);
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 6px;
+  background: transparent;
+  border: none;
   cursor: pointer;
-  opacity: 0.75;
-  z-index: 2;
+  opacity: 0;
+  flex-shrink: 0;
+  transition: opacity 0.15s;
 }
-.msg.user:hover .rewind-btn { display: inline-block; }
-.rewind-btn:hover { opacity: 1; color: var(--blue); border-color: var(--blue); }
+.msg.user:hover .rewind-btn { opacity: 0.6; }
+.rewind-btn:hover { opacity: 1; color: var(--blue); }
 .compact-body { font-size: 14px; color: var(--muted); padding: 4px 0; }
 
 /* Compact progress toast — centered over the message area with circular

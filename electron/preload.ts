@@ -28,6 +28,14 @@ ipcRenderer.on("ziva:browser-title", (_e, e: any) => {
   if (_browserTitleHandler) _browserTitleHandler(e);
   else _pendingTitle.push(e);
 });
+// Web-tab "send selection to Ziva": main process forwards {text, url,
+// screenshotDataUrl} from a web page's selection.
+let _browserSelectionHandler: any = null;
+const _pendingSelection: any[] = [];
+ipcRenderer.on("ziva:browser-selection", (_e, payload: any) => {
+  if (_browserSelectionHandler) _browserSelectionHandler(payload);
+  else _pendingSelection.push(payload);
+});
 
 contextBridge.exposeInMainWorld("electronAPI", {
   getBackendUrl: () => ipcRenderer.invoke("get-backend-url"),
@@ -62,5 +70,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   onBrowserTitle: (cb: (e: { id: string; title: string }) => void) => {
     _browserTitleHandler = cb;
     while (_pendingTitle.length) cb(_pendingTitle.shift());
+  },
+  onBrowserSelection: (cb: (payload: { text: string; url: string; screenshotDataUrl: string }) => void) => {
+    _browserSelectionHandler = cb;
+    while (_pendingSelection.length) cb(_pendingSelection.shift());
   },
 });
