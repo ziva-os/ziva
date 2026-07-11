@@ -715,6 +715,7 @@ class DesktopAPIServer:
                     for tc in msg_data.get("tool_calls", [])
                 ],
                 _compaction_summary=msg_data.get("_compaction_summary", False),
+                _hidden=msg_data.get("_hidden", False),
             ))
         return messages
 
@@ -824,8 +825,19 @@ class DesktopAPIServer:
             # land on a complete, legally-paired boundary. Then stop and wait
             # for the user (no composer restore).
             keep_count = up_to_index
-            while keep_count < len(messages) and messages[keep_count].role == "tool":
-                keep_count += 1
+            while keep_count < len(messages):
+                m = messages[keep_count]
+                # Keep tool results AND any _hidden user image messages the
+                # runtime attaches right after (read_file on an image emits
+                # tool_result + a hidden user image carrying the data URL,
+                # tagged with the tool_call_id). Without this, rewinding a
+                # read_file image tool card would delete its image. Stopping
+                # at the first plain user/assistant message lands on a
+                # complete, legally-paired boundary.
+                if m.role == "tool" or (m.role == "user" and getattr(m, "_hidden", False)):
+                    keep_count += 1
+                else:
+                    break
 
         kept = messages[:keep_count]
         self._persist_message_set(sid, kept)
