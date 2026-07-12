@@ -1,5 +1,6 @@
 import { marked, type TokenizerExtension, type RendererExtension, type Tokens } from "marked";
 import Prism from "prismjs";
+import { copyText } from "./electron-bridge";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 import "prismjs/components/prism-python";
@@ -125,13 +126,18 @@ export function addCopyButtons(container: HTMLElement): void {
     const btnEl = btn as HTMLElement;
     if (btnEl.dataset.bound) return;
     btnEl.dataset.bound = "true";
-    btnEl.onclick = () => {
+    btnEl.onclick = async () => {
       const pre = btnEl.closest("pre");
       const code = pre?.querySelector("code");
       const text = code?.textContent || "";
-      navigator.clipboard.writeText(text);
-      btnEl.textContent = "Copied!";
+      const ok = await copyText(text);
+      btnEl.textContent = ok ? "Copied!" : "Copy failed";
       setTimeout(() => { btnEl.textContent = "Copy"; }, 1500);
+      if (!ok) {
+        // 不要静默吞错：让用户/开发能看到
+        // eslint-disable-next-line no-console
+        console.warn("[ziva] copy failed for code block");
+      }
     };
   });
 }

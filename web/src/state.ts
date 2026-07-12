@@ -19,6 +19,9 @@ export interface Session {
   // Sessions are still per-workspace on disk, but the sidebar groups them
   // by workspace so a single list view can show every project at once.
   workspace?: string;
+  // IM origin (feishu / wechat / telegram); missing = local session.
+  // Drives the sidebar source icon. See transports/im_bridge/.
+  channel?: string;
 }
 
 export interface PendingAttachment {

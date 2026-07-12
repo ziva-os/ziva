@@ -28,6 +28,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "mcp": {"enabled": False, "servers": [], "extra_skill_paths": []},
     "stt": {"model": "mlx-community/whisper-small-mlx"},
     "spawn": {"max_concurrency": 20, "max_history": 50},
+    "im_bridge": {
+        "default_workspace": None,
+        "allowed_senders": [],
+        "channels": {},
+        "routes": {},
+    },
     "agents": {
         "explore": {
             "description": "Read-only search agent for broad fan-out searches; returns conclusions, not file dumps.",

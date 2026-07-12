@@ -46,5 +46,13 @@ weibo_snapshot.txt
 # Ad-hoc screenshots in repo root
 /screenshot-*.png
 /douyin_*.png
+/im_bridge_modal*.png
+/nvda_monthly.png
+
+# Ad-hoc test scripts and scratch dirs
+/test-*.js
+/weibo_hot.py
+/ziva.pid
+/scratch/
 .gstack/
 .build-venv/

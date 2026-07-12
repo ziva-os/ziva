@@ -10,7 +10,9 @@ IMAGE_EXTENSIONS = {
     ".jpeg": "image/jpeg",
     ".gif": "image/gif",
     ".webp": "image/webp",
-    ".svg": "image/svg+xml",
+    # 注意：故意不包含 .svg。SVG 作为 base64 data URL 投递给模型 API 会被拒
+    # （"image/svg+xml" not supported, err 2013）。SVG 本质是 XML 文本，按文本
+    # 读出来模型反而能直接读懂结构/路径。
 }
 
 

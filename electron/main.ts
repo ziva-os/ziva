@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, webContents, session, shell, WebContentsView } from "electron";
+import { app, BrowserWindow, ipcMain, webContents, session, shell, WebContentsView, clipboard } from "electron";
 import * as path from "path";
 import { spawn, ChildProcess } from "child_process";
 import * as http from "http";
@@ -335,6 +335,17 @@ ipcMain.handle("open-external", (_event, url: string) => {
 });
 
 ipcMain.handle("get-cdp-port", () => cdpBridge?.port ?? null);
+
+// ---- Clipboard ----
+// Electron 加载的后端是 http://127.0.0.1:4097，浏览器把它视为 non-secure context，
+// `navigator.clipboard.writeText` 在那里会被直接拒绝（不是 focus 不够，是
+// secure context 这道硬墙）。让渲染器走 IPC 落到主进程，主进程用 native
+// `clipboard` 模块写剪贴板，没有 secure context 限制。
+ipcMain.handle("clipboard:writeText", (_event, text: string) => {
+  if (typeof text !== "string") return false;
+  clipboard.writeText(text);
+  return true;
+});
 
 ipcMain.handle("set-theme", (_event, theme: string) => {
   const color = theme === "light" ? "#f5f5f5" : "#141414";

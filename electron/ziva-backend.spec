@@ -80,6 +80,9 @@ a = Analysis(
         'openai',
         'anthropic',
         'mcp',
+        # Lark (Feishu) SDK is imported lazily inside the adapter; force it
+        # into the bundle so the packaged backend can connect to Feishu.
+        'lark_oapi',
         # STT (voice input) on Apple Silicon. mlx_whisper's import graph
         # is dynamic (lazy + multiprocessing), so PyInstaller's static
         # analyzer misses it. Force-include the full transitive set so

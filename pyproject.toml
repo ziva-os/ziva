@@ -28,6 +28,9 @@ desktop = [
   "aiohttp>=3.9.0",
   "mlx-whisper>=0.4.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
   "imageio-ffmpeg>=0.5.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+  # IM bridge — 飞书 (Lark) adapter. Imported lazily so the bridge loads
+  # without it; only needed when the feishu channel is started.
+  "lark-oapi>=1.4.0",
 ]
 # CLI / interactive REPL.
 cli = [

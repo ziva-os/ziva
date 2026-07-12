@@ -23,6 +23,7 @@ from ziva.config.loader import _deep_merge
 from ziva.runtime import Runtime
 from ziva.shared_types import CancellationToken, ChatMessage, ChatResult, ToolCallItem
 from ziva.storage.file_storage import FileStorage, _project_hash
+from ziva.transports.im_bridge import IMBridge
 
 
 logger = logging.getLogger(__name__)
@@ -155,11 +156,103 @@ class SessionStore:
         return FileStorage.get_session(self._pid(sid), sid) is not None
 
 
+# --- Module-level helpers shared by HTTP routes + IM bridge slash commands. ---
+# Both code paths need the exact same persistence + cache refresh semantics,
+# so the implementation lives here once and is imported by both. Kept free
+# functions (not methods) so the IM bridge doesn't need to hold a back-
+# reference to its server instance.
+
+
+def _chat_message_from_record(msg_data: dict) -> "ChatMessage":
+    return ChatMessage(
+        role=msg_data.get("role", "user"),
+        content=msg_data.get("content", ""),
+        tool_call_id=msg_data.get("tool_call_id"),
+        name=msg_data.get("name"),
+        tool_calls=[
+            ToolCallItem(id=tc.get("id", ""), name=tc.get("name", ""), arguments=tc.get("arguments", {}))
+            for tc in msg_data.get("tool_calls", [])
+        ],
+        _compaction_summary=msg_data.get("_compaction_summary", False),
+        _hidden=msg_data.get("_hidden", False),
+    )
+
+
+def load_session_messages(sid: str, pid: str) -> List["ChatMessage"]:
+    """Read messages from disk as ChatMessage objects."""
+    messages: List["ChatMessage"] = []
+    for msg_data in FileStorage.get_messages(pid, sid):
+        messages.append(_chat_message_from_record(msg_data))
+    return messages
+
+
+def persist_message_set(
+    sid: str,
+    working_set: List["ChatMessage"],
+    pid: str,
+    runtime: Any,
+    store: Any,
+) -> Dict[str, Any]:
+    """Rewrite a session's message list to disk + sync every in-memory cache
+    + refresh last_usage. Generic helper used by compact / prune / rewind +
+    the IM bridge's `/compact` slash command — anything that replaces the
+    whole on-disk history in one shot.
+
+    `last_usage.prompt_tokens` is computed from `_llm_context(working_set)`
+    — only the last summary + messages after it, which is the actual cost
+    of the next turn.
+    """
+    records: list[dict] = []
+    for m in working_set:
+        record: dict = {
+            "role": m.role,
+            "content": m.content,
+            "tool_call_id": m.tool_call_id,
+            "name": m.name,
+            "tool_calls": [
+                {"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in m.tool_calls
+            ],
+        }
+        if m.reasoning_content:
+            record["reasoning_content"] = m.reasoning_content
+        if m.reasoning_signature:
+            record["reasoning_signature"] = m.reasoning_signature
+        if m._compaction_summary:
+            record["_compaction_summary"] = True
+        if m._hidden:
+            record["_hidden"] = True
+        records.append(record)
+
+    FileStorage.replace_messages(pid, sid, records)
+
+    # Sync the SessionStore in-memory cache so the next getMessages returns
+    # the rewritten history without a disk re-read.
+    session = store._ensure_loaded(sid)
+    session["messages"] = list(records)
+
+    # Sync the Runtime session history cache so the next chat() picks up the
+    # rewritten history without re-loading from disk.
+    if sid in runtime._sessions:
+        from ziva.session.compaction import _llm_context
+        runtime._sessions[sid].history = _llm_context(working_set)
+
+    from ziva.session.compaction import estimate_tokens, _llm_context
+    llm_visible = _llm_context(working_set)
+    new_prompt_tokens = estimate_tokens(llm_visible)
+    new_usage = {"prompt_tokens": new_prompt_tokens, "completion_tokens": 0, "total_tokens": new_prompt_tokens}
+    FileStorage.update_session(pid, sid, {"last_usage": new_usage})
+    return new_usage
+
+
 class DesktopAPIServer:
     def __init__(self, runtime: Runtime) -> None:
         self.runtime = runtime
         self.runtime.automation_callback = self._reload_automations
         self.store = SessionStore(runtime=runtime)
+        # IM bridge: in-process component that turns inbound IM messages into
+        # ordinary sessions (same chat_with_events path as the desktop
+        # composer). See docs/im-bridge.md.
+        self._im_bridge = IMBridge(self.runtime, self.store)
         self.automations: Dict[str, Automation] = {}
         self._automation_tasks: Dict[str, asyncio.Task] = {}
         self._runner: web.AppRunner | None = None
@@ -228,6 +321,15 @@ class DesktopAPIServer:
         self.app.router.add_patch("/automations/{aid}", self.update_automation)
         self.app.router.add_post("/automations/{aid}/run", self.run_automation_now)
         self.app.router.add_delete("/automations/{aid}", self.delete_automation)
+        # IM bridge (in-process; see transports/im_bridge/).
+        self.app.router.add_get("/api/im/channels", self.list_im_channels)
+        self.app.router.add_post("/api/im/channels/{name}/start", self.start_im_channel)
+        self.app.router.add_post("/api/im/channels/{name}/stop", self.stop_im_channel)
+        self.app.router.add_get("/api/im/channels/{name}/status", self.im_channel_status)
+        self.app.router.add_get("/api/im/config", self.get_im_config)
+        self.app.router.add_put("/api/im/config", self.update_im_config)
+        self.app.router.add_get("/api/im/pending-senders", self.list_pending_senders)
+        self.app.router.add_post("/api/im/pending-senders/{sender_id}/approve", self.approve_pending_sender)
         self.app.router.add_post("/api/permissions/{request_id}/reply", self.permission_reply)
         self.app.router.add_post("/sessions/{sid}/questions/reply", self.question_reply)
         self.app.router.add_delete("/sessions/{sid}", self.delete_session)
@@ -267,9 +369,53 @@ class DesktopAPIServer:
     async def _on_startup(self, _app: web.Application) -> None:
         self._load_persisted_automations()
         self._schedule_enabled_automations()
+        await self._im_bridge.start()
 
     async def _on_cleanup(self, _app: web.Application) -> None:
         await self._cancel_automation_tasks()
+        await self._im_bridge.stop()
+
+    # ---- IM bridge ----
+
+    async def list_im_channels(self, _request: web.Request) -> web.Response:
+        return web.json_response({"channels": self._im_bridge.list_channels()})
+
+    async def start_im_channel(self, request: web.Request) -> web.Response:
+        name = request.match_info["name"]
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        result = await self._im_bridge.start_channel(name, payload or {})
+        if isinstance(result, dict) and result.get("error"):
+            return web.json_response(result, status=400)
+        return web.json_response(result)
+
+    async def stop_im_channel(self, request: web.Request) -> web.Response:
+        name = request.match_info["name"]
+        return web.json_response(await self._im_bridge.stop_channel(name))
+
+    async def im_channel_status(self, request: web.Request) -> web.Response:
+        return web.json_response(self._im_bridge.channel_status(request.match_info["name"]))
+
+    async def get_im_config(self, _request: web.Request) -> web.Response:
+        return web.json_response(self._im_bridge.get_config())
+
+    async def update_im_config(self, request: web.Request) -> web.Response:
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        return web.json_response(self._im_bridge.update_config(payload or {}))
+
+    async def list_pending_senders(self, _request: web.Request) -> web.Response:
+        return web.json_response({"senders": self._im_bridge.get_pending_senders()})
+
+    async def approve_pending_sender(self, request: web.Request) -> web.Response:
+        sender_id = request.match_info["sender_id"]
+        if self._im_bridge.approve_sender(sender_id):
+            return web.json_response({"ok": True})
+        return web.json_response({"error": "already_allowed_or_unknown"}, status=400)
 
     def _reload_automations(self) -> None:
         """Called by tools when automations are modified via FileStorage."""
@@ -528,6 +674,7 @@ class DesktopAPIServer:
                         "workspace": ws,
                         "name": s.get("name"),
                         "model_name": s.get("model_name"),
+                        "channel": s.get("channel"),
                     })
             except Exception:
                 # Skip workspaces that are unreadable / missing storage
@@ -566,14 +713,30 @@ class DesktopAPIServer:
         session = self.store.get_session(sid)
         if not session:
             return web.json_response({"error": "session_not_found"}, status=404)
-        
+
         turns = []
         for turn in session.get("turns", []):
             t = turn.copy()
             if t.get("status") == "running":
                 t["events"] = self.runtime.event_bus.history(sid)
             turns.append(t)
-            
+
+        # Defensive: if the in-memory store has no turn record but the runtime
+        # session still has a live task (e.g. an IM-driven turn started
+        # before this server process loaded the session), synthesize a
+        # running turn so the desktop UI can show a stop button and query
+        # events. The synthetic record is transient — it only exists for
+        # this HTTP response.
+        if not turns:
+            rt_session = self.runtime._sessions.get(sid)
+            if rt_session and rt_session.turn_task is not None and not rt_session.turn_task.done():
+                turns.append({
+                    "id": "synthetic-running",
+                    "status": "running",
+                    "events": self.runtime.event_bus.history(sid),
+                    "result": None,
+                })
+
         return web.json_response({"turns": turns})
 
     async def create_turn(self, request: web.Request) -> web.Response:
@@ -671,62 +834,20 @@ class DesktopAPIServer:
         set" used by compact / prune / rewind — anything that replaces the
         whole on-disk history in one shot.
 
-        `last_usage.prompt_tokens` is computed from `_llm_context(working_set)`
-        — only the last summary + messages after it, which is the actual cost
-        of the next turn.
+        Thin wrapper over the module-level helper so IM bridge / tests /
+        other callers can reuse the same logic without owning a server.
         """
-        records = []
-        for m in working_set:
-            record = {
-                "role": m.role,
-                "content": m.content,
-                "tool_call_id": m.tool_call_id,
-                "name": m.name,
-                "tool_calls": [{"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in m.tool_calls],
-            }
-            if m.reasoning_content:
-                record["reasoning_content"] = m.reasoning_content
-            if m.reasoning_signature:
-                record["reasoning_signature"] = m.reasoning_signature
-            if m._compaction_summary:
-                record["_compaction_summary"] = True
-            if m._hidden:
-                record["_hidden"] = True
-            records.append(record)
-        FileStorage.replace_messages(self._pid_for(sid), sid, records)
-
-        session = self.store._ensure_loaded(sid)
-        session["messages"] = list(records)
-        if sid in self.runtime._sessions:
-            from ziva.session.compaction import _llm_context
-            self.runtime._sessions[sid].history = _llm_context(working_set)
-
-        from ziva.session.compaction import estimate_tokens, _llm_context
-        llm_visible = _llm_context(working_set)
-        new_prompt_tokens = estimate_tokens(llm_visible)
-        new_usage = {"prompt_tokens": new_prompt_tokens, "completion_tokens": 0, "total_tokens": new_prompt_tokens}
-        FileStorage.update_session(self._pid_for(sid), sid, {
-            "last_usage": new_usage,
-        })
-        return new_usage
+        return persist_message_set(
+            sid=sid,
+            working_set=working_set,
+            pid=self._pid_for(sid),
+            runtime=self.runtime,
+            store=self.store,
+        )
 
     def _load_session_messages(self, sid: str) -> List[ChatMessage]:
         """Read messages from disk as ChatMessage objects."""
-        messages: List[ChatMessage] = []
-        for msg_data in FileStorage.get_messages(self._pid_for(sid), sid):
-            messages.append(ChatMessage(
-                role=msg_data.get("role", "user"),
-                content=msg_data.get("content", ""),
-                tool_call_id=msg_data.get("tool_call_id"),
-                name=msg_data.get("name"),
-                tool_calls=[
-                    ToolCallItem(id=tc.get("id", ""), name=tc.get("name", ""), arguments=tc.get("arguments", {}))
-                    for tc in msg_data.get("tool_calls", [])
-                ],
-                _compaction_summary=msg_data.get("_compaction_summary", False),
-                _hidden=msg_data.get("_hidden", False),
-            ))
-        return messages
+        return load_session_messages(sid, self._pid_for(sid))
 
     def _append_summary_to_disk(self, sid: str, summary: ChatMessage) -> None:
         """Append a single compaction-summary record to the session's message file.
@@ -1521,6 +1642,9 @@ class DesktopAPIServer:
             sess = self.runtime._sessions.get(sid)
             if sess is not None:
                 sess.model_name = updates["model_name"]
+            # Broadcast so split panes / IM-initiated changes stay in sync
+            # even when the PATCH itself didn't originate in the current UI.
+            await self.runtime._emit(sid, {"type": "model_changed", "model_name": updates["model_name"]})
         return web.json_response({"ok": True})
 
     async def revert_files(self, request: web.Request) -> web.Response:

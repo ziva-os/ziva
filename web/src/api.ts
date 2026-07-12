@@ -5,6 +5,8 @@ export interface Session {
   status?: "idle" | "running" | "done" | "failed";
   time?: { created: number; updated: number };
   workspace?: string;
+  /** IM origin (feishu / wechat / telegram); missing = local session. */
+  channel?: string;
 }
 
 export interface Turn {
@@ -83,7 +85,7 @@ export async function api<T = unknown>(method: string, path: string, body?: unkn
 }
 
 export async function listSessions(): Promise<Session[]> {
-  const data = await api<{ sessions: { id: string; workspace?: string; name?: string; time?: any }[] }>("GET", "/sessions");
+  const data = await api<{ sessions: Session[] }>("GET", "/sessions");
   return data.sessions || [];
 }
 
@@ -271,6 +273,67 @@ export async function runAutomationNow(aid: string, opts?: { session_id?: string
 
 export async function deleteAutomation(aid: string): Promise<void> {
   return api("DELETE", `/automations/${aid}`);
+}
+
+// ---- IM bridge ----
+
+export interface IMChannelStatus {
+  name: string;
+  enabled: boolean;
+  configured: boolean;
+  state: "disconnected" | "waiting_scan" | "connecting" | "connected" | "error";
+  display_name: string;
+  account_id: string;
+  error: string | null;
+  qr?: string | null;
+  scan_status?: string | null;
+}
+
+export interface IMConfigPublic {
+  default_workspace: string | null;
+  allowed_senders: string[];
+  channels: Record<string, Record<string, unknown>>;
+}
+
+export async function listIMChannels(): Promise<IMChannelStatus[]> {
+  const data = await api<{ channels: IMChannelStatus[] }>("GET", "/api/im/channels");
+  return data.channels || [];
+}
+
+export async function startIMChannel(name: string, fields: Record<string, string>, timeoutMs = 60_000): Promise<{ ok?: boolean; status?: IMChannelStatus; error?: string; message?: string }> {
+  return api("POST", `/api/im/channels/${encodeURIComponent(name)}/start`, fields, timeoutMs);
+}
+
+export async function stopIMChannel(name: string): Promise<{ ok: boolean }> {
+  return api("POST", `/api/im/channels/${encodeURIComponent(name)}/stop`);
+}
+
+export async function getIMChannelQR(name: string): Promise<{ qr?: string | null; scan_status?: string | null; state?: string | null; error?: string }> {
+  return api<{ qr?: string | null; scan_status?: string | null; state?: string | null; error?: string }>("GET", `/api/im/channels/${encodeURIComponent(name)}/qr`);
+}
+
+export async function getIMConfig(): Promise<IMConfigPublic> {
+  return api<IMConfigPublic>("GET", "/api/im/config");
+}
+
+
+export async function updateIMConfig(updates: { default_workspace?: string | null; allowed_senders?: string[] }): Promise<IMConfigPublic> {
+  return api<IMConfigPublic>("PUT", "/api/im/config", updates);
+}
+
+export interface IMPendingSender {
+  channel: string;
+  sender_id: string;
+  sender_name: string;
+  timestamp: number;
+}
+
+export async function listPendingSenders(): Promise<{ senders: IMPendingSender[] }> {
+  return api<{ senders: IMPendingSender[] }>("GET", "/api/im/pending-senders");
+}
+
+export async function approvePendingSender(senderId: string): Promise<{ ok?: boolean; error?: string }> {
+  return api<{ ok?: boolean; error?: string }>("POST", `/api/im/pending-senders/${encodeURIComponent(senderId)}/approve`);
 }
 
 export async function getGitBranches(sid: string): Promise<{ current: string; branches: string[] }> {

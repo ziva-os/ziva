@@ -18,9 +18,12 @@ import { $, esc, bindResizer } from "./dom";
 import { openLinkInBrowser, initMessageLinkInterceptor } from "./links";
 import { initBrowserShell, openInBrowserTab } from "./browser-shell";
 import { closeAllFullpageOverlays } from "./modals";
+import { copyText } from "./electron-bridge";
 import { openSkillsBrowser, closeSkillViewer } from "./modals/skills";
 import { openSettingsModal, setSettingsDeps } from "./modals/settings";
 import { openAutomationsModal, closeAutomationsModal, loadAutomationsIntoModal, setAutomationsDeps, refreshAutomationDetailIfOpen } from "./modals/automations";
+import { openIMBridgeModal } from "./modals/im-bridge";
+import { channelIconHtml } from "./icons";
 import { formatRelativeTime } from "./format";
 import { refreshStatus, refreshMCPStatus, updateConnStatus, setStatusDeps } from "./status";
 import {   toggleRightPanel, initResizablePanel, updatePlanTabContent, scheduleDiffRefresh, refreshActiveReviewTabs, refreshActivePlanTab, ensurePlanSubscriber } from "./right-panel";
@@ -171,6 +174,10 @@ function init() {
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
             <span>自动化</span>
           </button>
+          <button class="sidebar-nav-item" id="btnConnectIM" title="连接手机">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect><line x1="12" y1="18" x2="12.01" y2="18"></line></svg>
+            <span>连接手机</span>
+          </button>
         </div>
         <div class="sidebar-section-header">
           <span>Projects</span>
@@ -306,6 +313,8 @@ function init() {
 
 // ---- Slash Commands ----
 const SLASH_COMMANDS = [
+  { name: "/new", description: "Start a new conversation" },
+  { name: "/model", description: "Switch model (e.g. /model MiniMax-M3)" },
   { name: "/compact", description: "Compact context window" },
   { name: "/prune", description: "Prune tool outputs" },
   { name: "/automation", description: "Create a scheduled automation" },
@@ -572,6 +581,7 @@ function bindEvents() {
 
   $("btnSkills").onclick = () => openSkillsBrowser();
   $("btnScheduled").onclick = () => openAutomationsModal();
+  $("btnConnectIM").onclick = () => openIMBridgeModal();
   $("btnSettings").onclick = () => openSettingsModal();
 
   $("btnTheme").onclick = () => {
@@ -1224,6 +1234,18 @@ async function renderSplitPanes() {
     // Mount the unified composer for this pane (hydrates model/approval/
     // draft/running state). Same template + behavior as the full-screen one.
     mountComposer(sid, pane.querySelector(".pane-composer") as HTMLElement);
+    // If this session is already running (e.g. an IM-driven turn started
+    // before the pane was opened), the composer button needs to start as
+    // a stop button. Query turns and sync local running state.
+    (async () => {
+      try {
+        const turns = await api.getTurns(sid);
+        if (turns.some(t => t.status === "running")) {
+          setSessionRunning(sid, true);
+          setComposerRunning(sid, true);
+        }
+      } catch { /* ignore */ }
+    })();
     } catch (e: any) {
       console.error("renderSplitPanes: secondary pane creation failed for", sid, e?.message || e, e?.stack);
     }
@@ -1472,6 +1494,7 @@ function _doRenderSessions() {
           ${selectMode && inActiveWs ? `<input type="checkbox" class="session-checkbox" data-sid="${s.id}" data-workspace="${esc(s.workspace || activeWs)}" checked />` : ""}
           <span class="session-chevron">›</span>
           ${isRunning ? '<span class="session-running-dot" title="Running"></span>' : ""}
+          ${s.channel ? `<span class="session-source">${channelIconHtml(s.channel)}</span>` : ""}
           <span class="session-name">${esc(s.preview || s.id)}</span>
           <span class="session-time">${timeStr}</span>
           ${!selectMode ? `<span class="split-btn" data-sid="${s.id}" title="Split view">⧉</span>` : ""}
@@ -1667,6 +1690,10 @@ async function switchSession(sid: string, opts: { skipGitRefresh?: boolean } = {
     const activeTurn = turns.find(t => t.status === "running");
     if (activeTurn) {
       setActiveRunning(true);
+      // We missed the live turn_start event (e.g. the turn was started by
+      // the IM bridge before the user switched to this session). Show a
+      // typing indicator so the user knows a turn is in progress.
+      appendTyping();
       // Detect pending ask_user calls from the message history.
       // An ask_user is pending if there's an assistant message with an
       // ask_user tool_call but no following tool result for that call_id.
@@ -2506,10 +2533,14 @@ function appendToolCard(
     <div class="tool-card-body">${body}</div>`;
 
   (card.querySelector(".tool-card-header") as HTMLElement).onclick = () => card.classList.toggle("open");
-  (card.querySelector(".copy-tool-btn") as HTMLElement).onclick = (e) => {
+  (card.querySelector(".copy-tool-btn") as HTMLElement).onclick = async (e) => {
     e.stopPropagation();
-    const copyText = `${toolName} - ${JSON.stringify(args)}${output !== undefined ? "\nOutput: " + (typeof output === "string" ? output : JSON.stringify(output)) : ""}`;
-    navigator.clipboard.writeText(copyText);
+    const payload = `${toolName} - ${JSON.stringify(args)}${output !== undefined ? "\nOutput: " + (typeof output === "string" ? output : JSON.stringify(output)) : ""}`;
+    const ok = await copyText(payload);
+    if (!ok) {
+      // eslint-disable-next-line no-console
+      console.warn("[ziva] copy failed for tool card", toolName);
+    }
   };
 
   // Rewind button on tool cards (history render only): snaps to the end of
@@ -2793,6 +2824,139 @@ function appendError(msg: string, target: HTMLElement = (getLiveStreamTarget() |
   target.appendChild(div);
   invalidateLiveStreamEl();
 }
+
+// Lightweight system notice card (used by /new, /stop echoes, and the
+// trailing "Switched model to X" acknowledgement). Renders as a centered
+// pill so it reads as a system event rather than a chat message — no
+// role label, no avatar, no Thinking block, no markdown body. Ephemeral:
+// not persisted to history.
+function appendSystem(iconSvg: string, label: string, detail?: string, target: HTMLElement = (getLiveStreamTarget() || $("messages"))) {
+  const div = document.createElement("div");
+  div.className = "system-card";
+  const inner = document.createElement("div");
+  inner.className = "system-inner";
+  if (iconSvg) inner.insertAdjacentHTML("afterbegin", `<span class="system-icon">${iconSvg}</span>`);
+  const labelEl = document.createElement("span");
+  labelEl.className = "system-label";
+  labelEl.textContent = label;
+  inner.appendChild(labelEl);
+  if (detail) {
+    const detailEl = document.createElement("span");
+    detailEl.className = "system-detail";
+    detailEl.textContent = detail;
+    inner.appendChild(detailEl);
+  }
+  div.appendChild(inner);
+  target.appendChild(div);
+  div.scrollIntoView({ behavior: "smooth", block: "end" });
+  invalidateLiveStreamEl();
+}
+
+// Structured model picker for the no-arg `/model` command. Shows the
+// current model as a labeled header, each available model as a clickable
+// row (clicking fires the same PATCH the slash command would), and a
+// footer hint. The card itself isn't persisted to history.
+function appendModelPicker(
+  currentModel: string,
+  models: { name: string }[],
+  sid: string,
+  target: HTMLElement = (getLiveStreamTarget() || $("messages")),
+) {
+  const card = document.createElement("div");
+  card.className = "model-picker";
+
+  // Head: title + current-model pill
+  const head = document.createElement("div");
+  head.className = "model-picker-head";
+  const title = document.createElement("h4");
+  title.textContent = "Select a model";
+  head.appendChild(title);
+  const pill = document.createElement("span");
+  pill.className = "current-pill";
+  pill.textContent = `current: ${currentModel}`;
+  head.appendChild(pill);
+  card.appendChild(head);
+
+  // List: one row per model
+  const list = document.createElement("div");
+  list.className = "model-picker-list";
+  for (const m of models) {
+    const row = document.createElement("div");
+    row.className = "model-picker-row";
+    if (m.name === currentModel) row.classList.add("is-current");
+
+    const check = document.createElement("span");
+    check.className = "check";
+    check.textContent = "✓";
+    row.appendChild(check);
+
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = m.name;
+    row.appendChild(name);
+
+    if (m.name === currentModel) {
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = "in use";
+      row.appendChild(badge);
+    }
+
+    // Click anywhere on the row to switch — mirrors typing
+    // `/model <name>` and Enter.
+    row.addEventListener("click", async () => {
+      if (m.name === currentModel) return; // already on it
+      try {
+        await api.updateSession(sid, { model_name: m.name });
+        const sessions = store.get().sessions;
+        const s = sessions.find(x => x.id === sid);
+        if (s) (s as any).model_name = m.name;
+        const sel = composerModelSelect(sid);
+        if (sel) sel.value = m.name;
+        // Replace the card with a confirmation pill so the user can see
+        // the switch landed. (Clicking a row = exactly the same code
+        // path as `/model <name>` Enter, so reuse the same acknowledgement.)
+        card.replaceWith((() => {
+          const wrap = document.createElement("div");
+          wrap.className = "system-card";
+          const inner = document.createElement("div");
+          inner.className = "system-inner";
+          inner.innerHTML = `<span class="system-icon">${CHECK_ICON_SVG}</span>`;
+          const lbl = document.createElement("span");
+          lbl.className = "system-label";
+          lbl.textContent = "Switched model";
+          inner.appendChild(lbl);
+          const det = document.createElement("span");
+          det.className = "system-detail";
+          det.textContent = m.name;
+          inner.appendChild(det);
+          wrap.appendChild(inner);
+          return wrap;
+        })());
+      } catch (err: any) {
+        appendError(`Failed to switch model: ${err?.message || err}`);
+        console.error("updateSession(model_name) failed:", err);
+      }
+    });
+
+    list.appendChild(row);
+  }
+  card.appendChild(list);
+
+  // Foot: hint
+  const foot = document.createElement("div");
+  foot.className = "model-picker-foot";
+  foot.innerHTML = "Type <code>/model &lt;name&gt;</code> to switch without clicking, or pass a name inline.";
+  card.appendChild(foot);
+
+  target.appendChild(card);
+  card.scrollIntoView({ behavior: "smooth", block: "end" });
+  invalidateLiveStreamEl();
+}
+
+const CHECK_ICON_SVG = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3.5 8.5 6.5 11.5 12.5 5"/></svg>`;
+const SPARK_ICON_SVG = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.5l1.6 3.9 3.9 1.6-3.9 1.6L8 12.5 6.4 8.6 2.5 7l3.9-1.6z"/></svg>`;
+const STOP_ICON_SVG = `<svg viewBox="0 0 16 16" fill="currentColor"><rect x="3.5" y="3.5" width="9" height="9" rx="1.5"/></svg>`;
 
 // ---- Compact progress toast (aicoder-aligned) ----
 // Fixed-position popup with circular spinner shown while /compact runs.
@@ -3183,6 +3347,21 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
       const contextWindow = store.get().config.contextWindow || 200000;
       const pct = Math.min(usage.prompt_tokens / contextWindow, 1);
       updateContextProgress(pct, usage.prompt_tokens, sid);
+    }
+  } else if (t === "model_changed") {
+    const modelName = (ev as any).model_name as string | undefined;
+    if (!modelName) return;
+    const si = sessions.findIndex(s => s.id === sid);
+    if (si !== -1 && (sessions[si] as any).model_name !== modelName) {
+      const next = [...sessions];
+      (next[si] as any).model_name = modelName;
+      store.set({ sessions: next });
+    }
+    const modelSel = composerModelSelect(sid);
+    if (modelSel && Array.from(modelSel.options).some((o) => o.value === modelName)) {
+      if (modelSel.value !== modelName) {
+        modelSel.value = modelName;
+      }
     }
   } else if (t === "stream_reset") {
     // Server: provider returned a retryable error (e.g. 1027 output
@@ -3770,6 +3949,44 @@ async function sendComposerMessage(sid: string) {
 
   try {
     // Slash commands operate on THIS session.
+    if (trimmedCmd === "/new") {
+      await createSession();
+      appendSystem(SPARK_ICON_SVG, "New conversation");
+      return;
+    }
+    if (trimmedCmd === "/stop") {
+      // Mirrors the input-box stop button: posts /cancel and clears UI state.
+      cancelComposerTurn(sid);
+      appendSystem(STOP_ICON_SVG, "Stopped current turn");
+      return;
+    }
+    if (trimmedCmd === "/model" || trimmedCmd.startsWith("/model ")) {
+      // No-arg: render the model picker card. With arg: switch session model.
+      const arg = trimmedCmd === "/model" ? "" : trimmedCmd.slice("/model ".length).trim();
+      if (!arg) {
+        const { config, sessions } = store.get();
+        const s = sessions.find(x => x.id === sid);
+        const currentModel = (s as any)?.model_name || (config as any).model;
+        const models = (config as any).modelDetails
+          || ((config as any).model?.available || []).map((m: string) => ({ name: m }));
+        appendModelPicker(currentModel, models, sid, messagesEl || undefined);
+      } else {
+        try {
+          await api.updateSession(sid, { model_name: arg });
+          const sessions = store.get().sessions;
+          const s = sessions.find(x => x.id === sid);
+          if (s) (s as any).model_name = arg;
+          // Refresh the per-pane model dropdown so the UI matches.
+          const sel = composerModelSelect(sid);
+          if (sel) sel.value = arg;
+          appendSystem(CHECK_ICON_SVG, "Switched model", arg);
+        } catch (err: any) {
+          appendError(`Failed to switch model: ${err?.message || err}`);
+          console.error("updateSession(model_name) failed:", err);
+        }
+      }
+      return;
+    }
     if (trimmedCmd === "/compact" || trimmedCmd === "/prune") {
       await runCompactFlow(sid, trimmedCmd === "/prune", messagesEl);
       return;

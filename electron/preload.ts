@@ -43,6 +43,29 @@ contextBridge.exposeInMainWorld("electronAPI", {
   openExternal: (url: string) => ipcRenderer.invoke("open-external", url),
   getCdpPort: () => ipcRenderer.invoke("get-cdp-port"),
   setTheme: (theme: string) => ipcRenderer.invoke("set-theme", theme),
+  // ---- Clipboard ----
+  // Renderer 加载在 http://127.0.0.1:4097，被 Chromium 视作 non-secure context，
+  // `navigator.clipboard.writeText` 在那里会被拒。提供一个统一入口：
+  //   1. secure context 且有原生 Clipboard API → 直接走浏览器
+  //   2. 否则走 IPC 落到主进程 Electron.clipboard 模块
+  //   3. 都没拿到（web dev / 旧版 Chromium）→ 再 fallback execCommand("copy")
+  copyText: async (text: string): Promise<boolean> => {
+    if (typeof text !== "string") return false;
+    if (window.isSecureContext && navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch {
+        // fall through to IPC
+      }
+    }
+    try {
+      const ok: boolean = await ipcRenderer.invoke("clipboard:writeText", text);
+      return ok;
+    } catch {
+      return false;
+    }
+  },
   // ---- Embedded Chromium browser (WebContentsView) ----
   // The renderer is the host shell; it asks the main process to create/show/
   // navigate/close native browser views and reports the rectangle where the

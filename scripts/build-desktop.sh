@@ -56,7 +56,7 @@ if [ ! -d "$VENV" ]; then
   "$PYTHON_BIN" -m venv "$VENV"
   PIP_MIRROR="-i https://pypi.tuna.tsinghua.edu.cn/simple"
   "$VENV/bin/pip" install --upgrade pip $PIP_MIRROR
-  "$VENV/bin/pip" install -e "$PROJECT_ROOT" $PIP_MIRROR   # ziva + pyproject 依赖(含传递)
+  "$VENV/bin/pip" install -e "$PROJECT_ROOT"[all] $PIP_MIRROR   # ziva + desktop/cli 依赖
   "$VENV/bin/pip" install pyinstaller $PIP_MIRROR
 fi
 PYI="$VENV/bin/pyinstaller"
