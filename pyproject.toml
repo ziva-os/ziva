@@ -4,9 +4,25 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ziva"
-version = "0.1.0"
+version = "1.0.0"
 description = "Ziva: a customizable LLM agent runtime and SDK (core library + optional desktop/CLI transports)"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [ { name = "Ziva Team" } ]
 requires-python = ">=3.10"
+keywords = ["ai-agent", "llm", "mcp", "desktop", "automation", "agent-runtime"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
 # Core runtime only — importing `ziva` and running `ziva.Agent` needs nothing
 # else. HTTP/SSE server, CLI/REPL, and on-device STT live in the extras below.
 dependencies = [
@@ -15,6 +31,12 @@ dependencies = [
   "mcp>=1.0.0",
   "anthropic>=0.30.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/ziva-ai/ziva"
+Repository = "https://github.com/ziva-ai/ziva"
+Documentation = "https://github.com/ziva-ai/ziva/tree/main/docs"
+Issues = "https://github.com/ziva-ai/ziva/issues"
 
 [project.optional-dependencies]
 # Desktop app: the aiohttp HTTP/SSE server + macOS on-device STT.

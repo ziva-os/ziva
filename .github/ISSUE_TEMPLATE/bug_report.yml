@@ -1,0 +1,46 @@
+name: Bug report
+description: Report a bug in Ziva
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill out the sections below.
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: A clear and concise description of what went wrong.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Steps to reproduce the behavior, including a minimal config if possible.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Ziva version or commit SHA you are running.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Desktop app
+        - Python SDK / Runtime
+        - IM bridge (Feishu)
+        - IM bridge (Telegram)
+        - Web UI
+        - Build / Packaging
+        - Other
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Paste relevant log output (redact API keys and secrets).
+      render: shell
