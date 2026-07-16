@@ -22,7 +22,7 @@ from typing import Any, Dict
 import aiohttp
 from aiohttp import ClientConnectorError
 
-from ziva.transports.im_bridge.adapters.base import BaseAdapter
+from ziva.transports.im_bridge.adapters.base import BaseAdapter, decode_image_ref, _bytesio
 from ziva.transports.im_bridge.models import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
@@ -42,6 +42,10 @@ class TelegramAdapter(BaseAdapter):
         self._task: asyncio.Task | None = None
         self._offset = 0
         self._bot_user_id = ""
+        # Per-chat typing-indicator loops. send_typing spawns one, stop_typing
+        # cancels it. Kept on the adapter so multiple chats can each have
+        # their own typing task.
+        self._typing_tasks: Dict[str, asyncio.Task] = {}
 
     @property
     def account_id(self) -> str:
@@ -111,6 +115,97 @@ class TelegramAdapter(BaseAdapter):
                 "chat_id": msg.chat_id,
                 "text": text[i:i + 4000],
             })
+        # Send each image as a separate photo message via multipart upload.
+        # Tool outputs arrive as data: URLs (see read_file / MCP), so decode
+        # to bytes and upload a real file — passing the URL string would make
+        # _call_multipart send it as a text field and Telegram would reject it.
+        for image_ref in msg.images or []:
+            if not image_ref:
+                continue
+            decoded = decode_image_ref(image_ref)
+            if not decoded:
+                logger.warning("telegram: could not decode image ref for send")
+                continue
+            data, filename = decoded
+            try:
+                await self._call_multipart("sendPhoto", {
+                    "chat_id": str(msg.chat_id),
+                    "photo": _bytesio(data, filename),
+                })
+            except Exception:
+                logger.exception("telegram: sendPhoto failed for %s", filename)
+
+    async def send_typing(self, chat_id: str, message_id: str = "") -> None:
+        """Best-effort "typing…" indicator.
+
+        Telegram's ``sendChatAction`` expires after ~5s, so the bridge
+        drives it as a background task that keeps re-sending every 4
+        seconds until cancelled by ``stop_typing``. The task is
+        intentionally swallow-all on errors — Telegram being unavailable
+        should never surface as a typing-related failure in the IM bridge.
+        """
+        if not chat_id:
+            return
+
+        async def _loop() -> None:
+            try:
+                while True:
+                    try:
+                        await self._call(
+                            "sendChatAction",
+                            {"chat_id": chat_id, "action": "typing"},
+                            http_timeout=10,
+                        )
+                    except Exception:
+                        pass
+                    await asyncio.sleep(4)
+            except asyncio.CancelledError:
+                return
+
+        task = asyncio.create_task(_loop())
+        self._typing_tasks[chat_id] = task
+
+    async def stop_typing(self, chat_id: str) -> None:
+        """Cancel the per-chat typing loop started by ``send_typing``."""
+        task = self._typing_tasks.pop(chat_id, None)
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    async def _call_multipart(self, method: str, fields: Dict[str, Any]) -> Any:
+        """Call a Telegram Bot API method with multipart/form-data.
+
+        Telegram's Bot API accepts a local file path (e.g. ``photo``,
+        ``document``) via multipart, which we can't reach through the
+        regular ``_call`` (which posts JSON). Fields whose value is a
+        string is sent as a text part; anything else is treated as a
+        file-like object (or a path that gets opened for reading).
+        """
+        assert self._session is not None
+        url = API_BASE.format(token=self._token, method=method)
+        form = aiohttp.FormData()
+        for key, value in fields.items():
+            if isinstance(value, str):
+                form.add_field(key, value)
+            else:
+                # Treat as file: either a path or an open file object.
+                if hasattr(value, "read"):
+                    form.add_field(key, value, filename=getattr(value, "name", key))
+                else:
+                    form.add_field(key, open(str(value), "rb"), filename=str(value).rsplit("/", 1)[-1])
+        async with self._session.post(
+            url,
+            data=form,
+            timeout=aiohttp.ClientTimeout(total=60),
+            proxy=self._proxy,
+        ) as r:
+            data = await r.json()
+            if not data.get("ok"):
+                raise RuntimeError(f"telegram {method}: {data.get('description')}")
+            return data.get("result")
 
     # -- internals ----------------------------------------------------------
 
@@ -167,6 +262,7 @@ class TelegramAdapter(BaseAdapter):
             sender_name=sender.get("first_name") or sender.get("username") or "tg",
             text=text,
             images=image_paths,
+            message_id=str(msg.get("message_id", "")),
         )
         # Fire-and-forget so the poll loop isn't blocked while the model runs.
         asyncio.create_task(self._on_message(incoming))

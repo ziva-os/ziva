@@ -12,6 +12,9 @@ frontend "连接手机" modal.
 
 from __future__ import annotations
 
+import base64
+import io
+import os
 from abc import ABC, abstractmethod
 from typing import Any, Dict
 
@@ -21,6 +24,48 @@ from ziva.transports.im_bridge.models import (
     OnMessage,
     OutgoingMessage,
 )
+
+
+def decode_image_ref(ref: str) -> tuple[bytes, str] | None:
+    """Resolve an outbound image reference into ``(raw_bytes, filename)``.
+
+    Tool outputs (``read_file`` on an image, MCP image content) arrive as
+    ``data:<mime>;base64,...`` URLs — *not* local file paths. Both IM
+    adapters need real bytes to upload (Feishu ``image.create`` multipart,
+    Telegram ``sendPhoto`` multipart), so this decodes a data URL into bytes
+    and also accepts an existing local file path. Returns ``None`` when the
+    reference can't be decoded/read so the caller can skip it without taking
+    down the whole reply.
+    """
+    if not ref or not isinstance(ref, str):
+        return None
+    if ref.startswith("data:"):
+        try:
+            header, payload = ref.split(",", 1)
+            mime = header[len("data:"):].split(";", 1)[0] or "image/png"
+            ext = mime.rsplit("/", 1)[-1].split("+", 1)[0].lower() or "png"
+            if ext == "jpeg":
+                ext = "jpg"
+            data = base64.b64decode(payload)
+        except Exception:
+            return None
+        return data, f"image.{ext}"
+    # Already a local file path.
+    try:
+        with open(ref, "rb") as f:
+            data = f.read()
+    except Exception:
+        return None
+    return data, os.path.basename(ref) or "image"
+
+
+def _bytesio(data: bytes, filename: str) -> io.BytesIO:
+    """Wrap bytes in a BytesIO with a ``.name`` so multipart encoders
+    (httpx for Feishu, aiohttp for Telegram) upload it with a real filename
+    and the platform can infer the image type from the extension."""
+    buf = io.BytesIO(data)
+    buf.name = filename  # type: ignore[attr-defined]
+    return buf
 
 
 class BaseAdapter(ABC):
@@ -46,6 +91,19 @@ class BaseAdapter(ABC):
     @abstractmethod
     async def send_message(self, msg: OutgoingMessage) -> None:
         """Push a reply text back to the IM chat identified by ``msg.chat_id``."""
+
+    async def send_typing(self, chat_id: str, message_id: str = "") -> None:
+        """Best-effort "agent is processing" indicator.
+
+        Default: no-op. Channels with a typing primitive (Telegram
+        ``sendChatAction``, Feishu "OnIt" reaction, etc.) override this.
+        ``message_id`` is the inbound message's native id, used by channels
+        that anchor the indicator to the user's message (e.g. a Feishu
+        reaction). The bridge never blocks on a typing indicator.
+        """
+
+    async def stop_typing(self, chat_id: str) -> None:
+        """Tear down whatever ``send_typing`` set up. Default: no-op."""
 
     @property
     def account_id(self) -> str:

@@ -54,10 +54,26 @@ class IMBridge:
         # Sender IDs that were recently rejected by the whitelist. Surfaced in
         # the UI so the owner can approve them without looking up IDs manually.
         self._pending_senders: list[Dict[str, Any]] = []
+        # Ask_user: while a question is awaiting an IM-side reply, we record
+        # the routing (sid → chat_id/channel) and the question's call_id so a
+        # follow-up message from the same chat can be intercepted as the
+        # answer instead of being fed to the model as a new turn.
+        self._pending_questions: Dict[str, Dict[str, Any]] = {}
+        self._sid_route: Dict[str, Dict[str, str]] = {}
+        # chat_id -> call_id reverse lookup so a fresh inbound message can
+        # be matched to its pending question in O(1) without scanning.
+        self._pending_chat_index: Dict[str, str] = {}
 
     # -- lifecycle ----------------------------------------------------------
 
     async def start(self) -> None:
+        # Subscribe once: the ask_user tool emits a question, the bridge
+        # pushes it to the IM chat, and the user's reply is matched back
+        # to the question via the pending_questions map in _handle.
+        try:
+            self.runtime.on_ask_user(self._on_ask_user_question)
+        except Exception:
+            logger.exception("im_bridge: failed to register on_ask_user callback")
         for name, cfg in self.config.channels.items():
             if cfg.enabled and name in ADAPTERS:
                 try:
@@ -110,6 +126,24 @@ class IMBridge:
         if not self._is_allowed_sender(msg):
             logger.info("im_bridge: dropped non-whitelisted sender %s", msg.sender_id)
             return
+        # Ask_user answer interception (must run before /stop — a /stop
+        # issued while waiting on a question should still cancel the turn
+        # and let the ask_user future resolve, but a free-text answer
+        # arrives here as a normal message and should be matched first).
+        call_id = self._pending_chat_index.get(msg.chat_id)
+        if call_id and call_id in self._pending_questions:
+            info = self._pending_questions.pop(call_id)
+            self._pending_chat_index.pop(msg.chat_id, None)
+            sid = info["sid"]
+            # Take the first line of the user's reply as the answer; IM
+            # platforms commonly prefix quoted/forwarded text that would
+            # otherwise confuse the model.
+            answer = (msg.text or "").strip().splitlines()[0] if msg.text else ""
+            try:
+                self.runtime.set_user_answer(sid, answer, call_id=call_id)
+            except Exception:
+                logger.exception("im_bridge: set_user_answer failed for %s", call_id)
+            return
         # Parse slash commands before the per-conversation lock so that
         # /stop can cancel the running turn that is currently holding the
         # lock. Without this, /stop would queue behind the running turn and
@@ -149,15 +183,30 @@ class IMBridge:
             sid = self._route_session(msg)
             self._ensure_session(sid, msg)
             image_paths = self._persist_images(sid, msg.images)
-            try:
-                reply = await self._run_turn(sid, msg.text, image_paths)
-            except Exception as exc:
-                logger.exception("im_bridge: turn failed for %s", msg.route_key)
-                reply = f"[ziva error] {exc}"
+            # Best-effort typing indicator: the user on the IM side gets
+            # immediate feedback that the agent is processing, even if the
+            # turn takes several seconds. ``stop_typing`` is called in both
+            # success and failure paths to remove the placeholder.
             adapter = self._adapters.get(msg.channel)
             if adapter:
                 try:
-                    await adapter.send_message(OutgoingMessage(chat_id=msg.chat_id, text=reply))
+                    await adapter.send_typing(msg.chat_id, msg.message_id)
+                except Exception:
+                    logger.exception("im_bridge: send_typing failed for %s", msg.channel)
+            try:
+                reply, output_images = await self._run_turn(sid, msg.text, image_paths)
+            except Exception as exc:
+                logger.exception("im_bridge: turn failed for %s", msg.route_key)
+                reply, output_images = f"[ziva error] {exc}", []
+            if adapter:
+                try:
+                    await adapter.stop_typing(msg.chat_id)
+                except Exception:
+                    logger.exception("im_bridge: stop_typing failed for %s", msg.channel)
+                try:
+                    await adapter.send_message(OutgoingMessage(
+                        chat_id=msg.chat_id, text=reply, images=output_images,
+                    ))
                 except Exception:
                     logger.exception("im_bridge: failed to send reply to %s", msg.channel)
 
@@ -233,6 +282,12 @@ class IMBridge:
             # task itself. The desktop stop button does the same thing.
             token.cancel()
             task.cancel()
+            # Cancel any pending ask_user future so the awaited tool sees
+            # a cancelled envelope instead of hanging forever.
+            try:
+                self.runtime.cancel_all_questions(sid)
+            except Exception:
+                logger.exception("im_bridge: cancel_all_questions failed for %s", sid)
             return "已停止当前轮次。"
 
         # --- /model: list or switch model ------------------------------------
@@ -349,6 +404,69 @@ class IMBridge:
         # fail-closed: empty whitelist rejects everything.
         return False
 
+    async def _on_ask_user_question(self, session_id: str, question: str, options: Any, call_id: str, multi_select: bool = False) -> None:
+        """Forward an ask_user question to the originating IM chat.
+
+        Registered with ``runtime.on_ask_user``. We look up the routing
+        the bridge recorded when the IM message was first routed to a
+        session, format the question + options into a short text reply,
+        and push it back through the adapter. The reply is then matched
+        to the pending call_id when the user sends their next message.
+
+        We ``await`` the adapter send (rather than fire-and-forget) so the
+        question is actually delivered before the tool blocks waiting for
+        the answer — a detached task can be GC'd or fail silently, which
+        leaves the IM user with no question and the model hanging forever.
+        The ask_user tool awaits coroutines returned by callbacks.
+        """
+        route = self._sid_route.get(session_id) or {}
+        chat_id = route.get("chat_id", "")
+        channel = route.get("channel", "")
+        if not chat_id or not channel:
+            # The session was never routed through IM (e.g. a desktop-driven
+            # turn happens to call ask_user); no IM-side answer is possible.
+            logger.info(
+                "im_bridge: ask_user from session %s has no IM route; not pushing to any chat",
+                session_id,
+            )
+            return
+        adapter = self._adapters.get(channel)
+        if not adapter:
+            logger.warning("im_bridge: ask_user channel %s not connected; question not delivered", channel)
+            return
+        self._pending_questions[call_id] = {
+            "sid": session_id,
+            "chat_id": chat_id,
+            "channel": channel,
+            "options": options or [],
+            "multi_select": multi_select,
+        }
+        self._pending_chat_index[chat_id] = call_id
+        text = self._format_ask_user_prompt(question, options or [], multi_select)
+        try:
+            await adapter.send_message(OutgoingMessage(chat_id=chat_id, text=text))
+        except Exception:
+            logger.exception("im_bridge: failed to push ask_user question to %s", channel)
+
+    @staticmethod
+    def _format_ask_user_prompt(question: str, options: list, multi_select: bool) -> str:
+        """Render an ask_user question + options as plain text for IM."""
+        lines = [f"❓ {question}"]
+        if options:
+            kind = "(可多选，请回复序号或内容)" if multi_select else "(回复序号或内容)"
+            lines.append(kind)
+            for idx, opt in enumerate(options, start=1):
+                if isinstance(opt, dict):
+                    label = opt.get("label", "")
+                    desc = opt.get("description", "")
+                    if desc:
+                        lines.append(f"{idx}. {label} — {desc}")
+                    else:
+                        lines.append(f"{idx}. {label}")
+                else:
+                    lines.append(f"{idx}. {opt}")
+        return "\n".join(lines)
+
     def _remember_pending_sender(self, msg: IncomingMessage) -> None:
         """Keep the most recent blocked sender IDs in memory for the UI."""
         # Remove duplicates (same sender_id) and keep the newest entry at the end.
@@ -399,6 +517,9 @@ class IMBridge:
             "name": f"{msg.sender_name} · {msg.channel}",
             "time": {"created": int(time.time() * 1000), "updated": int(time.time() * 1000)},
         })
+        # Cache the route so ask_user callbacks can locate the IM chat
+        # without having to walk self.config.routes or query the store.
+        self._sid_route[sid] = {"chat_id": msg.chat_id, "channel": msg.channel}
 
     def _persist_images(self, sid: str, temp_paths: list[str]) -> list[str]:
         """Move adapter-downloaded images into the session attachments dir.
@@ -432,8 +553,15 @@ class IMBridge:
                     logger.exception("im_bridge: failed to copy image %s", src)
         return moved
 
-    async def _run_turn(self, sid: str, text: str, image_paths: list[str] | None = None) -> str:
+    async def _run_turn(self, sid: str, text: str, image_paths: list[str] | None = None) -> tuple[str, list[str]]:
         """Run one user turn — same path as desktop ``create_turn``.
+
+        Returns ``(reply_text, image_paths_to_send)``. The image list is
+        scraped from the runtime's ``tool_end`` events: tools that emit
+        images (e.g. screenshot / image-generation) record them under
+        ``event.output.image_url`` (see ``runtime.py`` tool_end shape),
+        and the IM adapter sends each as a separate message after the
+        final text reply.
 
         Sets ``turn_task`` / ``cancel_token`` on the session so the desktop
         stop button and the in-flight-turn 429 check both work if the user
@@ -484,7 +612,9 @@ class IMBridge:
             # A token-cancelled model loop returns a normal ChatResult with
             # finish_reason == "cancelled".
             turn_record["status"] = "cancelled" if result.finish_reason == "cancelled" else "done"
-            return _format_reply(result, events)
+            reply = _format_reply(result, events)
+            output_images = _collect_output_images(events)
+            return reply, output_images
         except asyncio.CancelledError:
             turn_record["status"] = "cancelled"
             # The runtime's own token-cancelled path emits turn_cancelled,
@@ -605,6 +735,34 @@ def _format_reply(result: Any, events: list[Dict[str, Any]] | None) -> str:
     """
     answer = _text_of(result.content if hasattr(result, "content") else result)
     return answer or "已处理"
+
+
+def _collect_output_images(events: list[Dict[str, Any]] | None) -> list[str]:
+    """Pull image paths out of a turn's runtime events.
+
+    Tools that emit images (e.g. screenshot, image generation) record the
+    path under ``event.output.image_url`` (``type == "image"`` payload;
+    see ``runtime.py``'s ``tool_end`` shape). We keep the order the model
+    produced them so the IM adapter sends them in the same order they
+    appeared in the assistant's reply.
+    """
+    if not events:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for ev in events:
+        if ev.get("type") != "tool_end":
+            continue
+        output = ev.get("output")
+        if not isinstance(output, dict):
+            continue
+        if output.get("type") != "image":
+            continue
+        path = output.get("image_url") or ""
+        if path and path not in seen:
+            seen.add(path)
+            out.append(path)
+    return out
 
 
 def _truncate(text: str, max_len: int) -> str:

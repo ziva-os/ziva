@@ -28,7 +28,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from ziva.transports.im_bridge.adapters.base import BaseAdapter
+from ziva.transports.im_bridge.adapters.base import BaseAdapter, decode_image_ref, _bytesio
 from ziva.transports.im_bridge.models import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,12 @@ class FeishuAdapter(BaseAdapter):
         self._health_task: asyncio.Task | None = None
         self._stop_flag = False
         self._send_client: Any = None  # built in the lark-oapi thread
+        self._send_module: Any = None  # lark_oapi.api.im.v1 module, built in the ws thread
         self._connect_error: str | None = None
+        # chat_id -> (message_id, reaction_id) of the "OnIt" (处理中)
+        # reaction we added to the user's inbound message. Removed when the
+        # turn finishes (stop_typing).
+        self._typing_reactions: dict[str, tuple[str, str]] = {}
 
     @property
     def account_id(self) -> str:
@@ -161,20 +166,154 @@ class FeishuAdapter(BaseAdapter):
         im = self._send_module
         assert im is not None
 
-        req = (
-            im.CreateMessageRequest.builder()
-            .receive_id_type("chat_id")
-            .request_body(
-                im.CreateMessageRequestBody.builder()
-                .receive_id(msg.chat_id)
-                .msg_type("text")
-                .content(json.dumps({"text": msg.text or ""}, ensure_ascii=False))
+        # 1. Send the text first (if any). Feishu image messages carry
+        #    caption via `text` inside the image content, but it's cleaner
+        #    to keep text and image as separate bubbles.
+        if msg.text:
+            req = (
+                im.CreateMessageRequest.builder()
+                .receive_id_type("chat_id")
+                .request_body(
+                    im.CreateMessageRequestBody.builder()
+                    .receive_id(msg.chat_id)
+                    .msg_type("text")
+                    .content(json.dumps({"text": msg.text}, ensure_ascii=False))
+                    .build()
+                )
                 .build()
             )
-            .build()
-        )
-        # The SDK call is synchronous HTTP; offload so we don't block the loop.
-        await asyncio.to_thread(self._send_client.im.v1.message.create, req)
+            try:
+                # The SDK call is synchronous HTTP; offload so we don't block the loop.
+                await asyncio.to_thread(self._send_client.im.v1.message.create, req)
+            except Exception:
+                logger.exception("feishu: text send failed")
+
+        # 2. Send each image as a separate message. We upload first to get
+        #    an `image_key`, then send an `image` msg_type referencing it.
+        for image_path in msg.images or []:
+            try:
+                image_key = await self._upload_image(image_path)
+            except Exception:
+                logger.exception("feishu: image upload failed for %s", image_path)
+                continue
+            if not image_key:
+                continue
+            req = (
+                im.CreateMessageRequest.builder()
+                .receive_id_type("chat_id")
+                .request_body(
+                    im.CreateMessageRequestBody.builder()
+                    .receive_id(msg.chat_id)
+                    .msg_type("image")
+                    .content(json.dumps({"image_key": image_key}, ensure_ascii=False))
+                    .build()
+                )
+                .build()
+            )
+            try:
+                await asyncio.to_thread(self._send_client.im.v1.message.create, req)
+            except Exception:
+                logger.exception("feishu: image send failed for key=%s", image_key)
+
+    async def send_typing(self, chat_id: str, message_id: str = "") -> None:
+        """Add an "OnIt" (👆 处理中) reaction to the user's inbound message.
+
+        Feishu has no bot typing API. The native "agent is processing" signal
+        is the ``OnIt`` emoji reaction, which the client renders as
+        "👆 处理中" on the reacted message — far less noisy than posting +
+        deleting a placeholder bubble (which spams a notification and can
+        leave a stale "正在思考…" message if the delete fails). ``stop_typing``
+        removes the reaction when the turn finishes. Requires the inbound
+        ``message_id`` (Feishu always provides one for received messages).
+        """
+        if not self._send_client or not message_id or not chat_id:
+            return
+        im = self._send_module
+        try:
+            req = (
+                im.CreateMessageReactionRequest.builder()
+                .message_id(message_id)
+                .request_body(
+                    im.CreateMessageReactionRequestBody.builder()
+                    .reaction_type(im.Emoji.builder().emoji_type("OnIt").build())
+                    .build()
+                )
+                .build()
+            )
+            resp = await asyncio.to_thread(self._send_client.im.v1.message_reaction.create, req)
+        except Exception:
+            logger.exception("feishu: send_typing (add OnIt reaction) failed")
+            return
+        if not getattr(resp, "success", lambda: True)():
+            return
+        reaction_id = ""
+        try:
+            reaction_id = getattr(resp.data, "reaction_id", "") if resp and resp.data else ""
+        except Exception:
+            reaction_id = ""
+        if reaction_id:
+            self._typing_reactions[chat_id] = (message_id, reaction_id)
+
+    async def stop_typing(self, chat_id: str) -> None:
+        """Remove the "OnIt" reaction added by ``send_typing``."""
+        entry = self._typing_reactions.pop(chat_id, None)
+        if not entry or not self._send_client:
+            return
+        message_id, reaction_id = entry
+        im = self._send_module
+        try:
+            req = (
+                im.DeleteMessageReactionRequest.builder()
+                .message_id(message_id)
+                .reaction_id(reaction_id)
+                .build()
+            )
+            await asyncio.to_thread(self._send_client.im.v1.message_reaction.delete, req)
+        except Exception:
+            logger.exception("feishu: stop_typing (remove OnIt reaction) failed")
+
+    async def _upload_image(self, image_ref: str) -> str:
+        """Upload an image to Feishu and return the ``image_key``.
+
+        ``image_ref`` is a tool-output image, which arrives as a
+        ``data:<mime>;base64,...`` URL (see ``read_file`` / MCP). We decode it
+        to bytes and upload via ``client.im.v1.image.create`` (HTTP multipart).
+        Returns "" on any failure so the caller can skip the image without
+        taking down the whole reply.
+        """
+        if not self._send_client:
+            return ""
+        decoded = decode_image_ref(image_ref)
+        if not decoded:
+            logger.warning("feishu: could not decode image ref for send")
+            return ""
+        data, filename = decoded
+        im = self._send_module
+        try:
+            req = (
+                im.CreateImageRequest.builder()
+                .request_body(
+                    im.CreateImageRequestBody.builder()
+                    .image_type("message")
+                    .image(_bytesio(data, filename))
+                    .build()
+                )
+                .build()
+            )
+            resp = await asyncio.to_thread(self._send_client.im.v1.image.create, req)
+            success = getattr(resp, "success", lambda: True)()
+            if not success:
+                code = getattr(resp, "code", "?")
+                msg = getattr(resp, "msg", "")
+                logger.warning(
+                    "feishu: image.create failed code=%s msg=%s", code, msg,
+                )
+                return ""
+            image_key = getattr(resp.data, "image_key", "") if resp and resp.data else ""
+            return image_key or ""
+        except Exception:
+            logger.exception("feishu: image.create raised")
+            return ""
 
     # -- internals ----------------------------------------------------------
 
@@ -257,6 +396,7 @@ class FeishuAdapter(BaseAdapter):
             sender_name=sender_name,
             text=text,
             images=image_paths,
+            message_id=message_id,
         )
         assert self._loop is not None
         asyncio.run_coroutine_threadsafe(self._on_message(incoming), self._loop)
