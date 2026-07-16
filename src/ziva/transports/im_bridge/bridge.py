@@ -17,6 +17,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
+import re
 import shutil
 import time
 import uuid
@@ -60,9 +62,11 @@ class IMBridge:
         # answer instead of being fed to the model as a new turn.
         self._pending_questions: Dict[str, Dict[str, Any]] = {}
         self._sid_route: Dict[str, Dict[str, str]] = {}
-        # chat_id -> call_id reverse lookup so a fresh inbound message can
-        # be matched to its pending question in O(1) without scanning.
-        self._pending_chat_index: Dict[str, str] = {}
+        # chat_id -> FIFO queue of pending ask_user call_ids. A single turn
+        # can ask several questions at once (parallel ask_user tool calls);
+        # we match the user's replies to the questions in the order they were
+        # asked. One chat maps to one session, so the queue is per-conversation.
+        self._pending_chat_index: Dict[str, list[str]] = {}
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -130,10 +134,16 @@ class IMBridge:
         # issued while waiting on a question should still cancel the turn
         # and let the ask_user future resolve, but a free-text answer
         # arrives here as a normal message and should be matched first).
-        call_id = self._pending_chat_index.get(msg.chat_id)
+        # When multiple questions are pending for this chat, each reply
+        # answers the oldest unanswered one (FIFO) — the order they were
+        # asked.
+        queue = self._pending_chat_index.get(msg.chat_id) or []
+        call_id = queue[0] if queue else None
         if call_id and call_id in self._pending_questions:
+            queue.pop(0)
+            if not queue:
+                self._pending_chat_index.pop(msg.chat_id, None)
             info = self._pending_questions.pop(call_id)
-            self._pending_chat_index.pop(msg.chat_id, None)
             sid = info["sid"]
             # Take the first line of the user's reply as the answer; IM
             # platforms commonly prefix quoted/forwarded text that would
@@ -283,11 +293,14 @@ class IMBridge:
             token.cancel()
             task.cancel()
             # Cancel any pending ask_user future so the awaited tool sees
-            # a cancelled envelope instead of hanging forever.
+            # a cancelled envelope instead of hanging forever, and clear our
+            # own pending-question bookkeeping for this conversation so the
+            # user's next message isn't swallowed as a stale answer.
             try:
                 self.runtime.cancel_all_questions(sid)
             except Exception:
                 logger.exception("im_bridge: cancel_all_questions failed for %s", sid)
+            self._clear_pending_for_session(sid)
             return "已停止当前轮次。"
 
         # --- /model: list or switch model ------------------------------------
@@ -441,7 +454,9 @@ class IMBridge:
             "options": options or [],
             "multi_select": multi_select,
         }
-        self._pending_chat_index[chat_id] = call_id
+        # Append (FIFO) so concurrent ask_user calls in one turn each get
+        # matched to the user's replies in the order they were asked.
+        self._pending_chat_index.setdefault(chat_id, []).append(call_id)
         text = self._format_ask_user_prompt(question, options or [], multi_select)
         try:
             await adapter.send_message(OutgoingMessage(chat_id=chat_id, text=text))
@@ -466,6 +481,23 @@ class IMBridge:
                 else:
                     lines.append(f"{idx}. {opt}")
         return "\n".join(lines)
+
+    def _clear_pending_for_session(self, sid: str) -> None:
+        """Drop ask_user bookkeeping for a session (e.g. on /stop).
+
+        Cancelling the runtime futures alone isn't enough: our own
+        ``_pending_questions`` / ``_pending_chat_index`` would otherwise still
+        match the user's next message to a dead question and swallow it.
+        One chat maps to one session, so dropping the chat's queue is enough.
+        """
+        route = self._sid_route.get(sid) or {}
+        chat_id = route.get("chat_id", "")
+        if chat_id:
+            self._pending_chat_index.pop(chat_id, None)
+        self._pending_questions = {
+            cid: v for cid, v in self._pending_questions.items()
+            if v.get("sid") != sid
+        }
 
     def _remember_pending_sender(self, msg: IncomingMessage) -> None:
         """Keep the most recent blocked sender IDs in memory for the UI."""
@@ -613,7 +645,13 @@ class IMBridge:
             # finish_reason == "cancelled".
             turn_record["status"] = "cancelled" if result.finish_reason == "cancelled" else "done"
             reply = _format_reply(result, events)
-            output_images = _collect_output_images(events)
+            # Pull image references out of the reply text too: image tools are
+            # often referenced inline as markdown ``![alt](sandbox:/path)``
+            # rather than (only) as tool_end image events. We strip the
+            # markdown from the text (it would show as raw ``![...]`` on IM)
+            # and send each resolved image as a separate message.
+            reply, md_images = _extract_markdown_images(reply)
+            output_images = _dedupe_images(_collect_output_images(events) + md_images)
             return reply, output_images
         except asyncio.CancelledError:
             turn_record["status"] = "cancelled"
@@ -762,6 +800,85 @@ def _collect_output_images(events: list[Dict[str, Any]] | None) -> list[str]:
         if path and path not in seen:
             seen.add(path)
             out.append(path)
+    return out
+
+
+# Markdown image: ![alt text](url). Non-greedy on alt; url has no closing paren.
+_MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(\s*([^)\s]+)\s*\)")
+
+
+def _resolve_image_url(url: str) -> str:
+    """Turn a markdown image URL into a reference ``decode_image_ref`` can read.
+
+    Image tools are referenced inline with custom/local schemes the desktop
+    frontend understands but IM adapters don't — e.g.
+    ``sandbox:/abs/path.png`` or ``file:///abs/path.png``. We strip those to
+    the underlying local path. ``data:`` URLs pass through unchanged; bare
+    paths pass through unchanged (existence is checked by the caller).
+    """
+    if not url:
+        return ""
+    if url.startswith("data:") or url.startswith("http://") or url.startswith("https://"):
+        return url
+    for scheme in ("file://", "file:", "sandbox:"):
+        if url.startswith(scheme):
+            return url[len(scheme):]
+    return url
+
+
+def _is_sendable_image(ref: str) -> bool:
+    """Whether an adapter can actually upload this ref right now.
+
+    ``data:`` URLs are always sendable; local paths only if the file exists.
+    ``http(s)`` URLs are left out (the adapters don't fetch remote URLs) —
+    they fall back to plain text so the link stays visible.
+    """
+    if not ref:
+        return False
+    if ref.startswith("data:"):
+        return True
+    if ref.startswith("http://") or ref.startswith("https://"):
+        return False
+    return os.path.exists(ref)
+
+
+def _extract_markdown_images(text: str | None) -> tuple[str, list[str]]:
+    """Strip sendable markdown images from ``text`` and return their refs.
+
+    Returns ``(cleaned_text, image_refs)``. Each sendable image (local file or
+    data URL) is removed from the text — the bridge sends it as a separate
+    message, and the raw ``![alt](url)`` would otherwise render as literal
+    text on IM. Non-sendable images (e.g. remote URLs) are replaced with their
+    alt text / URL so the user still sees a readable reference.
+    """
+    if not text:
+        return "", []
+    images: list[str] = []
+
+    def _sub(match: re.Match[str]) -> str:
+        alt, url = match.group(1), match.group(2).strip()
+        ref = _resolve_image_url(url)
+        if ref and _is_sendable_image(ref):
+            images.append(ref)
+            return ""
+        return alt or url
+
+    cleaned = _MD_IMAGE_RE.sub(_sub, text)
+    # Tidy whitespace left where an image was removed.
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned, images
+
+
+def _dedupe_images(items: list[str]) -> list[str]:
+    """Order-preserving dedupe — a tool image and its inline markdown ref
+    can point at the same file; don't send it twice."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for it in items:
+        if it and it not in seen:
+            seen.add(it)
+            out.append(it)
     return out
 
 

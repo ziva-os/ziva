@@ -108,9 +108,11 @@ class TelegramAdapter(BaseAdapter):
         self._set_state("disconnected")
 
     async def send_message(self, msg: OutgoingMessage) -> None:
-        # Telegram caps messages at 4096 chars; chunk long replies.
-        text = msg.text or ""
-        for i in range(0, max(len(text), 1), 4000):
+        # Telegram caps messages at 4096 chars; chunk long replies. Skip when
+        # the text is empty (e.g. a reply that was only an inline image, which
+        # arrives separately via msg.images) so we don't send a blank bubble.
+        text = (msg.text or "").strip()
+        for i in range(0, len(text), 4000):
             await self._call("sendMessage", {
                 "chat_id": msg.chat_id,
                 "text": text[i:i + 4000],
