@@ -95,7 +95,16 @@ class FileStorage:
     @classmethod
     @contextmanager
     def _lock(cls, path: Path, exclusive: bool = True):
-        """File-based locking."""
+        """File-based locking.
+
+        The lock file persists between calls (one stable ``<name>.lock`` per
+        resource, reused on every access). We deliberately do NOT unlink it
+        here: removing an flock lock file is the classic unsafe pattern — a
+        concurrent process can recreate the file under a different inode and
+        both then believe they hold the lock, silently breaking mutual
+        exclusion. Orphan lock files (left when a session is deleted) are
+        cleaned up at deletion time in :meth:`delete_session` instead.
+        """
         cls._ensure_dirs()
         lock_file = cls._lock_dir / f"{path.name}.lock"
         lock_file.parent.mkdir(parents=True, exist_ok=True)
@@ -188,6 +197,16 @@ class FileStorage:
             # path; without this the disk would grow forever.
             if attachments_dir.exists():
                 shutil.rmtree(attachments_dir, ignore_errors=True)
+        # The data files are gone, so their lock files are now orphans.
+        # Remove them so ~/.ziva/.locks doesn't accumulate one stale .lock
+        # pair per deleted session. Done AFTER releasing the lock (we held
+        # session_path's) and best-effort: the resource is already deleted,
+        # so a concurrent opener only races against a vanishing session.
+        for p in (session_path, messages_path):
+            try:
+                (cls._lock_dir / f"{p.name}.lock").unlink()
+            except OSError:
+                pass
 
     # ============= Message Operations (JSONL) =============
 
