@@ -515,7 +515,15 @@ async def run_async(argv: list[str] | None = None) -> int:
         finally:
             for sig in (signal.SIGINT, signal.SIGTERM):
                 asyncio.get_running_loop().remove_signal_handler(sig)
-            await server.stop()
+            # Graceful teardown so a SIGTERM/SIGINT exits cleanly instead of
+            # dying dirty: cancel automations, shut the runtime down (MCP
+            # clients), and clean up the aiohttp runner so :4097 is released
+            # and child processes (e.g. the multiprocessing resource_tracker)
+            # are reaped. Bounded so a stuck cleanup can't hang the quit.
+            try:
+                await asyncio.wait_for(server.stop(), timeout=10)
+            except Exception:
+                pass
         return 0
 
     raise RuntimeError("Unsupported command")

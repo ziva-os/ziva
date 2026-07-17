@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, webContents, session, shell, WebContentsView, clipboard } from "electron";
 import * as path from "path";
-import { spawn, ChildProcess } from "child_process";
+import { spawn, execFileSync, ChildProcess } from "child_process";
 import * as http from "http";
 import { CdpBridge } from "./cdp-bridge";
 
@@ -162,6 +162,46 @@ function checkBackendHealth(): Promise<boolean> {
   });
 }
 
+// Tear down the whole backend process tree on quit. The backend is spawned
+// detached (its own process group) so a PyInstaller build is actually three
+// processes: the bootloader we spawned, the real `desktop serve` server that
+// holds :4097, and a multiprocessing resource_tracker child. SIGTERM-ing only
+// our direct child (the bootloader) leaves the server orphaned on :4097, and
+// the reuse logic then silently attaches the next launch to that stale
+// backend. Killing the process group reaches all three at once.
+function killBackendTree(): void {
+  // 1. Group-kill the backend we spawned (detached → pgid == its pid, so
+  //    -pid broadcasts SIGTERM to the whole tree).
+  if (pythonProcess && pythonProcess.pid) {
+    try { process.kill(-pythonProcess.pid, "SIGTERM"); } catch { /* already gone */ }
+  }
+  // 2. Fallback for the reused-backend case (pythonProcess is null because we
+  //    attached to an existing :4097 instead of spawning): kill whoever
+  //    actually owns the port. execFileSync with an arg list — no shell, no
+  //    injection. The server's SIGTERM handler then shuts it down gracefully.
+  try {
+    const out = execFileSync("lsof", ["-tiTCP:" + PORT, "-sTCP:LISTEN"], {
+      stdio: ["ignore", "pipe", "ignore"],
+    }).toString().trim();
+    for (const pidStr of out.split(/\s+/)) {
+      const pid = Number(pidStr);
+      if (pid) { try { process.kill(pid, "SIGTERM"); } catch { /* gone */ } }
+    }
+  } catch { /* lsof unavailable or nothing on the port */ }
+  pythonProcess = null;
+}
+
+// Wait (bounded) for :4097 to go down so an immediate relaunch doesn't reuse
+// a backend that's still dying. The port frees early in graceful shutdown,
+// well before MCP teardown finishes, so this returns quickly in practice.
+async function waitForBackendGone(timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!(await checkBackendHealth())) return;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
 function startPythonBackend(): Promise<void> {
   return new Promise((resolve, reject) => {
     const { cmd, args, env } = getBackendCommand();
@@ -181,6 +221,10 @@ function startPythonBackend(): Promise<void> {
       cwd,
       env,
       stdio: ["pipe", "pipe", "pipe"],
+      // Own process group/session so before-quit can kill the whole tree
+      // (bootloader + server + resource_tracker) with one group signal,
+      // instead of orphaning the server that actually holds :4097.
+      detached: true,
     });
 
     let started = false;
@@ -669,14 +713,31 @@ app.on("window-all-closed", () => {
   }
 });
 
-app.on("before-quit", () => {
-  for (const id of Array.from(browserViews.keys())) destroyBrowserTab(id);
-  if (pythonProcess) {
-    pythonProcess.kill("SIGTERM");
-    pythonProcess = null;
-  }
-  if (cdpBridge) {
-    cdpBridge.stop();
-    cdpBridge = null;
-  }
+let isQuitting = false;
+app.on("before-quit", (event) => {
+  if (isQuitting) return;
+  // preventDefault synchronously, then do the async backend teardown before
+  // actually quitting — otherwise the relaunched/next instance would race the
+  // dying backend for :4097 and silently reuse it.
+  event.preventDefault();
+  isQuitting = true;
+  (async () => {
+    for (const id of Array.from(browserViews.keys())) destroyBrowserTab(id);
+    killBackendTree();
+    await waitForBackendGone(2000);
+    if (cdpBridge) {
+      cdpBridge.stop();
+      cdpBridge = null;
+    }
+    app.quit(); // re-fires before-quit; isQuitting short-circuits the guard
+  })();
+});
+
+// Full restart: relaunch the app and quit. before-quit (above) kills the whole
+// backend tree and waits for :4097 to free, so the relaunched instance spawns
+// a fresh backend instead of reusing the dying one. Renderer invokes this
+// (e.g. a "Restart" menu item) via ipcRenderer.invoke("restart-app").
+ipcMain.handle("restart-app", () => {
+  app.relaunch();
+  app.quit();
 });
