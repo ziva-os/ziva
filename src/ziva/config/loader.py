@@ -8,12 +8,12 @@ import yaml
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "model": {
-        "name": "gpt-4.1",
+        "name": "claude-sonnet-4-5",
         "max_tokens": 16384,
         "thinking_mode": "disabled",
         "thinking_budget_tokens": 4000,
     },
-    "providers": [{"name": "OpenAI", "api_type": "openai_compatible", "api_key": "", "base_url": "", "models": [{"name": "gpt-4.1", "capabilities": {"vision": True}}]}],
+    "providers": [{"name": "Anthropic", "api_type": "anthropic", "api_key": "", "base_url": "https://api.anthropic.com", "models": [{"name": "claude-sonnet-4-5", "supports_image": True}]}],
     "prompt": {"profile": "default", "variables": {}},
     "tool": {"allow": [], "deny": [], "max_rounds": 0},
     "skill": {
@@ -54,9 +54,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
                 "You are a software architect agent for designing implementation plans. Analyze the "
                 "request and the codebase, then return a step-by-step plan that identifies the "
                 "critical files to change, the build sequence, and the architectural trade-offs. "
-                "Use the read-only tools (read_file, list, glob). Do not implement the changes."
+                "Use the read-only tools (read_file, grep, list, glob). Do not implement the changes."
             ),
-            "tools": ["read_file", "list", "glob"],
+            "tools": ["read_file", "grep", "list", "glob"],
             "background": False,
         },
         "general-purpose": {
@@ -68,6 +68,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
                 "write, and edit code, run shell commands — except spawning further sub-agents. "
                 "Work autonomously and report what you did."
             ),
+            "tools": [
+                "read_file", "write_file", "edit_file",
+                "grep", "glob", "list",
+                "shell", "web_fetch", "read_skill",
+            ],
             "background": False,
         },
     },
@@ -241,9 +246,6 @@ def validate_config(config: Dict[str, Any]) -> None:
                         f"agents.{name}.hooks contains unknown type '{hk}'. "
                         f"Valid types: {sorted(valid_hook_types)}"
                     )
-        # Memory: "inherited" (default — same as parent) or "none" (stateless).
-        if "memory" in definition and definition["memory"] not in ("inherited", "none"):
-            raise ValueError(f"agents.{name}.memory must be 'inherited' or 'none'")
 
 
 def load_effective_config(

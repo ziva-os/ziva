@@ -132,7 +132,13 @@ class SpawnAgentTool:
         # no call-time overrides (keeps agent types predictable, aligns with
         # Claude Code's Task tool). background is a run-mode toggle, so it
         # stays call-time overridable with the agent's default as fallback.
+        #
+        # Whitelist semantics are STRICT: if `tools` is set (even to []),
+        # the sub-agent can ONLY use those tools. An empty list means
+        # "no tools" (pure LLM). To inherit all tools, omit the `tools`
+        # key entirely from the agent definition.
         instructions = (agent_def.get("instructions", "") or "").strip()
+        has_tools_key = "tools" in agent_def
         tool_whitelist = agent_def.get("tools")
         background = bool(input_data.get("background", agent_def.get("background", False)))
 
@@ -180,9 +186,9 @@ class SpawnAgentTool:
             # explicit — otherwise the child silently falls back to os.getcwd().
             "_workspace_root": ctx.metadata.get("_workspace_root"),
         }
-        if tool_whitelist is not None:
+        if has_tools_key:
             resolved = set()
-            for t in tool_whitelist:
+            for t in (tool_whitelist or []):
                 resolved.add(_TOOL_ALIASES.get(t, t))
             child_meta["_allowed_tools"] = resolved - BLOCKED_TOOLS
 
@@ -263,9 +269,15 @@ class SpawnAgentTool:
                 "subagent_session_id": child_sid,
             })
 
+        # Strip <think> tags: the parent session only needs the child's
+        # final answer, not its chain-of-thought. Some providers embed
+        # thinking in content instead of the reasoning_content field.
+        from ziva.adapters._think_parser import strip_think_tags
+        clean_result = strip_think_tags(result_content)
+
         return ToolResult(
-            text=result_content,
-            metadata={"tools_used": tool_count, "tools_summary": _summarize_tools(tool_names), "result": result_content, "subagent_session_id": child_sid},
+            text=clean_result,
+            metadata={"tools_used": tool_count, "tools_summary": _summarize_tools(tool_names), "result": clean_result, "subagent_session_id": child_sid},
         )
 
     async def _run_background(self, runtime, task, call_id, child_messages, child_ctx, session_id, child_sid) -> ToolResult:
@@ -374,21 +386,14 @@ class SpawnAgentTool:
                 runtime._background_agents[agent_id]["tools_used"] = tool_count
                 runtime._background_agents[agent_id]["finished_at"] = time.time()
 
-                # Rewrite the parent session's spawn_agent tool message
-                # (currently "Background agent started ...") to the final
-                # summary, so the result survives a restart without the UI
-                # needing to read the child session.
-                _spawn_tc_id = child_ctx.metadata.get("_spawn_tool_call_id")
-                if _spawn_tc_id:
-                    from ziva.storage.file_storage import FileStorage as _FS
-                    _summary = result_content
-                    try:
-                        _FS.update_message(
-                            runtime._resolve_project_id(session_id),
-                            session_id, _spawn_tc_id, {"content": _summary},
-                        )
-                    except Exception:
-                        pass
+                # NOTE: We intentionally do NOT rewrite the parent
+                # session's spawn_agent tool message here. Background
+                # agents return their result via get_agent_result, not
+                # via the spawn_agent tool card. Rewriting the card
+                # would pollute the parent's chat with the child's full
+                # output (including <think> tags) and make the tool
+                # card's content change asynchronously after it was
+                # already shown to the user.
 
                 if runtime.event_bus:
                     await runtime.event_bus.publish(session_id, {

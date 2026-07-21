@@ -246,6 +246,10 @@ class IMBridge:
             # session on disk in case the user wants to scroll back.
             self.config.set_route(msg.route_key, new_sid)
             try:
+                # /new has no user text yet, so a fallback name is the only
+                # option — but we still tag source/channel/sender for the
+                # sidebar icon + routing. The name gets replaced on the next
+                # real message by _ensure_session's first-text fallback.
                 FileStorage.update_session(self.runtime.project_id, new_sid, {
                     "source": "im-bridge",
                     "channel": msg.channel,
@@ -537,18 +541,43 @@ class IMBridge:
         """Tag the session with its IM origin (ad-hoc fields, not a metadata
         API — Runtime has no create_session(metadata=…), SessionState has no
         metadata field). These fields drive the sidebar source icon + routing
-        and do not change session behavior."""
+        and do not change session behavior.
+
+        The ``name`` field is only written when the session doesn't already
+        have one. Otherwise every incoming message would clobber a
+        user-renamed title (PATCH /sessions/{sid} from the sidebar) or the
+        title the desktop UI's enrichment loop derived from the first user
+        message. For the fallback, prefer the actual message text over the
+        bare "sender · channel" string — the former is informative even for
+        sessions outside the sidebar's slice(0, 10) enrichment window.
+        """
         ws = self.config.default_workspace or str(self.runtime.workspace_root)
-        FileStorage.update_session(self.runtime.project_id, sid, {
+        updates: Dict[str, Any] = {
             "source": "im-bridge",
             "channel": msg.channel,
             "chat_id": msg.chat_id,
             "sender_id": msg.sender_id,
             "sender_name": msg.sender_name,
             "workspace_root": ws,
-            "name": f"{msg.sender_name} · {msg.channel}",
             "time": {"created": int(time.time() * 1000), "updated": int(time.time() * 1000)},
-        })
+        }
+        try:
+            existing = FileStorage.get_session(self.runtime.project_id, sid) or {}
+        except Exception:
+            existing = {}
+        if not existing.get("name"):
+            text_preview = (msg.text or "").strip().replace("\n", " ")
+            # Truncate to roughly one sidebar row; Chinese chars are wide
+            # so 60 chars ≈ 1.5 rows of text, plenty of signal.
+            if len(text_preview) > 60:
+                text_preview = text_preview[:60].rstrip() + "…"
+            if text_preview:
+                updates["name"] = text_preview
+            elif msg.images:
+                updates["name"] = f"[图片] {msg.sender_name}"
+            else:
+                updates["name"] = f"{msg.sender_name} · {msg.channel}"
+        FileStorage.update_session(self.runtime.project_id, sid, updates)
         # Cache the route so ask_user callbacks can locate the IM chat
         # without having to walk self.config.routes or query the store.
         self._sid_route[sid] = {"chat_id": msg.chat_id, "channel": msg.channel}

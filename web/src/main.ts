@@ -1313,10 +1313,11 @@ async function refreshSessions() {
 
   store.set({ sessions, recentWorkspaces });
   renderSessions();
-  // Enrichment (preview / turnCount / status) requires hitting endpoints
-  // that are scoped to the active runtime project. Cross-project sessions
-  // keep their disk-side name (or id stub) until the user switches to
-  // that project.
+  // Enrichment (preview / turnCount / status). Preview reads the first
+  // user message so historical sessions (which have no on-disk `name`)
+  // still get a meaningful title — new sessions are stamped with a name
+  // server-side, but old ones aren't, and (s as any).name would fall
+  // through to the id stub for them.
   const toEnrich = sessions
     .filter(s => (s.workspace || activeWs) === activeWs)
     .slice(0, 10);
@@ -1925,7 +1926,14 @@ async function loadHistoryInto(sid: string, target: HTMLElement): Promise<boolea
 // expand affordance (target = .compact-dropped inside the collapse bar),
 // so the folded messages look identical to the live chat — just visually
 // scaled down via the wrapper's CSS.
-function renderMessages(target: HTMLElement, msgs: any[], offset: number = 0): void {
+//
+// `withRewind` controls whether rewind (回撤) buttons are attached. The
+// main chat view passes true (default) so users can rewind to any live
+// message. The compact-fold expander passes false: messages inside a
+// fold are historical context only — rewinding into them would either
+// truncate to a meaningless offset (idx is local to the slice) or
+// resurrect a stale state that the summary has already superseded.
+function renderMessages(target: HTMLElement, msgs: any[], offset: number = 0, withRewind: boolean = true): void {
   let pendingToolCalls: { id: string; name: string; arguments: Record<string, unknown> }[] = [];
   const toolCardByCallId = new Map<string, HTMLElement>();
 
@@ -1945,7 +1953,7 @@ function renderMessages(target: HTMLElement, msgs: any[], offset: number = 0): v
         }
         continue;
       }
-      appendUserMsg(m.content, target, offset + mi);
+      appendUserMsg(m.content, target, withRewind ? offset + mi : undefined);
     } else if (m.role === "assistant") {
       if (isSub) {
         continue;
@@ -1975,9 +1983,17 @@ function renderMessages(target: HTMLElement, msgs: any[], offset: number = 0): v
         if (inlineMain && inlineMain.trim()) {
           const proseDiv = document.createElement("div");
           proseDiv.className = "msg assistant assistant-inline-prose";
-          proseDiv.innerHTML = `<div class="msg-inner"><div class="md">${renderMarkdown(inlineMain)}</div></div>`;
+          proseDiv.innerHTML = `<div class="msg-inner"><div class="role-label"><span class="dot"></span> Assistant</div><div class="md">${renderMarkdown(inlineMain)}</div></div>`;
           target.appendChild(proseDiv);
           highlightCode(proseDiv);
+        } else if (!thinking) {
+          // The model issued tool calls with no prose lead-in and no
+          // thinking. Without this placeholder the chat reads "You →
+          // tool card", which looks like the user called the tool.
+          const placeholderDiv = document.createElement("div");
+          placeholderDiv.className = "msg assistant assistant-tool-only";
+          placeholderDiv.innerHTML = `<div class="msg-inner"><div class="role-label"><span class="dot"></span> Assistant</div></div>`;
+          target.appendChild(placeholderDiv);
         }
       } else {
         appendAssistantMsg(m.content, target, reasoning);
@@ -2045,7 +2061,7 @@ function renderMessages(target: HTMLElement, msgs: any[], offset: number = 0): v
         continue;
       }
 
-      const card = appendToolCard(toolName, args, "success", output, subagentTools, isPruned, target, offset + mi);
+      const card = appendToolCard(toolName, args, "success", output, subagentTools, isPruned, target, withRewind ? offset + mi : undefined);
       if (toolCallId) toolCardByCallId.set(toolCallId, card);
     }
   }
@@ -2082,7 +2098,11 @@ function appendCompactBoundary(
       const fullMsgs = data.messages || [];
       dropZone.innerHTML = "";
       const originals = fullMsgs.slice(start, end);
-      renderMessages(dropZone, originals);
+      // Folded messages are historical context only — no rewind buttons
+      // (rewinding into a compacted slice would resurrect stale state
+      // the summary has already superseded, and the local idx would
+      // collide with the main chat's data-idx scheme).
+      renderMessages(dropZone, originals, 0, false);
       dropZone.dataset.loaded = "1";
     } catch (e) {
       dropZone.textContent = `加载失败: ${(e as Error).message}`;

@@ -98,6 +98,19 @@ renderer.code = function (code: string, lang?: string): string {
   return `<pre><div class="code-header"><span class="lang-label">${language || "text"}</span><button class="copy-btn" title="Copy">Copy</button></div><code class="language-${language}">${escapeHtml(code)}</code></pre>`;
 };
 
+// Markdown images in assistant messages often reference local filesystem
+// paths (e.g. /tmp/vvg_star/starry_night.jpg from image-generation tools).
+// The browser can't load these directly, so proxy them through the
+// server's /attachments endpoint — same rule as attachmentUrl() in main.ts.
+renderer.image = function (href: string, title: string | null | undefined, text: string): string {
+  let src = href;
+  if (href && href.startsWith("/") && !href.startsWith("/attachments")) {
+    src = `/attachments?path=${encodeURIComponent(href)}`;
+  }
+  const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
+  return `<img src="${escapeHtml(src)}" alt="${escapeHtml(text)}"${titleAttr}>`;
+};
+
 export function renderMarkdown(text: string): string {
   if (!text) return "";
   try {

@@ -1348,6 +1348,12 @@ webview.browser-frame {
 .msg .role-label .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
 .msg.user .role-label .dot { background: var(--blue); }
 .msg.assistant .role-label .dot { background: var(--accent); }
+/* Tool-only assistant turns (no prose, just tool calls) get a tighter
+   bottom margin so the label doesn't leave a big gap before the tool
+   card. Keeps the chat compact while still showing "Assistant" so the
+   flow reads naturally: You → Assistant → tool card. */
+.msg.assistant.assistant-tool-only .msg-inner { padding: 2px 0; }
+.msg.assistant.assistant-tool-only .role-label { margin-bottom: 0; }
 .msg.compacting .role-label .dot { background: var(--muted); animation: pulse-dot 1.5s infinite; }
 /* Rewind button (Claude Code-style message rewind): only on user messages,
    only visible on hover. Clicking deletes that user message + everything
@@ -1499,7 +1505,7 @@ webview.browser-frame {
 .compact-dropped .msg + .tool-card,
 .compact-dropped .tool-card + .msg,
 .compact-dropped .tool-card + .tool-card { margin-top: 6px; }
-.compact-dropped .tool-card { font-size: 11.5px; }
+.compact-dropped .tool-card { font-size: 11.5px; max-width: var(--content-max-w); margin-left: auto; margin-right: auto; }
 .compact-dropped .tool-card-header { padding: 6px 10px; }
 .compact-dropped .tool-card-body { padding: 6px 10px 8px; }
 .compact-dropped .thinking-card { font-size: 11.5px; }
@@ -3628,6 +3634,17 @@ textarea.settings-input, .settings-agent-instructions { width: 100%; box-sizing:
 .user-image img {
   max-width: 320px;
   max-height: 240px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  object-fit: contain;
+}
+
+/* Inline images rendered by markdown (assistant turns / tool cards).
+   Without an explicit cap the browser renders them at native pixel size,
+   which overflows the message bubble on large screenshots. */
+.md img {
+  max-width: 100%;
+  max-height: 360px;
   border-radius: 8px;
   border: 1px solid var(--line);
   object-fit: contain;

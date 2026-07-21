@@ -123,7 +123,6 @@ export async function openSettingsModal() {
       const agentSkills: string[] = def.skills || [];
       const agentHooks: string[] = def.hooks || [];
       const background = !!def.background;
-      const memory = def.memory || "inherited";
       // Build dropdown + removable selected-tag boxes for tools/skills/hooks.
       const buildSelect = (cls: string, kind: string, all: string[], selected: string[]) => {
         const options = all.filter((x) => !selected.includes(x)).map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join("");
@@ -152,28 +151,33 @@ export async function openSettingsModal() {
           </div>
           <div class="settings-section">
             <div class="settings-section-title">Tools <span style="color:var(--muted);font-weight:400;font-size:11px">(${agentTools.length} selected)</span></div>
-            <div class="settings-desc">Whitelist of tools the sub-agent can call. Empty = inherit all tools except spawn_agent.</div>
+            <div class="settings-desc">Whitelist of tools the sub-agent can call. Empty = no tools (pure LLM). spawn_agent / get_agent_result / cancel_agent are always blocked.</div>
+            <div class="settings-row" style="margin:6px 0;gap:8px">
+              <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="tools" data-agent-name="${esc(name)}" style="padding:3px 10px">Select all</button>
+              <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="tools" data-agent-name="${esc(name)}" style="padding:3px 10px">Clear</button>
+            </div>
             ${toolSelect}
             ${toolBox}
           </div>
           <div class="settings-section">
             <div class="settings-section-title">Skills <span style="color:var(--muted);font-weight:400;font-size:11px">(${agentSkills.length} selected)</span></div>
             <div class="settings-desc">Skills available to the sub-agent.</div>
+            <div class="settings-row" style="margin:6px 0;gap:8px">
+              <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="skills" data-agent-name="${esc(name)}" style="padding:3px 10px">Select all</button>
+              <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="skills" data-agent-name="${esc(name)}" style="padding:3px 10px">Clear</button>
+            </div>
             ${skillSelect}
             ${skillBox}
           </div>
           <div class="settings-section">
             <div class="settings-section-title">Hooks <span style="color:var(--muted);font-weight:400;font-size:11px">(${agentHooks.length} selected)</span></div>
             <div class="settings-desc">Hook types this sub-agent triggers. Each selected type runs the matching <code>hooks.&lt;type&gt;</code> commands from config on the sub-agent's own turns/tools. Empty = inherit all hook types from main.</div>
+            <div class="settings-row" style="margin:6px 0;gap:8px">
+              <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="hooks" data-agent-name="${esc(name)}" style="padding:3px 10px">Select all</button>
+              <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="hooks" data-agent-name="${esc(name)}" style="padding:3px 10px">Clear</button>
+            </div>
             ${hookSelect}
             ${hookBox}
-          </div>
-          <div class="settings-section">
-            <div class="settings-section-title">Memory</div>
-            <select class="settings-select" data-agent-memory="${esc(name)}">
-              <option value="inherited" ${memory === "inherited" || memory === "" ? "selected" : ""}>Inherit from main</option>
-              <option value="none" ${memory === "none" ? "selected" : ""}>None (stateless)</option>
-            </select>
           </div>
         </div>`;
     }).join("");
@@ -211,6 +215,19 @@ export async function openSettingsModal() {
         select.innerHTML = `<option value="">Add ${kind}...</option>` + remaining.map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join("");
         updateCount(kind);
       };
+      const selectAll = (kind: string) => {
+        const all = kind === "tools" ? allToolNames : kind === "skills" ? allSkillNames : hookTypes;
+        for (const x of all) addTag(kind, x);
+      };
+      const clearAll = (kind: string) => {
+        const box = card.querySelector(`[data-agent-box-${kind}="${name}"]`) as HTMLElement | null;
+        const select = card.querySelector(`[data-agent-select-${kind}="${name}"]`) as HTMLSelectElement | null;
+        if (!box || !select) return;
+        box.innerHTML = "";
+        const all = kind === "tools" ? allToolNames : kind === "skills" ? allSkillNames : hookTypes;
+        select.innerHTML = `<option value="">Add ${kind}...</option>` + all.map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join("");
+        updateCount(kind);
+      };
       card.addEventListener("change", (e) => {
         const sel = e.target as HTMLSelectElement;
         if (!sel.classList.contains("settings-select")) return;
@@ -219,10 +236,24 @@ export async function openSettingsModal() {
       });
       card.addEventListener("click", (e) => {
         const btn = (e.target as HTMLElement).closest(".agent-selected-remove") as HTMLElement | null;
-        if (!btn) return;
-        const kind = btn.dataset.removeKind!;
-        const value = btn.dataset.remove!;
-        removeTag(kind, value);
+        if (btn) {
+          const kind = btn.dataset.removeKind!;
+          const value = btn.dataset.remove!;
+          removeTag(kind, value);
+          return;
+        }
+        const selBtn = (e.target as HTMLElement).closest(".agent-select-all") as HTMLElement | null;
+        if (selBtn) {
+          const kind = selBtn.dataset.agentSelectAll!;
+          selectAll(kind);
+          return;
+        }
+        const clearBtn = (e.target as HTMLElement).closest(".agent-clear-all") as HTMLElement | null;
+        if (clearBtn) {
+          const kind = clearBtn.dataset.agentClearAll!;
+          clearAll(kind);
+          return;
+        }
       });
     }
 
@@ -488,25 +519,30 @@ export async function openSettingsModal() {
           </div>
           <div class="settings-section">
             <div class="settings-section-title">Tools <span style="color:var(--muted);font-weight:400;font-size:11px">(0 selected)</span></div>
+            <div class="settings-row" style="margin:6px 0;gap:8px">
+              <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="tools" data-agent-name="${esc(n)}" style="padding:3px 10px">Select all</button>
+              <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="tools" data-agent-name="${esc(n)}" style="padding:3px 10px">Clear</button>
+            </div>
             <select class="settings-select agent-tools-select" data-agent-select-tools="${esc(n)}"><option value="">Add tools...</option>${toolOptions}</select>
             <div class="agent-selected-box" data-agent-box-tools="${esc(n)}"></div>
           </div>
           <div class="settings-section">
             <div class="settings-section-title">Skills <span style="color:var(--muted);font-weight:400;font-size:11px">(0 selected)</span></div>
+            <div class="settings-row" style="margin:6px 0;gap:8px">
+              <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="skills" data-agent-name="${esc(n)}" style="padding:3px 10px">Select all</button>
+              <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="skills" data-agent-name="${esc(n)}" style="padding:3px 10px">Clear</button>
+            </div>
             <select class="settings-select agent-skills-select" data-agent-select-skills="${esc(n)}"><option value="">Add skills...</option>${skillOptions}</select>
             <div class="agent-selected-box" data-agent-box-skills="${esc(n)}"></div>
           </div>
           <div class="settings-section">
             <div class="settings-section-title">Hooks <span style="color:var(--muted);font-weight:400;font-size:11px">(0 selected)</span></div>
+            <div class="settings-row" style="margin:6px 0;gap:8px">
+              <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="hooks" data-agent-name="${esc(n)}" style="padding:3px 10px">Select all</button>
+              <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="hooks" data-agent-name="${esc(n)}" style="padding:3px 10px">Clear</button>
+            </div>
             <select class="settings-select agent-hooks-select" data-agent-select-hooks="${esc(n)}"><option value="">Add hooks...</option>${hookOptions}</select>
-            <div class="agent-selected-box" data-agent-box-hooks="${esc(n)}"></div>
-          </div>
-          <div class="settings-section">
-            <div class="settings-section-title">Memory</div>
-            <select class="settings-select" data-agent-memory="${esc(n)}">
-              <option value="inherited" selected>Inherit from main</option>
-              <option value="none">None (stateless)</option>
-            </select>
+             <div class="agent-selected-box" data-agent-box-hooks="${esc(n)}"></div>
           </div>`;
         // Wire the new card's remove button and selections
         const removeBtn = card.querySelector("[data-agent-remove]") as HTMLButtonElement;
@@ -713,14 +749,12 @@ export async function openSettingsModal() {
           const skills = Array.from(card.querySelectorAll<HTMLElement>(`.agent-selected-tag[data-kind="skills"]`)).map(c => c.dataset.value!);
           const hooks = Array.from(card.querySelectorAll<HTMLElement>(`.agent-selected-tag[data-kind="hooks"]`)).map(c => c.dataset.value!);
           const bg = !!(card.querySelector(`input[data-agent-bg="${origName}"]`) as HTMLInputElement)?.checked;
-          const memVal = (card.querySelector(`[data-agent-memory="${origName}"]`) as HTMLSelectElement)?.value || "inherited";
           newAgents[newName] = {
             instructions: instr,
             tools,
             skills,
             hooks,
             background: bg,
-            ...(memVal !== "inherited" ? { memory: memVal } : {}),
           };
         });
         updated.agents = newAgents;

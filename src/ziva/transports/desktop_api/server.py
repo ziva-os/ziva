@@ -164,7 +164,7 @@ class SessionStore:
 
 
 def _chat_message_from_record(msg_data: dict) -> "ChatMessage":
-    return ChatMessage(
+    msg = ChatMessage(
         role=msg_data.get("role", "user"),
         content=msg_data.get("content", ""),
         tool_call_id=msg_data.get("tool_call_id"),
@@ -176,6 +176,18 @@ def _chat_message_from_record(msg_data: dict) -> "ChatMessage":
         _compaction_summary=msg_data.get("_compaction_summary", False),
         _hidden=msg_data.get("_hidden", False),
     )
+    # Restore reasoning fields so compact/reload preserves the thinking
+    # card. Without this, any read-modify-write cycle (compact, prune,
+    # rewind) silently erases reasoning_content from disk because the
+    # loaded ChatMessage has None, and persist_message_set only writes
+    # the field when it's truthy.
+    rc = msg_data.get("reasoning_content")
+    if rc:
+        msg.reasoning_content = rc
+    rs = msg_data.get("reasoning_signature")
+    if rs:
+        msg.reasoning_signature = rs
+    return msg
 
 
 def load_session_messages(sid: str, pid: str) -> List["ChatMessage"]:
@@ -184,6 +196,35 @@ def load_session_messages(sid: str, pid: str) -> List["ChatMessage"]:
     for msg_data in FileStorage.get_messages(pid, sid):
         messages.append(_chat_message_from_record(msg_data))
     return messages
+
+
+def _first_user_text(chat_messages: List["ChatMessage"]) -> str:
+    """Extract a sidebar title from the first user message.
+
+    Returns the truncated (60-char) text of the first user-role message,
+    or "[图片]" if the user only sent image parts, or "" if no user message
+    exists at all (defensive — create_turn always sends one, but the helper
+    shouldn't crash on weird payloads).
+    """
+    for m in chat_messages:
+        if m.role != "user":
+            continue
+        content = m.content
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = " ".join(
+                (p or {}).get("text", "")
+                for p in content
+                if isinstance(p, dict) and p.get("type") == "text"
+            ).strip()
+        else:
+            text = ""
+        text = " ".join(text.split())  # collapse whitespace/newlines
+        if text:
+            return text[:60].rstrip() + ("…" if len(text) > 60 else "")
+        return "[图片]"  # user message exists but has no text part
+    return ""
 
 
 def persist_message_set(
@@ -759,6 +800,23 @@ class DesktopAPIServer:
         payload = await request.json()
         messages = payload.get("messages") or []
         chat_messages = [ChatMessage(role=str(m.get("role", "user")), content=m.get("content", "")) for m in messages]
+
+        # Stamp a human-readable session name on the first user turn so the
+        # sidebar can show a meaningful title without per-session enrichment.
+        # Only written when the session has no name yet — later turns don't
+        # overwrite a user-renamed title, matching the IM bridge's
+        # ``_ensure_session`` behaviour. Sessions created via the desktop
+        # composer start with no name; the first turn's text becomes the
+        # title. Pure-image turns (no text parts) fall back to "[图片]".
+        try:
+            existing = FileStorage.get_session(self.runtime.project_id, sid) or {}
+        except Exception:
+            existing = {}
+        if not existing.get("name"):
+            fallback = _first_user_text(chat_messages)
+            if fallback:
+                FileStorage.update_session(self.runtime.project_id, sid, {"name": fallback})
+
         turn_id = str(uuid.uuid4())
         turn = {"id": turn_id, "status": "running", "events": [], "result": None}
         session = self.store._ensure_loaded(sid)
@@ -1537,16 +1595,61 @@ class DesktopAPIServer:
             attachments_idx = parts.index("attachments")
             sid = parts[attachments_idx + 1]
         except (ValueError, IndexError):
-            return web.json_response({"error": "invalid_attachment_path"}, status=400)
+            sid = None
 
-        pid = self._pid_for(sid)
-        root = (FileStorage._project_dir(pid) / "attachments").resolve()
+        # Two path classes are allowed:
+        #  1. Standard attachment paths (~/.ziva/sessions/<pid>/attachments/<sid>/...)
+        #     — validated against the session's attachments root.
+        #  2. Tool-generated images outside the attachments tree (e.g.
+        #     /tmp/vvg_star/starry_night.jpg) — allowed only when the
+        #     extension is in the image whitelist, so we don't turn this
+        #     into an arbitrary file-read primitive for /etc/passwd etc.
+        if sid is not None:
+            # IMPORTANT: validate against the pid encoded in the URL itself,
+            # not _pid_for(sid). The project-hash algorithm changed once
+            # (pure hex → <basename>-<hex>), and even without that, users
+            # move workspaces or rename them — every change invalidates the
+            # absolute paths baked into old messages. _pid_for(sid) would
+            # return the *current* pid, so an old-pid URL would 403 even
+            # though the same file still exists under the new pid. Instead,
+            # accept the URL's own pid and, if its directory is gone, fall
+            # back to scanning sibling sessions/<*>/attachments/<sid>/ for
+            # a file with the same name.
+            from ziva.storage.file_storage import _BASE_DIR
+            sessions_root = _BASE_DIR / "sessions"  # ~/.ziva/sessions
+            sessions_root = sessions_root.resolve()
+            try:
+                tail = candidate.relative_to(sessions_root)  # <pid>/attachments/<sid>/file
+            except ValueError:
+                return web.json_response({"error": "outside_sessions_root"}, status=403)
+            tail_parts = tail.parts
+            if len(tail_parts) < 4 or tail_parts[1] != "attachments":
+                return web.json_response({"error": "outside_attachments_dir"}, status=403)
 
-        # Reject anything outside the session's attachments root (no path traversal).
-        try:
-            candidate.relative_to(root)
-        except ValueError:
-            return web.json_response({"error": "outside_attachments_dir"}, status=403)
+            # Filename must look like an image — anything else is rejected
+            # even when the path layout matches, to keep this from becoming
+            # a generic file reader.
+            filename = tail_parts[-1]
+            if Path(filename).suffix.lower() not in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+                return web.json_response({"error": "unsupported_file_type"}, status=403)
+
+            if not candidate.is_file():
+                # The original pid directory no longer exists (workspace moved
+                # or hash algorithm changed). Look for the same file under
+                # every known pid so historical messages keep rendering.
+                for alt_root in sessions_root.iterdir():
+                    if not alt_root.is_dir():
+                        continue
+                    alt_path = alt_root / "attachments" / sid / filename
+                    if alt_path.is_file():
+                        candidate = alt_path.resolve()
+                        break
+                else:
+                    return web.json_response({"error": "not_found"}, status=404)
+        else:
+            if candidate.suffix.lower() not in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+                return web.json_response({"error": "outside_attachments_dir"}, status=403)
+
         if not candidate.is_file():
             return web.json_response({"error": "not_found"}, status=404)
 

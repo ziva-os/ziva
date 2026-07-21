@@ -4,6 +4,7 @@ import json
 import os
 from typing import Any, AsyncIterator, Iterable, Protocol
 
+from ziva.adapters._think_parser import ThinkTagParser
 from ziva.adapters.retry import call_with_retry
 from ziva.shared_types import ChatMessage, ChatResult, StreamDelta, ToolCallItem
 
@@ -46,75 +47,65 @@ def _build_api_messages(
     return api_messages
 
 
-class _ThinkTagParser:
-    """Streaming parser that splits provider text into main/reasoning.
+def _usage_from_openai(usage_obj: Any) -> dict | None:
+    """Convert an OpenAI SDK Usage object into a flat dict.
 
-    Some OpenAI-compatible providers (e.g. MiniMax) emit the model's
-    chain-of-thought wrapped in ``<think>...</think>`` or
-    ``<mm:think>...</mm:think>`` tags inside the normal ``content`` delta
-    instead of using the native ``reasoning_content`` field. This parser
-    extracts that text and routes it to ``reasoning_content`` so the
-    frontend renders it in the thinking card, leaving only the final answer
-    in ``content``.
+    Unlike Anthropic, OpenAI's prompt prefix cache is fully automatic
+    (no opt-in flag needed). The server detects stable prefixes and
+    short-circuits re-computation; the savings surface as a cache-hit
+    counter inside `usage`.
+
+    Field locations differ across providers:
+      - OpenAI official:   usage.prompt_tokens_details.cached_tokens
+      - DeepSeek:          usage.prompt_cache_hit_tokens (+ prompt_cache_miss_tokens)
+      - Kimi (OA格式):     usage.prompt_cache_hit_tokens
+      - 通义/百川:          usage.prompt_tokens_details.cached_tokens (mostly)
+
+    IMPORTANT semantic difference from the Anthropic adapter:
+    OpenAI's `prompt_tokens` ALREADY INCLUDES cached tokens (cached tokens
+    are a subset of prompt_tokens, not additive). So we surface
+    prompt_tokens as-is and only add `cache_read_input_tokens` as a
+    breakdown for display — we do NOT add them together.
+
+    We normalize the cache-hit field name to `cache_read_input_tokens`
+    so the runtime / UI can treat Anthropic and OpenAI identically.
     """
+    if not usage_obj:
+        return None
+    prompt_tokens = getattr(usage_obj, "prompt_tokens", 0) or 0
+    completion_tokens = getattr(usage_obj, "completion_tokens", 0) or 0
+    if not (prompt_tokens or completion_tokens):
+        return None
+    result: dict[str, Any] = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+    }
 
-    def __init__(self) -> None:
-        self._in_think = False
-        self._buffer = ""
-        self._end_tag = "</think>"
+    # Cache hit — try the OpenAI official field first, then DeepSeek/Kimi.
+    cached = 0
+    ptd = getattr(usage_obj, "prompt_tokens_details", None)
+    if ptd is not None:
+        cached = getattr(ptd, "cached_tokens", 0) or 0
+    if not cached:
+        cached = getattr(usage_obj, "prompt_cache_hit_tokens", 0) or 0
+    if cached:
+        result["cache_read_input_tokens"] = cached
 
-    def _detect_tag(self, text: str) -> tuple[str, str, int] | None:
-        """Find the earliest start tag and return (start_tag, end_tag, index)."""
-        candidates = [
-            ("<mm:think>", "</mm:think>"),
-            ("<think>", "</think>"),
-        ]
-        best: tuple[str, str, int] | None = None
-        for start_tag, end_tag in candidates:
-            idx = text.find(start_tag)
-            if idx != -1 and (best is None or idx < best[2]):
-                best = (start_tag, end_tag, idx)
-        return best
+    # Reasoning tokens (o1/o3 thinking models) — live inside
+    # completion_tokens_details, surfacing them lets the UI itemize
+    # "X of the Y completion tokens were reasoning".
+    ctd = getattr(usage_obj, "completion_tokens_details", None)
+    if ctd is not None:
+        rt = getattr(ctd, "reasoning_tokens", 0) or 0
+        if rt:
+            result["reasoning_tokens"] = rt
+    return result
 
-    def feed(self, text: str) -> tuple[str, str]:
-        """Return (reasoning_content, main_content) for the incoming chunk."""
-        text = self._buffer + text
-        self._buffer = ""
-        if not text:
-            return "", ""
 
-        reasoning_parts: list[str] = []
-        main_parts: list[str] = []
-
-        while text:
-            if self._in_think:
-                end = text.find(self._end_tag)
-                if end == -1:
-                    reasoning_parts.append(text)
-                    return "".join(reasoning_parts), ""
-                reasoning_parts.append(text[:end])
-                text = text[end + len(self._end_tag):]
-                self._in_think = False
-            else:
-                detected = self._detect_tag(text)
-                if detected is None:
-                    main_parts.append(text)
-                    return "".join(reasoning_parts), "".join(main_parts)
-                start_tag, end_tag, start = detected
-                self._end_tag = end_tag
-                main_parts.append(text[:start])
-                text = text[start + len(start_tag):]
-                self._in_think = True
-
-        return "".join(reasoning_parts), "".join(main_parts)
-
-    def flush(self) -> tuple[str, str]:
-        """Return any remaining buffered text as main content."""
-        text = self._buffer
-        self._buffer = ""
-        if self._in_think:
-            return text, ""
-        return "", text
+class _ThinkTagParser(ThinkTagParser):
+    """Backwards-compat alias; the implementation now lives in
+    :mod:`ziva.adapters._think_parser` so the Anthropic adapter can share it."""
+    pass
 
 
 class ModelAdapter(Protocol):
@@ -200,15 +191,7 @@ class OpenAIChatAdapter:
         choice = resp.choices[0]
         content = choice.message.content or ""
         reasoning_content = getattr(choice.message, "reasoning_content", None) or getattr(choice.message, "reasoning", None)
-        usage_dict = None
-        if resp.usage:
-            usage_dict = {
-                "prompt_tokens": resp.usage.prompt_tokens,
-                "completion_tokens": resp.usage.completion_tokens,
-            }
-            if hasattr(resp.usage, "completion_tokens_details") and resp.usage.completion_tokens_details:
-                if hasattr(resp.usage.completion_tokens_details, "reasoning_tokens"):
-                    usage_dict["reasoning_tokens"] = resp.usage.completion_tokens_details.reasoning_tokens
+        usage_dict = _usage_from_openai(getattr(resp, "usage", None))
 
         tool_calls: list[ToolCallItem] = []
         if choice.message.tool_calls:
@@ -280,19 +263,14 @@ class OpenAIChatAdapter:
             # OpenAI sends usage in a final chunk with empty choices
             if not chunk.choices:
                 if hasattr(chunk, "usage") and chunk.usage:
-                    u = {
-                        "prompt_tokens": chunk.usage.prompt_tokens,
-                        "completion_tokens": chunk.usage.completion_tokens,
-                    }
-                    if hasattr(chunk.usage, "completion_tokens_details") and chunk.usage.completion_tokens_details:
-                        if hasattr(chunk.usage.completion_tokens_details, "reasoning_tokens"):
-                            u["reasoning_tokens"] = chunk.usage.completion_tokens_details.reasoning_tokens
-                    yield StreamDelta(
-                        content="",
-                        finish_reason=None,
-                        tool_calls=[],
-                        usage=u,
-                    )
+                    u = _usage_from_openai(chunk.usage)
+                    if u:
+                        yield StreamDelta(
+                            content="",
+                            finish_reason=None,
+                            tool_calls=[],
+                            usage=u,
+                        )
                 continue
 
             choice = chunk.choices[0]
@@ -334,15 +312,7 @@ class OpenAIChatAdapter:
                         id=tc["id"], name=tc["name"], arguments=args,
                     ))
 
-            usage_dict = None
-            if hasattr(chunk, "usage") and chunk.usage:
-                usage_dict = {
-                    "prompt_tokens": chunk.usage.prompt_tokens,
-                    "completion_tokens": chunk.usage.completion_tokens,
-                }
-                if hasattr(chunk.usage, "completion_tokens_details") and chunk.usage.completion_tokens_details:
-                    if hasattr(chunk.usage.completion_tokens_details, "reasoning_tokens"):
-                        usage_dict["reasoning_tokens"] = chunk.usage.completion_tokens_details.reasoning_tokens
+            usage_dict = _usage_from_openai(getattr(chunk, "usage", None))
 
             yield StreamDelta(
                 content=content,

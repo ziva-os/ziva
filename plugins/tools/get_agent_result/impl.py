@@ -76,6 +76,12 @@ class GetAgentResultTool:
         error = agent.get("error")
         tools_used = agent.get("tools_used", 0)
 
+        # Strip <think> tags: the parent session only needs the child's
+        # final answer, not its chain-of-thought reasoning. Some providers
+        # embed thinking inside <think>...</think> in the content field.
+        from ziva.adapters._think_parser import strip_think_tags
+        result_text = strip_think_tags(result_text)
+
         if status == "running":
             text = f"Agent '{agent_id}' is still running.\nTask: {agent.get('task_desc', '')}"
         elif status == "failed":
