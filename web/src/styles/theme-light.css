@@ -5,7 +5,10 @@
   --surface-hover: #e0e0e0;
   --ink: #1a1a1a;
   --ink-secondary: #333333;
-  --muted: #888888;
+  --text: #1a1a1a;
+  --text-secondary: #333333;
+  --text-dim: #5f6368;
+  --muted: #6b6b6b;
   --line: #e5e5e5;
   --line-strong: #d0d0d0;
   --accent: #1a73e8;

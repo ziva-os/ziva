@@ -8,7 +8,7 @@ import * as api from "./api";
 import { SSEPool } from "./sse";
 
 import { FILE_MUTATING_TOOLS } from "./right-panel";
-import { renderMarkdown, addCopyButtons, highlightCode, extractThinking } from "./markdown";
+import { renderMarkdown, addCopyButtons, highlightCode, extractThinking, setAttachmentDataMap } from "./markdown";
 import { Store, store } from "./state";
 import type { AppState, PendingAttachment, RightPanelTab } from "./state";
 import { Terminal } from "@xterm/xterm";
@@ -1937,6 +1937,35 @@ function renderMessages(target: HTMLElement, msgs: any[], offset: number = 0, wi
   let pendingToolCalls: { id: string; name: string; arguments: Record<string, unknown> }[] = [];
   const toolCardByCallId = new Map<string, HTMLElement>();
 
+  // Pre-scan hidden messages to build a filename→dataURL map so that
+  // assistant markdown like ![alt](attachment://selfportrait.jpg) can be
+  // resolved to the actual image. The hidden messages carry the real image
+  // data (base64 data URL) and the original file path in their text part:
+  //   "[Image from /tmp/vvg_star/starry_night.jpg | call_id=...]"
+  const attachmentMap = new Map<string, string>();
+  for (const m of msgs) {
+    if (m._hidden && Array.isArray(m.content)) {
+      let filePath = "";
+      let dataUrl = "";
+      for (const part of m.content) {
+        if (part.type === "text" && typeof part.text === "string") {
+          const match = part.text.match(/\[Image from\s+(\S+)/);
+          if (match) filePath = match[1];
+        }
+        if (part.type === "image_url" && part.image_url?.url) {
+          dataUrl = part.image_url.url;
+        }
+      }
+      if (filePath && dataUrl) {
+        const filename = filePath.split("/").pop() || "";
+        if (filename) attachmentMap.set(filename, dataUrl);
+      }
+    }
+  }
+  // Make the map available to the markdown renderer so it can resolve
+  // attachment:// URLs embedded in assistant messages (IM-bridge images).
+  setAttachmentDataMap(attachmentMap.size > 0 ? attachmentMap : null);
+
   for (let mi = 0; mi < msgs.length; mi++) {
     const m = msgs[mi];
     const isSub = (m as any)._subagent === true;
@@ -2065,6 +2094,11 @@ function renderMessages(target: HTMLElement, msgs: any[], offset: number = 0, wi
       if (toolCallId) toolCardByCallId.set(toolCallId, card);
     }
   }
+  // Reset the attachment map after the render pass so a later
+  // renderMarkdown call outside this pass (e.g. an agent-card detail
+  // preview) can't pick up this session's filename→dataURL map and
+  // resolve an unrelated `attachment://` ref to the wrong image.
+  setAttachmentDataMap(null);
 }
 
 // Render a collapse bar for a compaction layer. `start` and `end` define
@@ -2540,6 +2574,15 @@ function appendToolCard(
       .join(", ");
     body += `<div class="section-label">used tools</div>`;
     body += `<div class="section-content subagent-tools"><span class="subagent-tool-summary">${summary}</span></div>`;
+  }
+  // send_media: render the delivered image inline from the tool's `path`
+  // arg. Driven by args (not the tool result) so it shows on BOTH the
+  // streaming tool_end and a history reload — args persist in the
+  // assistant tool_call, and /attachments proxies local paths.
+  if (toolName === "send_media" && typeof args.path === "string" && args.path) {
+    const src = attachmentUrl(String(args.path));
+    body += `<div class="section-label">Media</div>`;
+    body += `<div class="section-content tool-output-image"><img src="${esc(src)}" alt="${esc(String(args.path))}" loading="lazy" /></div>`;
   }
 
   card.innerHTML = `

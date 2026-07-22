@@ -102,9 +102,27 @@ renderer.code = function (code: string, lang?: string): string {
 // paths (e.g. /tmp/vvg_star/starry_night.jpg from image-generation tools).
 // The browser can't load these directly, so proxy them through the
 // server's /attachments endpoint — same rule as attachmentUrl() in main.ts.
+//
+// IM-bridge sessions embed images as `attachment://filename` — resolved
+// via `_attachmentDataMap` (set by renderMessages before calling
+// renderMarkdown) which maps filename → data:URL from hidden messages.
+let _attachmentDataMap: Map<string, string> | null = null;
+
+export function setAttachmentDataMap(map: Map<string, string> | null): void {
+  _attachmentDataMap = map;
+}
+
 renderer.image = function (href: string, title: string | null | undefined, text: string): string {
   let src = href;
-  if (href && href.startsWith("/") && !href.startsWith("/attachments")) {
+  if (href && href.startsWith("attachment://")) {
+    const filename = href.slice("attachment://".length);
+    const dataUrl = _attachmentDataMap?.get(filename);
+    if (dataUrl) {
+      src = dataUrl;
+    }
+    // If no dataUrl found, fall through to the broken-image path so the
+    // user at least sees the alt text rather than a silent empty box.
+  } else if (href && href.startsWith("/") && !href.startsWith("/attachments")) {
     src = `/attachments?path=${encodeURIComponent(href)}`;
   }
   const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";

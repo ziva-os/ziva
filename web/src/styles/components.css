@@ -1505,7 +1505,7 @@ webview.browser-frame {
 .compact-dropped .msg + .tool-card,
 .compact-dropped .tool-card + .msg,
 .compact-dropped .tool-card + .tool-card { margin-top: 6px; }
-.compact-dropped .tool-card { font-size: 11.5px; max-width: var(--content-max-w); margin-left: auto; margin-right: auto; }
+.compact-dropped .tool-card { font-size: 11.5px; margin: 2px 12px; }
 .compact-dropped .tool-card-header { padding: 6px 10px; }
 .compact-dropped .tool-card-body { padding: 6px 10px 8px; }
 .compact-dropped .thinking-card { font-size: 11.5px; }
@@ -1605,11 +1605,11 @@ webview.browser-frame {
 .tool-card-body {
   padding: 8px 14px; font-family: var(--mono); font-size: 12px;
   max-height: 600px; overflow-y: auto; white-space: pre-wrap;
-  background: var(--surface); display: none; border-top: 1px solid var(--line);
+  background: var(--surface); color: var(--ink); display: none; border-top: 1px solid var(--line);
 }
 .tool-card.open .tool-card-body { display: block; }
 .tool-card-body .section-label { color: var(--muted); font-weight: 600; margin-bottom: 4px; font-size: 10px; text-transform: uppercase; }
-.tool-card-body .section-content { margin-bottom: 8px; padding: 6px 8px; background: var(--surface-alt); border-radius: 4px; max-height: 400px; overflow-y: auto; }
+.tool-card-body .section-content { margin-bottom: 8px; padding: 6px 8px; background: var(--surface-alt); color: var(--ink); border-radius: 4px; max-height: 400px; overflow-y: auto; }
 
 /* Sub-agent Card */
 .subagent-card { opacity: 0.85; border-left: 3px solid var(--accent); }

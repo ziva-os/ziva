@@ -76,8 +76,9 @@ class IMBridge:
         # to the question via the pending_questions map in _handle.
         try:
             self.runtime.on_ask_user(self._on_ask_user_question)
+            self.runtime.on_send_media(self._on_send_media)
         except Exception:
-            logger.exception("im_bridge: failed to register on_ask_user callback")
+            logger.exception("im_bridge: failed to register runtime callbacks")
         for name, cfg in self.config.channels.items():
             if cfg.enabled and name in ADAPTERS:
                 try:
@@ -466,6 +467,45 @@ class IMBridge:
             await adapter.send_message(OutgoingMessage(chat_id=chat_id, text=text))
         except Exception:
             logger.exception("im_bridge: failed to push ask_user question to %s", channel)
+
+    async def _on_send_media(self, session_id: str, path: str, data_url: str | None, caption: str) -> bool:
+        """Deliver a ``send_media`` payload to the originating IM chat.
+
+        Registered with ``runtime.on_send_media``. We reuse the routing the
+        bridge recorded when the IM message was first routed to a session
+        (``_sid_route``) and push the media back through the adapter as an
+        image attachment. The adapters already decode base64 ``data:`` URLs
+        (see read_file / MCP), so an image ``data_url`` is sent directly;
+        a non-image file (``data_url is None``) currently falls back to a
+        text message naming the path. Returns True iff a channel took the
+        delivery, so the tool can report "sent" vs "no IM channel".
+        """
+        route = self._sid_route.get(session_id) or {}
+        chat_id = route.get("chat_id", "")
+        channel = route.get("channel", "")
+        if not chat_id or not channel:
+            # Desktop-driven turn (no IM route) — nothing to push to.
+            return False
+        adapter = self._adapters.get(channel)
+        if not adapter:
+            logger.warning("im_bridge: send_media channel %s not connected", channel)
+            return False
+        if not data_url:
+            # Non-image file: adapters only ship image data URLs today, so
+            # at least surface the caption/path as text.
+            try:
+                await adapter.send_message(OutgoingMessage(chat_id=chat_id, text=caption or path))
+            except Exception:
+                logger.exception("im_bridge: failed to send send_media caption to %s", channel)
+            return True
+        try:
+            await adapter.send_message(
+                OutgoingMessage(chat_id=chat_id, text=caption, images=[data_url])
+            )
+        except Exception:
+            logger.exception("im_bridge: failed to deliver send_media to %s", channel)
+            return False
+        return True
 
     @staticmethod
     def _format_ask_user_prompt(question: str, options: list, multi_select: bool) -> str:

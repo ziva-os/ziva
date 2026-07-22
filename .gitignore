@@ -56,3 +56,13 @@ weibo_snapshot.txt
 /scratch/
 .gstack/
 .build-venv/
+
+# Generated demo app/output dirs from image & web tools (not source)
+/generated/
+/ghibli_images/
+/goal-tracker/
+/neon-strike/
+/solar-system/
+
+# Generated test output
+/gen/

@@ -405,6 +405,7 @@ class Runtime:
     _background_agents: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     _project_id: str | None = None
     _ask_user_callbacks: list = field(default_factory=list)
+    _send_media_callbacks: list = field(default_factory=list)
     _agent_concurrency: Optional[asyncio.Semaphore] = field(default=None)
     _agent_max_history: int = 50
     # Injectable storage (SDK): defaults to the filesystem-backed FileStorage
@@ -1593,6 +1594,19 @@ class Runtime:
         Used by the REPL to handle ask_user inline.
         """
         self._ask_user_callbacks.append(callback)
+
+    def on_send_media(self, callback) -> None:
+        """Register a callback for ``send_media`` tool deliveries.
+
+        The callback receives ``(session_id, path, data_url, caption)``
+        and should return truthy if it actually delivered the media (so the
+        tool can report "sent" vs "no IM channel"). ``data_url`` is a base64
+        ``data:`` URL for images, or ``None`` for non-image files (the bridge
+        may still send the path as a document). Used by the IM bridge to push
+        generated images to the user's chat instead of relying on the model
+        embedding resolvable image references in its reply text.
+        """
+        self._send_media_callbacks.append(callback)
 
     async def await_user_answer(self, session_id: str, call_id: str = "") -> Dict[str, Any]:
         """Block the calling tool until the user replies via the UI.
