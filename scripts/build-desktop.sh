@@ -63,12 +63,21 @@ PYI="$VENV/bin/pyinstaller"
 
 # 清理旧的 PyInstaller / electron-builder 产物，避免旧插件或旧二进制混入新包
 #（electron-builder 会自动覆盖同名文件，但 dmg/zip 不会，容易让人混淆）。
-echo "=== 清理旧产物 ==="
+# 版本号取自 electron/package.json——electron-builder 产物名是
+# Ziva-${version}-arm64.*，所以清理和输出都用它，避免硬编码导致版本号
+# 变了还输出老路径。
+VERSION="$(node -p "require('$ELECTRON_DIR/package.json').version" 2>/dev/null || true)"
+if [ -z "$VERSION" ]; then
+  echo "错误: 无法从 electron/package.json 读取 version"
+  exit 1
+fi
+echo "=== 版本: $VERSION ==="
+echo "=== 清理旧产物 (所有 Ziva-*-arm64.*) ==="
 rm -rf "$ELECTRON_DIR/dist/mac-arm64" \
-       "$ELECTRON_DIR/dist/Ziva-1.0.0-arm64.dmg" \
-       "$ELECTRON_DIR/dist/Ziva-1.0.0-arm64-mac.zip" \
-       "$ELECTRON_DIR/dist/Ziva-1.0.0-arm64.dmg.blockmap" \
-       "$ELECTRON_DIR/dist/Ziva-1.0.0-arm64-mac.zip.blockmap" \
+       "$ELECTRON_DIR/dist/"Ziva-*-arm64.dmg \
+       "$ELECTRON_DIR/dist/"Ziva-*-arm64.dmg.blockmap \
+       "$ELECTRON_DIR/dist/"Ziva-*-arm64-mac.zip \
+       "$ELECTRON_DIR/dist/"Ziva-*-arm64-mac.zip.blockmap \
        "$ELECTRON_DIR/dist/builder-effective-config.yaml" \
        "$ELECTRON_DIR/dist/builder-debug.yml" 2>/dev/null || true
 
@@ -92,11 +101,21 @@ echo ""
 echo "=== 4/4 electron-builder 打 dmg + zip ==="
 npx electron-builder
 
+# 校验产物确实按当前版本生成——版本号改了但没同步、或 electron-builder
+# 用了别的命名时，这里会暴露实际 dist 内容，避免输出不存在的路径。
+DMG="$ELECTRON_DIR/dist/Ziva-${VERSION}-arm64.dmg"
+ZIP="$ELECTRON_DIR/dist/Ziva-${VERSION}-arm64-mac.zip"
+APP="$ELECTRON_DIR/dist/mac-arm64/Ziva.app"
+if [ ! -f "$DMG" ] || [ ! -f "$ZIP" ] || [ ! -d "$APP" ]; then
+  echo "⚠️  未找到预期产物 Ziva-${VERSION}-arm64.*，dist 实际内容："
+  ls -1 "$ELECTRON_DIR/dist" 2>/dev/null | grep -iE 'ziva|\.dmg$|\.zip$|^[0-9]' || true
+fi
+
 echo ""
-echo "=== 完成 ✅ ==="
-echo "dmg:   $ELECTRON_DIR/dist/Ziva-1.0.0-arm64.dmg"
-echo "zip:   $ELECTRON_DIR/dist/Ziva-1.0.0-arm64-mac.zip"
-echo "app:   $ELECTRON_DIR/dist/mac-arm64/Ziva.app"
+echo "=== 完成 ✅ (v$VERSION) ==="
+echo "dmg:   $DMG"
+echo "zip:   $ZIP"
+echo "app:   $APP"
 echo ""
 echo "未签名 — 首次打开: 右键 Ziva.app → 打开"
 echo "     或: xattr -dr com.apple.quarantine /Applications/Ziva.app"
