@@ -29,6 +29,32 @@
 
 ---
 
+## 设计取向：CLI-first 与借鉴取舍
+
+ziva 是 **LLM-agent 原生 OS**，不是手机/GUI OS。两条取向：
+
+**CLI-first**：app 的程序化接口**默认走 CLI**（agent 用 shell 工具调，不合成工具）；**MCP 为可选**，留给 ①需要 typed 工具 / 富输出直回 agent 的复杂 app、②不可信 / 需沙箱的 app、③外部 MCP 生态。决策轴：简单 / 本地 / 自带 UI（富内容走 UI）→ CLI；复杂 / typed / 不可信 → MCP。
+
+**借鉴 Unix/Android 的"原则"，用 LLM-native 的"机制"实现，拒绝 GUI-OS 的"机器"。**
+
+| 借鉴对象 | 原则 | ziva 形态 | 取舍 |
+|---|---|---|---|
+| **Unix 管道 / 统一 I/O** | `a \| b \| c` 自由组合 | app CLI 吃 stdin / 吐 stdout；agent 的 shell 支持 `\|` → **几乎免费拿到 Unix 级组合** | ✅ 采纳（CLI-first 最大优势） |
+| **per-app 权限 + 沙箱** | 每 app 身份 + 声明权限 | **两档**：本地可信 app 以 ziva 身份跑（轻）；分享/不可信 app 必须沙箱。⚠️ **CLI 比 MCP 难沙箱**（subprocess spawn 后难拦）→ 不可信 app 优先 MCP 或容器化 CLI | ✅ 采纳（两档）；改造（不全员内核沙箱） |
+| **签名 + 安装 + 依赖** | APK / PackageManager | bundle + 运行时声明 + `ziva app install` + shim + 签名校验 | ✅ 后阶段（为分享/市场） |
+| **生命周期** | 系统管组件启停 | app `serve` 长跑子进程，ziva 状态机（installed→enabled→running→stopped）+ 崩溃重启 | ✅ 轻量采纳 |
+| **退出码 / stderr / env** | Unix 约定 | app 遵守退出码 + stderr 报错；ziva 注入 `ZIVA_APP_DATA` / scope | ✅ 立规范，零机制成本 |
+| **Intent（声明式能力/解耦）** | app 声明能力、可替换、解耦调用 | **用 NL 能力描述（APP.md）+ LLM 解析**，不要 Android 的 action/MIME 机器 | 🔧 原则采纳、机器拒绝；组合复杂时才上显式能力标签 |
+| **ContentProvider** | 标准 query/URI 数据共享 | CLI 的 `export`/`query` + agent 居间已覆盖 | ❌ 拒绝 |
+| **四类组件**（Activity/Service/...） | GUI app 结构切分 | CLI app = `serve`(UI) + 命令 + 后台(用 automation) | ❌ 拒绝 |
+| **rigid intent bus / 全员内核沙箱** | — | LLM 解析取代 intent bus；沙箱只给不可信档 | ❌ 拒绝 |
+
+**ziva 原生优势（不是借鉴，要用足）**：对话 = 通用 UI（不需 Activity 体系）、LLM = 灵活解析器（取代死板 intent）、`agent.run` = 共享智能（app 更薄）、app 可由 ziva 代码生成。
+
+> 一句话：**CLI-first 让 Unix 的"管道组合 + 统一 I/O + 退出码/env 约定"几乎免费拿到（最大赢家）；权限/沙箱走"两档信任 + CLI 难沙箱故不可信走 MCP/容器"；签名安装为分享后做；Android 的组件/ContentProvider 在 CLI-first 下更不需要。**
+
+---
+
 ## 1. App 是什么
 
 一个 app 是**一个遵循约定的代码项目**（不是运行时被某个引擎拼装出来的），由**人或 ziva 写代码**来创建和迭代。
@@ -125,10 +151,12 @@ app 通过它的程序化接口（CLI 或 MCP）让 agent 操作。两种接口�
 
 app 可以复用 ziva 当前的 agent runtime 来实现自己的逻辑（而不是自带 LLM/keys/工具栈）。
 
-- **`agent.run`（scoped sub-agent）**：跑一次 agent。
-  - 入：`{prompt, tools?, context?, model?}`
+- **`agent.run`（scoped、tagged sub-agent）**：app 请求 ziva 跑一轮 agent。
+  - 入：`{prompt, tools?, context?, model?, agent_id?}`
   - 出：`{result}`
-  - **scoped**：只挂**app 声明的工具集**（复用 ziva 现有 sub-agent + `_allowed_tools`），所以 app 没法借 agent 去跑 shell/读写文件。
+  - **scoped**：只挂 **app 声明的工具集**（复用 ziva sub-agent 的 `_allowed_tools`），app 没法借 agent 去跑 shell/读写文件。
+  - **隔离靠 scope + 标记，不是"不持久化"**：sub-agent 的消息会落盘并打 `is_subagent` 标记，**和用户主会话分开存、分开显示**，不混进去——但它**能持久化**。
+  - **一次性 或 持久**：不传 `agent_id` = 一次性（跑完即返）；传 `agent_id` = 复用/新建一个 scoped、tagged 的持久 agent，跨调用保留上下文（适合"有记忆"的 agent：调研、copilot）。
 - **入口**（任选）：
   - HTTP：`POST /api/agent/run`（app HTTP 打 ziva）
   - CLI：`ziva agent run "..."`（app shell 调）
@@ -140,7 +168,7 @@ app 可以复用 ziva 当前的 agent runtime 来实现自己的逻辑（而不�
 
 用 §0 的 Linux 类比：一个"含 agent 调用的工作流"app = **一个会发很多 `agent.run` 系统调用的用户态程序**。对 ziva 而言它和普通 app **没区别**——ziva 只看到一连串 syscall 请求，**工作流本身是 app 的私有逻辑，ziva 不感知，也不需要新抽象**。（类比：Linux 内核对一个会 fork 很多子进程、发很多 I/O 的程序，和对普通程序一样，只看到 syscall 流。）
 
-- **不是"两层 agent"，而是"一个内核、多个调用者"**：对话 agent（shell）触发 app 的某个操作（如 `run_research(topic)`）；app 的工作流在自己的用户态代码里，按需发起多个 `agent.run`——每个是一个 scoped 子进程。
+- **不是"两层 agent"，而是"一个内核、多个调用者"**：对话 agent（shell）触发 app 的某个操作（如 `run_research(topic)`）；app 的工作流在自己的用户态代码里，按需发起多个 `agent.run`——每个是一个 scoped 子进程（需要"有记忆"的步骤可传 `agent_id`，让该 agent 跨步/跨调用保留上下文）。
 - **工作流引擎是 app 自带的**（图 / 脚本 / 流水线，app 自己挑）；ziva 只提供 `agent.run` syscall。manifest 照常 `runtime.uses_agent: true` + scoped 工具。
 - **scope = 权限**：对话 agent 是用户全权限的 shell；app 内部 agent 是受限子进程（只挂 app 声明的工具）。ziva 按调用者强制。
 - **进度与结果由 app 自己的 UI 展示**（节点状态、流式输出）；`agent.run` 支持流式返回事件，app 转发给自己的 UI。**长任务**由 app 自己管（返回 job id / 异步写 `data/`）。

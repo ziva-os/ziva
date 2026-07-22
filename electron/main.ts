@@ -343,7 +343,33 @@ async function createMainWindow() {
   // window isn't blank while the PyInstaller backend cold-starts. The real
   // UI is swapped in from app.whenReady once the backend is up.
   const loadingHtml = "data:text/html;charset=utf-8," + encodeURIComponent(
-    "<html><body style='margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#141414;color:#aaa;font-family:-apple-system,system-ui,sans-serif'><div style='font-size:28px;font-weight:600'>Ziva</div><div style='color:#666;margin-top:10px;font-size:13px'>启动中…</div></body></html>"
+    `<html><head><meta charset='utf-8'><style>
+      * { margin:0; padding:0; box-sizing:border-box; }
+      html,body { height:100%; }
+      body {
+        display:flex; flex-direction:column; align-items:center; justify-content:center;
+        background:#0f0f0f;
+        font-family:-apple-system,'SF Pro Display',system-ui,sans-serif;
+        color:#e8e8f0; overflow:hidden;
+      }
+      .wordmark { font-size:30px; font-weight:700; letter-spacing:1px; color:#e8e8f0; margin-bottom:26px; }
+      .wordmark .os { color:#8ab4f8; font-weight:500; margin-left:1px; }
+      .mark { width:108px; height:45px; animation: breathe 2.6s ease-in-out infinite; }
+      @keyframes breathe { 0%,100%{ opacity:.82; } 50%{ opacity:1; } }
+      .mark svg { width:100%; height:100%; overflow:visible; }
+      .inf { fill:none; stroke-linecap:round; stroke-width:5; }
+      .track { stroke:rgba(138,180,248,0.18); }
+      .comet { stroke:#8ab4f8; stroke-dasharray:16 84; animation: trace 1.6s linear infinite; filter: drop-shadow(0 0 4px rgba(138,180,248,0.45)); }
+      @keyframes trace { to { stroke-dashoffset:-100; } }
+    </style></head><body>
+      <div class='wordmark'>Ziva<span class='os'>OS</span></div>
+      <div class='mark'>
+        <svg viewBox='0 0 120 50'>
+          <path class='inf track' pathLength='100' d='M60,25 C60,5 25,5 25,25 C25,45 60,45 60,25 C60,5 95,5 95,25 C95,45 60,45 60,25 Z'/>
+          <path class='inf comet' pathLength='100' d='M60,25 C60,5 25,5 25,25 C25,45 60,45 60,25 C60,5 95,5 95,25 C95,45 60,45 60,25 Z'/>
+        </svg>
+      </div>
+    </body></html>`
   );
   mainWindow.loadURL(loadingHtml);
 

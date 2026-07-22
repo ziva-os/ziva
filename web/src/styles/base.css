@@ -43,3 +43,13 @@ body {
 
 button { cursor: pointer; font-family: var(--sans); }
 input, textarea, select { font-family: var(--sans); }
+
+/* Theme toggle icon: sun/moon crossfade driven by [data-theme] on <html>.
+   Both glyphs are stacked in a 16×16 box; the inactive one rotates away
+   and fades out, so the switch reads as a smooth flip, not a hard swap. */
+.theme-icon { position: relative; width: 16px; height: 16px; display: inline-block; flex-shrink: 0; }
+.theme-icon svg { position: absolute; inset: 0; transition: opacity .35s ease, transform .45s cubic-bezier(.3, 1.25, .5, 1); }
+[data-theme="dark"]  .theme-icon .ico-sun  { opacity: 0; transform: rotate(90deg)  scale(.4); }
+[data-theme="dark"]  .theme-icon .ico-moon { opacity: 1; transform: rotate(0)      scale(1); }
+[data-theme="light"] .theme-icon .ico-moon { opacity: 0; transform: rotate(-90deg) scale(.4); }
+[data-theme="light"] .theme-icon .ico-sun  { opacity: 1; transform: rotate(0)      scale(1); }
