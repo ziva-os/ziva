@@ -2585,22 +2585,25 @@ function appendToolCard(
     body += `<div class="section-label">used tools</div>`;
     body += `<div class="section-content subagent-tools"><span class="subagent-tool-summary">${summary}</span></div>`;
   }
-  // send_file: render the delivered file inline from the tool's `path` arg,
-  // by extension — image → <img>, video → <video>, anything else → download
-  // link. Driven by args so it shows on both streaming and history reload.
+  // send_file: render the delivered file from the tool's `path` arg, by kind:
+  //   image → inline <img>; browser-previewable (pdf/video/audio/html/text)
+  //   → link opening in the internal browser (new tab); anything the browser
+  //   can't render (archives / office / binaries) → filename only, no link.
+  // Driven by args so it shows on both streaming and history reload.
   if (toolName === "send_file" && typeof args.path === "string" && args.path) {
-    const src = attachmentUrl(String(args.path));
-    const ext = (String(args.path).split(".").pop() || "").toLowerCase();
-    const isImg = /^(png|jpe?g|gif|webp|bmp|tiff?)$/.test(ext);
-    const isVid = /^(mp4|mov|mkv|webm|m4v|avi|flv)$/.test(ext);
+    const p = String(args.path);
+    const src = attachmentUrl(p);
+    const ext = (p.split(".").pop() || "").toLowerCase();
+    const fname = p.split("/").pop() || p;
+    const isImg = /^(png|jpe?g|gif|webp|bmp|svg|ico|tiff?)$/.test(ext);
+    const isPreviewable = /^(mp4|webm|mov|m4v|ogv|mkv|avi|mp3|wav|ogg|m4a|aac|flac|opus|pdf|html?|txt|markdown|log|csv|json|xml|py|js|tsx?|jsx|css|scss|sh|bash|rs|go|java|kt|c|cc|cpp|h|hpp|rb|php|swift|sql|md)$/.test(ext);
     body += `<div class="section-label">File</div>`;
     if (isImg) {
-      body += `<div class="section-content tool-output-image"><img src="${esc(src)}" alt="${esc(String(args.path))}" loading="lazy" /></div>`;
-    } else if (isVid) {
-      body += `<div class="section-content tool-output-image"><video src="${esc(src)}" controls preload="metadata" style="max-width:100%;border-radius:6px"></video></div>`;
-    } else {
-      const fname = String(args.path).split("/").pop() || String(args.path);
+      body += `<div class="section-content tool-output-image"><img src="${esc(src)}" alt="${esc(p)}" loading="lazy" /></div>`;
+    } else if (isPreviewable) {
       body += `<div class="section-content"><a class="send-file-link" href="${esc(src)}" target="_blank" rel="noopener" title="Open ${esc(fname)}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg> ${esc(fname)} <span class="send-file-open">↗ open</span></a></div>`;
+    } else {
+      body += `<div class="section-content send-file-name"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="opacity:.55;vertical-align:-2px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg> ${esc(fname)}</div>`;
     }
   }
 

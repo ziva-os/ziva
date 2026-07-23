@@ -28,6 +28,22 @@ from ziva.transports.im_bridge import IMBridge
 
 logger = logging.getLogger(__name__)
 
+# Extensions the /attachments proxy will serve for in-browser preview:
+# images, media (video/audio), pdf/html, and common text/code. Deliberately
+# excludes archives (zip/tar/...), office docs (doc/xls/ppt), binaries, and
+# config/secret files (yaml/env/ini) so this stays a preview surface, not a
+# generic arbitrary-file reader.
+_PREVIEWABLE_EXTS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".ico",
+    ".mp4", ".webm", ".mov", ".m4v", ".ogv", ".mkv", ".avi",
+    ".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac", ".opus",
+    ".pdf", ".html", ".htm",
+    ".txt", ".md", ".markdown", ".log", ".csv", ".json", ".xml",
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".css", ".scss",
+    ".sh", ".bash", ".rs", ".go", ".java", ".kt",
+    ".c", ".cpp", ".cc", ".h", ".hpp", ".rb", ".php", ".swift", ".sql",
+}
+
 
 @dataclass
 class Automation:
@@ -1630,7 +1646,7 @@ class DesktopAPIServer:
             # even when the path layout matches, to keep this from becoming
             # a generic file reader.
             filename = tail_parts[-1]
-            if Path(filename).suffix.lower() not in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+            if Path(filename).suffix.lower() not in _PREVIEWABLE_EXTS:
                 return web.json_response({"error": "unsupported_file_type"}, status=403)
 
             if not candidate.is_file():
@@ -1647,7 +1663,7 @@ class DesktopAPIServer:
                 else:
                     return web.json_response({"error": "not_found"}, status=404)
         else:
-            if candidate.suffix.lower() not in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+            if candidate.suffix.lower() not in _PREVIEWABLE_EXTS:
                 return web.json_response({"error": "outside_attachments_dir"}, status=403)
 
         if not candidate.is_file():
