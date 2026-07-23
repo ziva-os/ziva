@@ -194,6 +194,17 @@ class IMBridge:
             sid = self._route_session(msg)
             self._ensure_session(sid, msg)
             image_paths = self._persist_images(sid, msg.images)
+            # Non-image inbound files: the model can't consume a pdf/video
+            # blob, so surface each as a saved-path note it can read_file
+            # (images still go through image_url via image_paths above).
+            text = msg.text
+            if msg.files:
+                from pathlib import Path as _P
+                note = "".join(
+                    f"\n[用户发送的文件：{_P(p).name or p}，已保存到 {p}，可用 read_file 读取]"
+                    for p in msg.files
+                )
+                text = (text + note) if text else note.strip()
             # Best-effort typing indicator: the user on the IM side gets
             # immediate feedback that the agent is processing, even if the
             # turn takes several seconds. ``stop_typing`` is called in both
@@ -205,7 +216,7 @@ class IMBridge:
                 except Exception:
                     logger.exception("im_bridge: send_typing failed for %s", msg.channel)
             try:
-                reply, output_images = await self._run_turn(sid, msg.text, image_paths)
+                reply, output_images = await self._run_turn(sid, text, image_paths)
             except Exception as exc:
                 logger.exception("im_bridge: turn failed for %s", msg.route_key)
                 reply, output_images = f"[ziva error] {exc}", []

@@ -274,7 +274,27 @@ class TelegramAdapter(BaseAdapter):
                 else:
                     logger.warning("telegram: could not download photo %s", file_id)
 
-        if not text and not image_paths:
+        # Non-image files (document / video / audio / voice / animation).
+        # Telegram attaches a file_id to each; download and surface as files.
+        file_paths: list[str] = []
+        _kind_ext = {"video": "mp4", "animation": "mp4", "voice": "ogg",
+                     "audio": "mp3", "video_note": "mp4"}
+        for kind in ("document", "video", "audio", "voice", "animation", "video_note"):
+            ent = msg.get(kind)
+            if not ent or not isinstance(ent, dict):
+                continue
+            file_id = ent.get("file_id", "")
+            if not file_id:
+                continue
+            fname = ent.get("file_name", "") or ""
+            ext = (Path(fname).suffix.lstrip(".") if fname else "") or _kind_ext.get(kind, "bin")
+            path = await self._download_file(file_id, ext)
+            if path:
+                file_paths.append(path)
+            else:
+                logger.warning("telegram: could not download %s %s", kind, file_id)
+
+        if not text and not image_paths and not file_paths:
             return  # Nothing useful to process.
 
         incoming = IncomingMessage(
@@ -285,6 +305,7 @@ class TelegramAdapter(BaseAdapter):
             sender_name=sender.get("first_name") or sender.get("username") or "tg",
             text=text,
             images=image_paths,
+            files=file_paths,
             message_id=str(msg.get("message_id", "")),
         )
         # Fire-and-forget so the poll loop isn't blocked while the model runs.
@@ -311,6 +332,32 @@ class TelegramAdapter(BaseAdapter):
         ext = Path(file_path).suffix.lower().lstrip(".") or "jpg"
         if ext not in {"png", "jpg", "jpeg", "gif", "webp"}:
             ext = "jpg"
+        tmp_dir = Path(tempfile.gettempdir()) / "ziva-im-bridge"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        save_path = tmp_dir / f"{uuid.uuid4().hex}.{ext}"
+        save_path.write_bytes(data)
+        return str(save_path)
+
+    async def _download_file(self, file_id: str, ext: str) -> str | None:
+        """Download any Telegram file by file_id (document/video/audio/...).
+
+        Like ``_download_photo`` but keeps the real extension instead of
+        forcing jpg, so pdf/mp4/etc. land on disk with the right suffix.
+        """
+        if not self._session:
+            return None
+        file_meta = await self._call("getFile", {"file_id": file_id})
+        file_path = file_meta.get("file_path", "")
+        if not file_path:
+            return None
+        url = f"https://api.telegram.org/file/bot{self._token}/{file_path}"
+        async with self._session.get(url, proxy=self._proxy) as r:
+            if r.status != 200:
+                return None
+            data = await r.read()
+        if not data:
+            return None
+        ext = (ext or Path(file_path).suffix.lower().lstrip(".") or "bin").lower()
         tmp_dir = Path(tempfile.gettempdir()) / "ziva-im-bridge"
         tmp_dir.mkdir(parents=True, exist_ok=True)
         save_path = tmp_dir / f"{uuid.uuid4().hex}.{ext}"

@@ -467,6 +467,7 @@ class FeishuAdapter(BaseAdapter):
 
         text = ""
         image_paths: list[str] = []
+        file_paths: list[str] = []
 
         if msg_type == "text":
             text = content.get("text", "")
@@ -494,11 +495,24 @@ class FeishuAdapter(BaseAdapter):
                     message_id, image_key, chat_id,
                 )
                 text = "[图片加载失败：无法从飞书下载该图片]"
+        elif msg_type in ("file", "media"):
+            # Non-image file (pdf / video / audio / archive / doc). Download
+            # via the same message_resource endpoint as images, type="file".
+            file_key = content.get("file_key", "")
+            file_name = content.get("file_name", "") or ""
+            if file_key:
+                fp = self._download_file_resource(message_id, file_key, file_name)
+                if fp:
+                    file_paths.append(fp)
+                else:
+                    text = "[文件下载失败：无法从飞书获取该文件]"
+            else:
+                text = "[收到文件消息但缺少 file_key]"
         else:
-            logger.debug("feishu: ignoring non-text/image message type: %s", msg_type)
+            logger.debug("feishu: ignoring non-text/image/file message type: %s", msg_type)
             return
 
-        if not text and not image_paths:
+        if not text and not image_paths and not file_paths:
             logger.debug("feishu: empty message, ignoring")
             return
 
@@ -516,6 +530,7 @@ class FeishuAdapter(BaseAdapter):
             sender_name=sender_name,
             text=text,
             images=image_paths,
+            files=file_paths,
             message_id=message_id,
         )
         assert self._loop is not None
@@ -651,6 +666,60 @@ class FeishuAdapter(BaseAdapter):
                 ext = known_ext
                 break
         return [self._save_temp_image(data, ext)]
+
+    def _download_file_resource(self, message_id: str, file_key: str, file_name: str) -> str:
+        """Download a non-image file (pdf / video / archive / doc) from a
+        Feishu ``file`` or ``media`` message.
+
+        Same ``message_resource.get`` endpoint as images but with
+        ``type="file"``; keeps the real extension from ``file_name`` (no
+        image magic-byte check). Returns the local path, or "" on failure.
+        """
+        if not self._send_client or not self._send_module or not message_id:
+            logger.warning(
+                "feishu: cannot download file msg=%s key=%s (client/message_id missing)",
+                message_id, file_key,
+            )
+            return ""
+        im = self._send_module
+        try:
+            req = (
+                im.GetMessageResourceRequest.builder()
+                .type("file")
+                .message_id(message_id)
+                .file_key(file_key)
+                .build()
+            )
+            resp = self._send_client.im.v1.message_resource.get(req)
+        except Exception:
+            logger.exception("feishu: file resource.get failed for msg=%s key=%s", message_id, file_key)
+            return ""
+        if not getattr(resp, "success", lambda: True)():
+            logger.warning(
+                "feishu: file resource.get failed msg=%s key=%s code=%s",
+                message_id, file_key, getattr(resp, "code", "?"),
+            )
+            return ""
+        data = b""
+        for attr in ("file", "data", "body"):
+            try:
+                val = getattr(resp, attr, None)
+                if val is not None:
+                    if hasattr(val, "read"):
+                        data = val.read()
+                    elif isinstance(val, (bytes, bytearray)):
+                        data = bytes(val)
+                    elif isinstance(val, str):
+                        data = val.encode("utf-8")
+                    if data:
+                        break
+            except Exception:
+                pass
+        if not data:
+            logger.warning("feishu: empty file data for msg=%s key=%s", message_id, file_key)
+            return ""
+        ext = (Path(file_name).suffix.lower().lstrip(".") if file_name else "") or "bin"
+        return self._save_temp_image(data, ext)
 
     def _image_ext_from_response(self, resp: Any) -> str | None:
         """Guess image extension from SDK response file_name or raw headers."""

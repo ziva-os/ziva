@@ -28,6 +28,7 @@ class IncomingMessage:
     sender_name: str      # display name, for the session title + sidebar
     text: str
     images: list[str] = None  # local file paths of downloaded images
+    files: list[str] = None   # local file paths of downloaded non-image files (pdf/video/...)
     # Platform-native message id, used to attach reactions (e.g. Feishu's
     # "机器人正在输入" emoji) to the inbound message. Empty when the channel
     # does not expose a stable id (e.g. the unofficial wechat gateway).
@@ -36,6 +37,8 @@ class IncomingMessage:
     def __post_init__(self):
         if self.images is None:
             self.images = []
+        if self.files is None:
+            self.files = []
 
     @property
     def route_key(self) -> str:
