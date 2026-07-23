@@ -171,14 +171,7 @@ class ReadFileTool:
                 ext = path.suffix.lower().lstrip(".")
                 size = path.stat().st_size if path.exists() else 0
                 return ToolResult(
-                    text=(
-                        f"Error: binary_file\n"
-                        f"{file_path} is a binary {ext or 'file'} ({size} bytes) and "
-                        f"cannot be read as text — reading it would dump garbled bytes "
-                        f"and blow up the context. For PDFs / office docs, extract text "
-                        f"with the shell tool (e.g. `pdftotext {file_path} -`), or ask "
-                        f"the user to paste the relevant text."
-                    ),
+                    text=f"Error: binary_file\n{file_path} is a binary {ext or 'file'} ({size} bytes) and cannot be read as text.",
                     error=True,
                 )
 
