@@ -239,8 +239,8 @@ class FeishuAdapter(BaseAdapter):
                 size = Path(file_path).stat().st_size
             except OSError:
                 size = 0
-            if size > 25 * 1024 * 1024:
-                await self._send_text(msg.chat_id, f"📎 {fname}（{size // 1048576}MB）超过飞书单文件上限（约25MB），未发送，请在桌面查看。")
+            if size > 30 * 1024 * 1024:
+                await self._send_text(msg.chat_id, f"{fname}（{size // 1048576}MB）超过飞书单文件上限（约30MB），未发送，请在桌面查看。")
                 continue
             try:
                 file_key = await self._upload_file(file_path)
@@ -248,7 +248,7 @@ class FeishuAdapter(BaseAdapter):
                 logger.exception("feishu: file upload failed for %s", file_path)
                 file_key = ""
             if not file_key:
-                await self._send_text(msg.chat_id, f"📎 {fname} 发送失败，请在桌面查看。")
+                await self._send_text(msg.chat_id, f"{fname} 发送失败，请在桌面查看。")
                 continue
             req = (
                 im.CreateMessageRequest.builder()
