@@ -358,10 +358,7 @@ async function createMainWindow() {
       @keyframes breathe { 0%,100%{ transform:scale(1); opacity:.92; } 50%{ transform:scale(1.03); opacity:1; } }
       .mark svg { width:100%; height:100%; overflow:visible; }
       .inf { fill:none; stroke-linecap:round; stroke-linejoin:round; stroke-width:5; }
-      .track { stroke:rgba(138,180,248,0.12); }
-      .base { stroke:url(#g); opacity:0.28; }
-      .comet { stroke:url(#g); stroke-dasharray:13 87; animation: trace 1.9s linear infinite; filter:url(#glow); }
-      @keyframes trace { to { stroke-dashoffset:-100; } }
+      .base { stroke:url(#g); opacity:0.55; }
       .head { fill:#dbeaff; filter:url(#glow); }
     </style></head><body>
       <div class='wordmark'>Ziva<span class='os'>OS</span></div>
@@ -372,16 +369,14 @@ async function createMainWindow() {
               <stop offset='0%' stop-color='#8ab4f8'/>
               <stop offset='100%' stop-color='#cfe0ff'/>
             </linearGradient>
-            <filter id='glow' x='-60%' y='-60%' width='220%' height='220%'>
-              <feGaussianBlur stdDeviation='2.2' result='b'/>
+            <filter id='glow' x='-80%' y='-80%' width='260%' height='260%'>
+              <feGaussianBlur stdDeviation='2.6' result='b'/>
               <feMerge><feMergeNode in='b'/><feMergeNode in='SourceGraphic'/></feMerge>
             </filter>
           </defs>
-          <path class='inf track' pathLength='100' d='M60,25 C60,5 25,5 25,25 C25,45 60,45 60,25 C60,5 95,5 95,25 C95,45 60,45 60,25 Z'/>
           <path class='inf base' pathLength='100' d='M60,25 C60,5 25,5 25,25 C25,45 60,45 60,25 C60,5 95,5 95,25 C95,45 60,45 60,25 Z'/>
-          <path class='inf comet' pathLength='100' d='M60,25 C60,5 25,5 25,25 C25,45 60,45 60,25 C60,5 95,5 95,25 C95,45 60,45 60,25 Z'/>
-          <circle class='head' r='2.6'>
-            <animateMotion dur='1.9s' repeatCount='indefinite' path='M60,25 C60,5 25,5 25,25 C25,45 60,45 60,25 C60,5 95,5 95,25 C95,45 60,45 60,25 Z'/>
+          <circle class='head' r='2.9'>
+            <animateMotion dur='2.2s' repeatCount='indefinite' path='M60,25 C60,5 25,5 25,25 C25,45 60,45 60,25 C60,5 95,5 95,25 C95,45 60,45 60,25 Z'/>
           </circle>
         </svg>
       </div>
