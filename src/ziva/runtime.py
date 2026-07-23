@@ -405,7 +405,7 @@ class Runtime:
     _background_agents: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     _project_id: str | None = None
     _ask_user_callbacks: list = field(default_factory=list)
-    _send_media_callbacks: list = field(default_factory=list)
+    _send_file_callbacks: list = field(default_factory=list)
     _agent_concurrency: Optional[asyncio.Semaphore] = field(default=None)
     _agent_max_history: int = 50
     # Injectable storage (SDK): defaults to the filesystem-backed FileStorage
@@ -1192,6 +1192,21 @@ class Runtime:
                         skill_lines.append(f"- **{s['name']}**")
                 parts.append("\n".join(skill_lines))
             effective_prompt = "\n\n".join(parts)
+            # IM channel context: when a turn is driven from the IM bridge,
+            # tell the model which channel it's on so it knows send_file
+            # delivers to this chat and keeps replies IM-friendly.
+            _im_session = self._get_session(session_id)
+            _im_channel = getattr(_im_session, "im_channel", None)
+            if _im_channel:
+                effective_prompt += (
+                    "\n\n## IM Channel\n"
+                    f"You are responding to the user via the **{_im_channel}** messaging "
+                    "channel — your text reply and any `send_file` deliveries go directly "
+                    "to this chat. Keep replies concise and IM-friendly. To send the user "
+                    "a generated file (image / video / document / archive), call `send_file` "
+                    "(it is delivered as a native attachment here); do NOT embed files as "
+                    "inline image/file markdown."
+                )
 
             # When a plan exists, remind the model to keep it in sync.
             _plan_session = self._get_session(session_id)
@@ -1595,18 +1610,18 @@ class Runtime:
         """
         self._ask_user_callbacks.append(callback)
 
-    def on_send_media(self, callback) -> None:
-        """Register a callback for ``send_media`` tool deliveries.
+    def on_send_file(self, callback) -> None:
+        """Register a callback for ``send_file`` tool deliveries.
 
-        The callback receives ``(session_id, path, data_url, caption)``
-        and should return truthy if it actually delivered the media (so the
-        tool can report "sent" vs "no IM channel"). ``data_url`` is a base64
-        ``data:`` URL for images, or ``None`` for non-image files (the bridge
-        may still send the path as a document). Used by the IM bridge to push
-        generated images to the user's chat instead of relying on the model
-        embedding resolvable image references in its reply text.
+        The callback receives ``(session_id, path, media_type, caption)``
+        and should return truthy if it actually delivered the file (so the
+        tool can report "sent" vs "no IM channel"). ``media_type`` is the
+        model's hint (``image``/``video``/``file``) or ``None`` (infer from
+        the extension). Used by the IM bridge to push generated files to the
+        user's chat instead of relying on the model embedding resolvable
+        references in its reply text.
         """
-        self._send_media_callbacks.append(callback)
+        self._send_file_callbacks.append(callback)
 
     async def await_user_answer(self, session_id: str, call_id: str = "") -> Dict[str, Any]:
         """Block the calling tool until the user replies via the UI.

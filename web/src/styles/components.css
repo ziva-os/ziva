@@ -1611,6 +1611,10 @@ webview.browser-frame {
 .tool-card.open .tool-card-body { display: block; }
 .tool-card-body .section-label { color: var(--muted); font-weight: 600; margin-bottom: 4px; font-size: 10px; text-transform: uppercase; }
 .tool-card-body .section-content { margin-bottom: 8px; padding: 6px 8px; background: var(--surface-alt); color: var(--ink); border-radius: 4px; max-height: 400px; overflow-y: auto; }
+/* send_file: non-image/video files render as a clickable file chip. */
+.send-file-link { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); font-size: 12px; text-decoration: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.send-file-link:hover { background: var(--surface-hover); border-color: var(--line-strong); }
+.send-file-link .send-file-open { color: var(--muted); font-size: 10px; flex-shrink: 0; }
 
 /* Sub-agent Card */
 .subagent-card { opacity: 0.85; border-left: 3px solid var(--accent); }

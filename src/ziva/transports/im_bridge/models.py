@@ -49,11 +49,14 @@ class OutgoingMessage:
 
     chat_id: str
     text: str
-    images: list[str] = None  # local image paths to send back (future)
+    images: list[str] = None  # local image paths / data: URLs to send as photos
+    files: list[str] = None  # local file paths to send as video/document (non-image)
 
     def __post_init__(self):
         if self.images is None:
             self.images = []
+        if self.files is None:
+            self.files = []
 
 
 @dataclass

@@ -22,7 +22,7 @@ from typing import Any, Dict
 import aiohttp
 from aiohttp import ClientConnectorError
 
-from ziva.transports.im_bridge.adapters.base import BaseAdapter, decode_image_ref, _bytesio
+from ziva.transports.im_bridge.adapters.base import BaseAdapter, decode_image_ref, _bytesio, classify_media
 from ziva.transports.im_bridge.models import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
@@ -136,6 +136,27 @@ class TelegramAdapter(BaseAdapter):
                 })
             except Exception:
                 logger.exception("telegram: sendPhoto failed for %s", filename)
+        # Send each non-image file (video / archive / document) as a separate
+        # message. Videos use sendVideo (Telegram auto-generates a thumbnail);
+        # everything else uses sendDocument (preserves the file as-is).
+        for file_path in msg.files or []:
+            if not file_path:
+                continue
+            decoded = decode_image_ref(file_path)
+            if not decoded:
+                logger.warning("telegram: could not read file for send: %s", file_path)
+                continue
+            data, filename = decoded
+            is_video = classify_media(file_path) == "video"
+            method = "sendVideo" if is_video else "sendDocument"
+            field = "video" if is_video else "document"
+            try:
+                await self._call_multipart(method, {
+                    "chat_id": str(msg.chat_id),
+                    field: _bytesio(data, filename),
+                })
+            except Exception:
+                logger.exception("telegram: %s failed for %s", method, filename)
 
     async def send_typing(self, chat_id: str, message_id: str = "") -> None:
         """Best-effort "typing…" indicator.

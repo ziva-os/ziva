@@ -1,7 +1,7 @@
-id: tool.send_media
+id: tool.send_file
 type: tool
 version: 0.1.0
-entry: impl.py:SendMediaTool
+entry: impl.py:SendFileTool
 permissions:
   fs: [read]
 enabled_by_default: true

@@ -68,6 +68,26 @@ def _bytesio(data: bytes, filename: str) -> io.BytesIO:
     return buf
 
 
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif"}
+VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi", ".flv"}
+
+
+def classify_media(path: str) -> str:
+    """Classify a file by extension into ``image`` / ``video`` / ``document``.
+
+    Used by the IM bridge and adapters to route an outbound file to the right
+    platform send method (photo vs video vs document/file). Anything not
+    clearly an image or video — archives, pdfs, docs, spreadsheets, text —
+    falls back to ``document``.
+    """
+    ext = os.path.splitext(path)[1].lower()
+    if ext in IMAGE_EXTS:
+        return "image"
+    if ext in VIDEO_EXTS:
+        return "video"
+    return "document"
+
+
 class BaseAdapter(ABC):
     #: ``feishu`` / ``wechat`` / ``telegram`` — matches IncomingMessage.channel
     channel: str = ""

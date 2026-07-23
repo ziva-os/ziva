@@ -196,6 +196,10 @@ class SessionState:
     event_queue: asyncio.Queue | None = None
     event_history: deque = field(default_factory=lambda: deque(maxlen=100))
     model_name: str | None = None
+    # When the session is driven from the IM bridge, which channel it's on
+    # (e.g. "feishu"/"telegram"). Surfaced to the model via the system prompt
+    # so it knows `send_file` delivers to this chat. None for desktop sessions.
+    im_channel: str | None = None
     # The workspace directory this session was created in. Tools resolve
     # cwd / relative paths against THIS, not runtime.workspace_root (which
     # tracks the currently-focused workspace and would be wrong if the user

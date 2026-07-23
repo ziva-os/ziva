@@ -33,6 +33,19 @@ from ziva.transports.im_bridge.models import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
 
+# Feishu ``file.create`` takes a ``file_type`` from a fixed enum
+# (opus/mp4/pdf/doc/xls/ppt/stream). Map common extensions; anything else
+# (archives, text, markdown, unknown) falls back to ``stream``, which Feishu
+# delivers intact as a downloadable file.
+_FEISHU_FILE_TYPE = {
+    ".mp4": "mp4", ".m4v": "mp4", ".mov": "mp4",
+    ".pdf": "pdf",
+    ".doc": "doc", ".docx": "doc",
+    ".xls": "xls", ".xlsx": "xls",
+    ".ppt": "ppt", ".pptx": "ppt",
+    ".opus": "opus",
+}
+
 
 class FeishuAdapter(BaseAdapter):
     channel = "feishu"
@@ -215,6 +228,33 @@ class FeishuAdapter(BaseAdapter):
             except Exception:
                 logger.exception("feishu: image send failed for key=%s", image_key)
 
+        # 3. Send each non-image file (video / archive / document). Upload to
+        #    get a `file_key`, then send a `file` msg_type referencing it.
+        for file_path in msg.files or []:
+            try:
+                file_key = await self._upload_file(file_path)
+            except Exception:
+                logger.exception("feishu: file upload failed for %s", file_path)
+                continue
+            if not file_key:
+                continue
+            req = (
+                im.CreateMessageRequest.builder()
+                .receive_id_type("chat_id")
+                .request_body(
+                    im.CreateMessageRequestBody.builder()
+                    .receive_id(msg.chat_id)
+                    .msg_type("file")
+                    .content(json.dumps({"file_key": file_key}, ensure_ascii=False))
+                    .build()
+                )
+                .build()
+            )
+            try:
+                await asyncio.to_thread(self._send_client.im.v1.message.create, req)
+            except Exception:
+                logger.exception("feishu: file send failed for key=%s", file_key)
+
     async def send_typing(self, chat_id: str, message_id: str = "") -> None:
         """Add an "OnIt" (👆 处理中) reaction to the user's inbound message.
 
@@ -313,6 +353,51 @@ class FeishuAdapter(BaseAdapter):
             return image_key or ""
         except Exception:
             logger.exception("feishu: image.create raised")
+            return ""
+
+    async def _upload_file(self, file_path: str) -> str:
+        """Upload a non-image file to Feishu and return the ``file_key``.
+
+        ``file_path`` is a local path (decode_image_ref reads it). Feishu's
+        ``file.create`` needs a ``file_type`` from a fixed enum
+        (opus/mp4/pdf/doc/xls/ppt/stream); we map common extensions and fall
+        back to ``stream`` (the catch-all) for archives/unknown — zip/tar/gz/
+        rar/7z are delivered intact as a downloadable file. Returns "" on any
+        failure so the caller can skip without taking down the whole reply.
+        """
+        if not self._send_client:
+            return ""
+        decoded = decode_image_ref(file_path)
+        if not decoded:
+            logger.warning("feishu: could not read file for send: %s", file_path)
+            return ""
+        data, filename = decoded
+        ext = Path(filename).suffix.lower()
+        file_type = _FEISHU_FILE_TYPE.get(ext, "stream")
+        im = self._send_module
+        try:
+            req = (
+                im.CreateFileRequest.builder()
+                .request_body(
+                    im.CreateFileRequestBody.builder()
+                    .file_type(file_type)
+                    .file_name(filename)
+                    .file(_bytesio(data, filename))
+                    .build()
+                )
+                .build()
+            )
+            resp = await asyncio.to_thread(self._send_client.im.v1.file.create, req)
+            success = getattr(resp, "success", lambda: True)()
+            if not success:
+                code = getattr(resp, "code", "?")
+                msg = getattr(resp, "msg", "")
+                logger.warning("feishu: file.create failed code=%s msg=%s", code, msg)
+                return ""
+            file_key = getattr(resp.data, "file_key", "") if resp and resp.data else ""
+            return file_key or ""
+        except Exception:
+            logger.exception("feishu: file.create raised")
             return ""
 
     # -- internals ----------------------------------------------------------

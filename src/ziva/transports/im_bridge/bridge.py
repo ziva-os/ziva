@@ -31,7 +31,7 @@ from ziva.storage.file_storage import FileStorage
 
 from ziva.transports.im_bridge.adapters.feishu import FeishuAdapter
 from ziva.transports.im_bridge.adapters.telegram import TelegramAdapter
-from ziva.transports.im_bridge.adapters.base import BaseAdapter
+from ziva.transports.im_bridge.adapters.base import BaseAdapter, classify_media
 from ziva.transports.im_bridge.models import IncomingMessage, OutgoingMessage
 from ziva.transports.im_bridge.store import IMConfig
 
@@ -76,7 +76,7 @@ class IMBridge:
         # to the question via the pending_questions map in _handle.
         try:
             self.runtime.on_ask_user(self._on_ask_user_question)
-            self.runtime.on_send_media(self._on_send_media)
+            self.runtime.on_send_file(self._on_send_file)
         except Exception:
             logger.exception("im_bridge: failed to register runtime callbacks")
         for name, cfg in self.config.channels.items():
@@ -468,17 +468,15 @@ class IMBridge:
         except Exception:
             logger.exception("im_bridge: failed to push ask_user question to %s", channel)
 
-    async def _on_send_media(self, session_id: str, path: str, data_url: str | None, caption: str) -> bool:
-        """Deliver a ``send_media`` payload to the originating IM chat.
+    async def _on_send_file(self, session_id: str, path: str, media_type: str | None, caption: str) -> bool:
+        """Deliver a ``send_file`` payload to the originating IM chat.
 
-        Registered with ``runtime.on_send_media``. We reuse the routing the
+        Registered with ``runtime.on_send_file``. We reuse the routing the
         bridge recorded when the IM message was first routed to a session
-        (``_sid_route``) and push the media back through the adapter as an
-        image attachment. The adapters already decode base64 ``data:`` URLs
-        (see read_file / MCP), so an image ``data_url`` is sent directly;
-        a non-image file (``data_url is None``) currently falls back to a
-        text message naming the path. Returns True iff a channel took the
-        delivery, so the tool can report "sent" vs "no IM channel".
+        (``_sid_route``). The kind is the model's ``media_type`` hint, falling
+        back to extension classification: images go via the ``images`` field
+        (adapters send as photos), everything else via ``files`` (adapters
+        send as video/document). Returns True iff a channel took the delivery.
         """
         route = self._sid_route.get(session_id) or {}
         chat_id = route.get("chat_id", "")
@@ -488,22 +486,23 @@ class IMBridge:
             return False
         adapter = self._adapters.get(channel)
         if not adapter:
-            logger.warning("im_bridge: send_media channel %s not connected", channel)
+            logger.warning("im_bridge: send_file channel %s not connected", channel)
             return False
-        if not data_url:
-            # Non-image file: adapters only ship image data URLs today, so
-            # at least surface the caption/path as text.
-            try:
-                await adapter.send_message(OutgoingMessage(chat_id=chat_id, text=caption or path))
-            except Exception:
-                logger.exception("im_bridge: failed to send send_media caption to %s", channel)
-            return True
+        # media_type from the model is one of image/video/file; classify_media
+        # returns image/video/document. Either way only "image" routes to the
+        # photo path — everything else is a file (video or document).
+        kind = media_type or classify_media(path)
         try:
-            await adapter.send_message(
-                OutgoingMessage(chat_id=chat_id, text=caption, images=[data_url])
-            )
+            if kind == "image":
+                await adapter.send_message(
+                    OutgoingMessage(chat_id=chat_id, text=caption, images=[path])
+                )
+            else:
+                await adapter.send_message(
+                    OutgoingMessage(chat_id=chat_id, text=caption, files=[path])
+                )
         except Exception:
-            logger.exception("im_bridge: failed to deliver send_media to %s", channel)
+            logger.exception("im_bridge: failed to deliver send_file to %s", channel)
             return False
         return True
 
@@ -677,6 +676,11 @@ class IMBridge:
         session = self.runtime._get_session(sid)
         if session.turn_task is not None and not session.turn_task.done():
             raise RuntimeError("turn_already_running")
+        # Tag the session with its IM channel so the runtime surfaces it in
+        # the system prompt — the model then knows send_file delivers here.
+        _route = self._sid_route.get(sid) or {}
+        if _route.get("channel"):
+            session.im_channel = _route["channel"]
 
         # Create a SessionStore turn record so the desktop UI can observe
         # this turn's status (running/done/cancelled/failed). The record
