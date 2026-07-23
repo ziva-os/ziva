@@ -90,9 +90,14 @@ class ReadFileTool:
     def _is_binary_file(self, path: Path) -> bool:
         """Check if a file is binary using null-byte detection and extension check."""
         binary_extensions = {
-            '.zip', '.tar', '.gz', '.7z', '.exe', '.dll', '.so', '.dylib', '.bin', '.dat',
+            '.zip', '.tar', '.gz', '.7z', '.rar', '.bz2', '.xz',
+            # Office docs / PDFs have text-like headers (%PDF-, PK zip) so the
+            # 4096-byte null sample misses them — flag by extension to avoid
+            # reading the whole binary blob as garbled text (context bloat).
+            '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.odt', '.epub',
+            '.exe', '.dll', '.so', '.dylib', '.bin', '.dat',
             '.pyc', '.pyo', '.class', '.jar', '.war', '.obj', '.o', '.a', '.lib',
-            '.ico', '.wasm'
+            '.ico', '.wasm', '.sqlite', '.db', '.mdb',
         }
         if path.suffix.lower() in binary_extensions or path.suffix.lower() in IMAGE_EXTENSIONS:
             return True
@@ -163,7 +168,19 @@ class ReadFileTool:
 
             # Check for binary file
             if self._is_binary_file(path):
-                return ToolResult(text=f"Error: binary_file\nCannot read binary file: {file_path}", error=True)
+                ext = path.suffix.lower().lstrip(".")
+                size = path.stat().st_size if path.exists() else 0
+                return ToolResult(
+                    text=(
+                        f"Error: binary_file\n"
+                        f"{file_path} is a binary {ext or 'file'} ({size} bytes) and "
+                        f"cannot be read as text — reading it would dump garbled bytes "
+                        f"and blow up the context. For PDFs / office docs, extract text "
+                        f"with the shell tool (e.g. `pdftotext {file_path} -`), or ask "
+                        f"the user to paste the relevant text."
+                    ),
+                    error=True,
+                )
 
             # Text File Reading with line numbers (offloaded to thread for large files)
             result = await asyncio.to_thread(self._read_text_sync, path, offset, limit)
