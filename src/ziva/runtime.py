@@ -392,7 +392,7 @@ AUTO_COMPACT_THRESHOLD = 0.9
 # turns gives the model a decent recent context (typically 10–15
 # messages including tool_results) without bloating on tool-heavy
 # turns.
-AUTO_COMPACT_KEEP_LAST_ASSISTANT_TURNS = 5
+AUTO_COMPACT_KEEP_LAST_ASSISTANT_TURNS = 3
 
 
 @dataclass
