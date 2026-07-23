@@ -194,15 +194,13 @@ class IMBridge:
             sid = self._route_session(msg)
             self._ensure_session(sid, msg)
             image_paths = self._persist_images(sid, msg.images)
-            # Non-image inbound files: the model can't consume a pdf/video
-            # blob, so surface each as a saved-path note it can read_file
-            # (images still go through image_url via image_paths above).
+            file_paths = self._persist_files(sid, msg.files)
             text = msg.text
-            if msg.files:
+            if file_paths:
                 from pathlib import Path as _P
                 note = "".join(
                     f"\n[用户发送的文件：{_P(p).name or p}，已保存到 {p}]"
-                    for p in msg.files
+                    for p in file_paths
                 )
                 text = (text + note) if text else note.strip()
             # Best-effort typing indicator: the user on the IM side gets
@@ -668,6 +666,29 @@ class IMBridge:
                     moved.append(str(dest))
                 except Exception:
                     logger.exception("im_bridge: failed to copy image %s", src)
+        return moved
+
+    def _persist_files(self, sid: str, temp_paths: list[str]) -> list[str]:
+        """Move adapter-downloaded files into the session attachments dir,
+        keeping the original filename (collision-safe)."""
+        if not temp_paths:
+            return []
+        pid = self.runtime.project_id
+        attachments_dir = FileStorage.project_dir(pid) / "attachments" / sid
+        attachments_dir.mkdir(parents=True, exist_ok=True)
+        moved: list[str] = []
+        for src in temp_paths:
+            src_path = Path(src)
+            if not src_path.exists():
+                continue
+            dest = attachments_dir / src_path.name
+            if dest.exists():
+                dest = attachments_dir / f"{src_path.stem}_{uuid.uuid4().hex[:6]}{src_path.suffix}"
+            try:
+                shutil.move(str(src_path), str(dest))
+                moved.append(str(dest))
+            except Exception:
+                logger.exception("im_bridge: failed to move file %s to attachments", src)
         return moved
 
     async def _run_turn(self, sid: str, text: str, image_paths: list[str] | None = None) -> tuple[str, list[str]]:

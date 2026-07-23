@@ -22,7 +22,7 @@ from typing import Any, Dict
 import aiohttp
 from aiohttp import ClientConnectorError
 
-from ziva.transports.im_bridge.adapters.base import BaseAdapter, decode_image_ref, _bytesio, classify_media
+from ziva.transports.im_bridge.adapters.base import BaseAdapter, decode_image_ref, _bytesio, classify_media, _safe_filename
 from ziva.transports.im_bridge.models import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
@@ -288,7 +288,7 @@ class TelegramAdapter(BaseAdapter):
                 continue
             fname = ent.get("file_name", "") or ""
             ext = (Path(fname).suffix.lstrip(".") if fname else "") or _kind_ext.get(kind, "bin")
-            path = await self._download_file(file_id, ext)
+            path = await self._download_file(file_id, ext, fname)
             if path:
                 file_paths.append(path)
             else:
@@ -338,11 +338,11 @@ class TelegramAdapter(BaseAdapter):
         save_path.write_bytes(data)
         return str(save_path)
 
-    async def _download_file(self, file_id: str, ext: str) -> str | None:
+    async def _download_file(self, file_id: str, ext: str, filename: str = "") -> str | None:
         """Download any Telegram file by file_id (document/video/audio/...).
 
-        Like ``_download_photo`` but keeps the real extension instead of
-        forcing jpg, so pdf/mp4/etc. land on disk with the right suffix.
+        Like ``_download_photo`` but keeps the real extension and the original
+        filename (sanitized) instead of forcing jpg / a uuid name.
         """
         if not self._session:
             return None
@@ -358,9 +358,13 @@ class TelegramAdapter(BaseAdapter):
         if not data:
             return None
         ext = (ext or Path(file_path).suffix.lower().lstrip(".") or "bin").lower()
+        base = _safe_filename(filename) if filename else ""
+        save_name = base if base else f"{uuid.uuid4().hex}.{ext}"
+        if not Path(save_name).suffix:
+            save_name = f"{save_name}.{ext}"
         tmp_dir = Path(tempfile.gettempdir()) / "ziva-im-bridge"
         tmp_dir.mkdir(parents=True, exist_ok=True)
-        save_path = tmp_dir / f"{uuid.uuid4().hex}.{ext}"
+        save_path = tmp_dir / save_name
         save_path.write_bytes(data)
         return str(save_path)
 

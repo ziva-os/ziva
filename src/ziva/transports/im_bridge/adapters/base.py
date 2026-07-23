@@ -88,6 +88,16 @@ def classify_media(path: str) -> str:
     return "document"
 
 
+def _safe_filename(name: str) -> str:
+    """Sanitize a filename for local storage: take the basename and replace
+    path separators / unsafe chars. Returns '' for empty input."""
+    name = os.path.basename(name or "").strip()
+    for ch in '\\/:*?"<>|':
+        name = name.replace(ch, "_")
+    name = name.strip(". ")
+    return name[:120]
+
+
 class BaseAdapter(ABC):
     #: ``feishu`` / ``wechat`` / ``telegram`` — matches IncomingMessage.channel
     channel: str = ""
