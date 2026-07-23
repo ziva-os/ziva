@@ -354,19 +354,35 @@ async function createMainWindow() {
       }
       .wordmark { font-size:30px; font-weight:700; letter-spacing:1px; color:#e8e8f0; margin-bottom:26px; }
       .wordmark .os { color:#8ab4f8; font-weight:500; margin-left:1px; }
-      .mark { width:108px; height:45px; animation: breathe 2.6s ease-in-out infinite; }
-      @keyframes breathe { 0%,100%{ opacity:.82; } 50%{ opacity:1; } }
+      .mark { width:124px; height:52px; animation: breathe 2.8s ease-in-out infinite; }
+      @keyframes breathe { 0%,100%{ transform:scale(1); opacity:.92; } 50%{ transform:scale(1.03); opacity:1; } }
       .mark svg { width:100%; height:100%; overflow:visible; }
-      .inf { fill:none; stroke-linecap:round; stroke-width:5; }
-      .track { stroke:rgba(138,180,248,0.18); }
-      .comet { stroke:#8ab4f8; stroke-dasharray:16 84; animation: trace 1.6s linear infinite; filter: drop-shadow(0 0 4px rgba(138,180,248,0.45)); }
+      .inf { fill:none; stroke-linecap:round; stroke-linejoin:round; stroke-width:5; }
+      .track { stroke:rgba(138,180,248,0.12); }
+      .base { stroke:url(#g); opacity:0.28; }
+      .comet { stroke:url(#g); stroke-dasharray:13 87; animation: trace 1.9s linear infinite; filter:url(#glow); }
       @keyframes trace { to { stroke-dashoffset:-100; } }
+      .head { fill:#dbeaff; filter:url(#glow); }
     </style></head><body>
       <div class='wordmark'>Ziva<span class='os'>OS</span></div>
       <div class='mark'>
         <svg viewBox='0 0 120 50'>
+          <defs>
+            <linearGradient id='g' x1='0' y1='0' x2='1' y2='0'>
+              <stop offset='0%' stop-color='#8ab4f8'/>
+              <stop offset='100%' stop-color='#cfe0ff'/>
+            </linearGradient>
+            <filter id='glow' x='-60%' y='-60%' width='220%' height='220%'>
+              <feGaussianBlur stdDeviation='2.2' result='b'/>
+              <feMerge><feMergeNode in='b'/><feMergeNode in='SourceGraphic'/></feMerge>
+            </filter>
+          </defs>
           <path class='inf track' pathLength='100' d='M60,25 C60,5 25,5 25,25 C25,45 60,45 60,25 C60,5 95,5 95,25 C95,45 60,45 60,25 Z'/>
+          <path class='inf base' pathLength='100' d='M60,25 C60,5 25,5 25,25 C25,45 60,45 60,25 C60,5 95,5 95,25 C95,45 60,45 60,25 Z'/>
           <path class='inf comet' pathLength='100' d='M60,25 C60,5 25,5 25,25 C25,45 60,45 60,25 C60,5 95,5 95,25 C95,45 60,45 60,25 Z'/>
+          <circle class='head' r='2.6'>
+            <animateMotion dur='1.9s' repeatCount='indefinite' path='M60,25 C60,5 25,5 25,25 C25,45 60,45 60,25 C60,5 95,5 95,25 C95,45 60,45 60,25 Z'/>
+          </circle>
         </svg>
       </div>
     </body></html>`
