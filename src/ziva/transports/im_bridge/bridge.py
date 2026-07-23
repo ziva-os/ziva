@@ -323,12 +323,18 @@ class IMBridge:
                         available.append(m["name"])
             if not available:
                 available = [current]
+            sid = self.config.route_for(msg.route_key)
+            # `current` must reflect the SESSION's model (set by a prior
+            # /model switch), not the global config default — otherwise the
+            # list always marks the default and never the switched model.
+            if sid:
+                _sess_meta = FileStorage.get_session(self.runtime.project_id, sid) or {}
+                current = _sess_meta.get("model_name") or current
             if not arg:
                 lines = [f"● {m}" if m == current else f"○ {m}" for m in available]
                 return f"可用模型（当前: {current}）：\n" + "\n".join(lines) + "\n\n用法: /model <名称>"
             if arg not in available:
                 return f"未知模型: {arg}\n可用: {', '.join(available)}"
-            sid = self.config.route_for(msg.route_key)
             if not sid:
                 return "请先发送一条消息再切换模型。"
             try:

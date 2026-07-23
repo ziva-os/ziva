@@ -230,13 +230,25 @@ class FeishuAdapter(BaseAdapter):
 
         # 3. Send each non-image file (video / archive / document). Upload to
         #    get a `file_key`, then send a `file` msg_type referencing it.
+        #    Feishu caps file messages at ~25MB; larger files can't be
+        #    delivered this way, so fall back to a text note instead of
+        #    silently dropping them (otherwise the user gets nothing).
         for file_path in msg.files or []:
+            fname = Path(file_path).name or file_path
+            try:
+                size = Path(file_path).stat().st_size
+            except OSError:
+                size = 0
+            if size > 25 * 1024 * 1024:
+                await self._send_text(msg.chat_id, f"📎 {fname}（{size // 1048576}MB）超过飞书单文件上限（约25MB），未发送，请在桌面查看。")
+                continue
             try:
                 file_key = await self._upload_file(file_path)
             except Exception:
                 logger.exception("feishu: file upload failed for %s", file_path)
-                continue
+                file_key = ""
             if not file_key:
+                await self._send_text(msg.chat_id, f"📎 {fname} 发送失败，请在桌面查看。")
                 continue
             req = (
                 im.CreateMessageRequest.builder()
@@ -254,6 +266,29 @@ class FeishuAdapter(BaseAdapter):
                 await asyncio.to_thread(self._send_client.im.v1.message.create, req)
             except Exception:
                 logger.exception("feishu: file send failed for key=%s", file_key)
+
+    async def _send_text(self, chat_id: str, text: str) -> None:
+        """Send a plain text bubble — used for file-send fallbacks."""
+        if not self._send_client or not text:
+            return
+        im = self._send_module
+        assert im is not None
+        try:
+            req = (
+                im.CreateMessageRequest.builder()
+                .receive_id_type("chat_id")
+                .request_body(
+                    im.CreateMessageRequestBody.builder()
+                    .receive_id(chat_id)
+                    .msg_type("text")
+                    .content(json.dumps({"text": text}, ensure_ascii=False))
+                    .build()
+                )
+                .build()
+            )
+            await asyncio.to_thread(self._send_client.im.v1.message.create, req)
+        except Exception:
+            logger.exception("feishu: fallback text send failed")
 
     async def send_typing(self, chat_id: str, message_id: str = "") -> None:
         """Add an "OnIt" (👆 处理中) reaction to the user's inbound message.

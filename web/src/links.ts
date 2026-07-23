@@ -34,10 +34,18 @@ export function initMessageLinkInterceptor(): void {
       openLinkInBrowser(href);
       return;
     }
-    if (!href.startsWith("/")) {
+    if (href.startsWith("/")) {
+      // Local backend route (e.g. /attachments?path=... for a delivered
+      // file) — open in the built-in browser tab as an absolute URL instead
+      // of navigating the host window / spawning a stray Electron window.
       e.preventDefault();
       e.stopPropagation();
-      console.log("Relative link clicked:", href);
+      openLinkInBrowser(new URL(href, window.location.origin).toString());
+      return;
     }
+    // Other relative links (no scheme, no leading /) — block default nav.
+    e.preventDefault();
+    e.stopPropagation();
+    console.log("Relative link clicked:", href);
   });
 }

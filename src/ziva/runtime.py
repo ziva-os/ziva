@@ -1193,19 +1193,21 @@ class Runtime:
                 parts.append("\n".join(skill_lines))
             effective_prompt = "\n\n".join(parts)
             # IM channel context: when a turn is driven from the IM bridge,
-            # tell the model which channel it's on so it knows send_file
-            # delivers to this chat and keeps replies IM-friendly.
+            # tell the model the user is reaching it REMOTELY through a
+            # messenger — the channel is just the transport, the agent is
+            # still Ziva — so it doesn't mistake the channel for its identity.
             _im_session = self._get_session(session_id)
             _im_channel = getattr(_im_session, "im_channel", None)
             if _im_channel:
                 effective_prompt += (
-                    "\n\n## IM Channel\n"
-                    f"You are responding to the user via the **{_im_channel}** messaging "
-                    "channel — your text reply and any `send_file` deliveries go directly "
-                    "to this chat. Keep replies concise and IM-friendly. To send the user "
-                    "a generated file (image / video / document / archive), call `send_file` "
-                    "(it is delivered as a native attachment here); do NOT embed files as "
-                    "inline image/file markdown."
+                    "\n\n## Remote IM session\n"
+                    f"The user is reaching you remotely through their **{_im_channel}** "
+                    f"messenger. {_im_channel} is only the transport channel, not your "
+                    "identity — you are still Ziva running on the user's machine. Your text "
+                    "reply and any `send_file` deliveries are sent back through this "
+                    f"{_im_channel} chat. Keep replies concise. To send the user any file, "
+                    "call `send_file` (delivered as an attachment here); do NOT embed files "
+                    "as inline image/file markdown."
                 )
 
             # When a plan exists, remind the model to keep it in sync.
