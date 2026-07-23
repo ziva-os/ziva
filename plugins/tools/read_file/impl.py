@@ -19,8 +19,6 @@ IMAGE_EXTENSIONS = {
 class ReadFileTool:
     """Enhanced read file tool with line numbers, offset, limit, and image support."""
 
-    DEFAULT_LIMIT = 2000
-
     def spec(self):
         return {
             "name": "read_file",
@@ -122,8 +120,8 @@ class ReadFileTool:
 
     async def run(self, input_data, ctx):
         file_path = input_data.get("file_path")
-        offset = input_data.get("offset", 1)
-        limit = input_data.get("limit", self.DEFAULT_LIMIT)
+        offset = input_data.get("offset")
+        limit = input_data.get("limit")
 
         if not file_path:
             return ToolResult(text="Error: invalid_input\nfile_path is required", error=True)

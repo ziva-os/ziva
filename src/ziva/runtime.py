@@ -1796,7 +1796,15 @@ class Runtime:
                     else:
                         timeout = tool_timeouts.get(call.name, default_timeout)
                 try:
-                    out = await asyncio.wait_for(tool.run(hook_result.get("arguments", call.arguments), ctx), timeout=timeout)
+                    # Apply schema `default` values so the schema is the single
+                    # source of truth — tools read args without duplicating
+                    # defaults as code fallbacks.
+                    _args = dict(hook_result.get("arguments", call.arguments) or {})
+                    _props = (spec.get("input_schema") or {}).get("properties") or {}
+                    for _pk, _pv in _props.items():
+                        if _pk not in _args and isinstance(_pv, dict) and "default" in _pv:
+                            _args[_pk] = _pv["default"]
+                    out = await asyncio.wait_for(tool.run(_args, ctx), timeout=timeout)
                 except asyncio.TimeoutError:
                     return ToolResult(text=f"Error: timeout\nTool '{call.name}' timed out after {timeout}s", error=True)
                 if not isinstance(out, ToolResult):
