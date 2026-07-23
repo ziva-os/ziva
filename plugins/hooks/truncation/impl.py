@@ -10,9 +10,15 @@ _TOOL_LIMITS: dict[str, int] = {
     "shell": 30_000,
     "grep": 20_000,
     "web_fetch": 50_000,
+    # read_file self-limits by LINES (2000), not bytes — a binary / long-line
+    # file (e.g. a PDF read as text) can be huge in bytes/tokens while still
+    # under the line limit (one such read hit 293KB → 203K tokens). Cap it by
+    # size: over ~198KB, save the full output to a file and return a head/tail
+    # preview instead of dumping it into the context.
+    "read_file": 198 * 1024,
 }
 _DEFAULT_LIMIT = 20_000
-_UNLIMITED = {"read_file"}
+_UNLIMITED: set[str] = set()
 _PREVIEW_HEAD_LINES = 50
 _PREVIEW_TAIL_LINES = 20
 _PREVIEW_LINE_WIDTH = 200
