@@ -201,7 +201,7 @@ class IMBridge:
             if msg.files:
                 from pathlib import Path as _P
                 note = "".join(
-                    f"\n[用户发送的文件：{_P(p).name or p}，已保存到 {p}，可用 read_file 读取]"
+                    f"\n[用户发送的文件：{_P(p).name or p}，已保存到 {p}]"
                     for p in msg.files
                 )
                 text = (text + note) if text else note.strip()
