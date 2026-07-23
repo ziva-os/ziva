@@ -44,6 +44,16 @@ _PREVIEWABLE_EXTS = {
     ".c", ".cpp", ".cc", ".h", ".hpp", ".rb", ".php", ".swift", ".sql",
 }
 
+# Text/code extensions to ALWAYS serve as text/plain so the browser displays
+# them inline instead of downloading. mimetypes gets several of these wrong
+# (.md/.go → None → octet-stream → download; .ts → video/mp2t; .sh → x-sh).
+_TEXT_PREVIEW_EXTS = {
+    ".txt", ".md", ".markdown", ".log",
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".css", ".scss",
+    ".sh", ".bash", ".rs", ".go", ".java", ".kt",
+    ".c", ".cpp", ".cc", ".h", ".hpp", ".rb", ".php", ".swift", ".sql",
+}
+
 
 @dataclass
 class Automation:
@@ -1670,6 +1680,11 @@ class DesktopAPIServer:
             return web.json_response({"error": "not_found"}, status=404)
 
         mime, _ = mimetypes.guess_type(candidate.name)
+        # Text/code files: force text/plain so the browser shows them inline
+        # (mimetypes returns None / octet-stream for .md/.go, or wrong types
+        # like video/mp2t for .ts, all of which trigger a download).
+        if candidate.suffix.lower() in _TEXT_PREVIEW_EXTS:
+            return web.Response(body=candidate.read_bytes(), content_type="text/plain", charset="utf-8")
         mime = mime or "application/octet-stream"
         return web.Response(body=candidate.read_bytes(), content_type=mime)
 
