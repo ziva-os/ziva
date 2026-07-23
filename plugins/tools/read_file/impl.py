@@ -40,7 +40,7 @@ class ReadFileTool:
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "The maximum number of lines to read (defaults to 2000)",
+                        "description": "The maximum number of lines to read",
                         "default": 2000
                     }
                 },
