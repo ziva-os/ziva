@@ -13,7 +13,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "thinking_mode": "disabled",
         "thinking_budget_tokens": 4000,
     },
-    "providers": [{"name": "Anthropic", "api_type": "anthropic", "api_key": "", "base_url": "https://api.anthropic.com", "models": [{"name": "claude-sonnet-4-5", "supports_image": True}]}],
+    "providers": [{"name": "Anthropic", "api_type": "anthropic", "api_key": "", "base_url": "https://api.anthropic.com", "models": [{"name": "claude-sonnet-4-5", "capabilities": {"vision": True}}]}],
     "prompt": {"profile": "default", "variables": {}},
     "tool": {"allow": [], "deny": [], "max_rounds": 0},
     "skill": {

@@ -266,14 +266,14 @@ export async function openSettingsModal() {
       api_type: p.api_type || "openai_compatible",
       api_key: p.api_key || "",
       base_url: p.base_url || "",
-      models: (p.models || []).map((m2: any) => ({ name: m2.name || "", supports_image: m2.supports_image ?? true })),
+      models: (p.models || []).map((m2: any) => ({ name: m2.name || "", capabilities: { vision: m2.capabilities?.vision ?? true } })),
     }));
     for (let pi = 0; pi < normProviders.length; pi++) {
       const p = normProviders[pi];
       const isOpenAI = p.api_type !== "anthropic";
       let modelRows = "";
       for (const model of p.models) {
-        const supportsImage = model.supports_image ?? true;  // default True = vision-capable
+        const supportsImage = model.capabilities?.vision ?? true;  // default True = vision-capable
         modelRows += `
           <div class="settings-model-row">
             <input class="settings-input s-model-name" value="${esc(model.name)}" placeholder="Model name" style="flex:1" />
@@ -682,12 +682,12 @@ export async function openSettingsModal() {
           const apiType = (card.querySelector("[data-field='api_type']") as HTMLSelectElement)?.value || "openai_compatible";
           const apiKey = (card.querySelector("[data-field='api_key']") as HTMLInputElement)?.value || "";
           const baseUrl = (card.querySelector("[data-field='base_url']") as HTMLInputElement)?.value || "";
-          const models: Array<{ name: string; supports_image: boolean }> = [];
+          const models: Array<{ name: string; capabilities: { vision: boolean } }> = [];
           card.querySelectorAll(".settings-model-row").forEach(row => {
             const name = (row.querySelector(".s-model-name") as HTMLInputElement)?.value.trim() || "";
             if (!name) return;
-            const supports_image = (row.querySelector(".s-model-image") as HTMLInputElement)?.checked ?? true;
-            models.push({ name, supports_image });
+            const vision = (row.querySelector(".s-model-image") as HTMLInputElement)?.checked ?? true;
+            models.push({ name, capabilities: { vision } });
             if ((row.querySelector(".s-model-default") as HTMLInputElement)?.checked) defaultName = name;
           });
           if (models.length > 0) {
