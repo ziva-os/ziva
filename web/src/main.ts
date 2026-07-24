@@ -844,32 +844,37 @@ async function addImageFile(file: File, sid?: string) {
     renderComposerPreviews(uploadSid);
   };
 
-  const fd = new FormData();
-  fd.append("file", file, file.name);
-  fetch(`/sessions/${uploadSid}/attachments`, {
-    method: "POST",
-    body: fd,
-    signal: controller.signal,
-  })
-    .then(async (r) => {
-      if (!r.ok) {
-        const detail = await r.text().catch(() => r.statusText);
-        finish(null, detail || `HTTP ${r.status}`);
-        return;
-      }
-      const j = await r.json();
-      finish({ path: j.path, mime: j.mime, size: j.size });
+  // Electron exposes file.path for files from <input type="file"> — use
+  // the original path directly, no need to copy into the attachments dir.
+  // Clipboard-pasted files don't have .path (in-memory blob) → upload.
+  if ((file as any).path) {
+    finish({ path: (file as any).path, mime: file.type, size: file.size });
+  } else {
+    const fd = new FormData();
+    fd.append("file", file, file.name);
+    fetch(`/sessions/${uploadSid}/attachments`, {
+      method: "POST",
+      body: fd,
+      signal: controller.signal,
     })
-    .catch((e) => {
-      if ((e as DOMException).name === "AbortError") {
-        // Upload was cancelled (e.g. session switch). Silently discard;
-        // the thumbUrl is revoked in cancelInFlightUploads.
-        const idx = inFlightUploads.indexOf(uploadEntry);
-        if (idx !== -1) inFlightUploads.splice(idx, 1);
-        return;
-      }
-      finish(null, String(e));
-    });
+      .then(async (r) => {
+        if (!r.ok) {
+          const detail = await r.text().catch(() => r.statusText);
+          finish(null, detail || `HTTP ${r.status}`);
+          return;
+        }
+        const j = await r.json();
+        finish({ path: j.path, mime: j.mime, size: j.size });
+      })
+      .catch((e) => {
+        if ((e as DOMException).name === "AbortError") {
+          const idx = inFlightUploads.indexOf(uploadEntry);
+          if (idx !== -1) inFlightUploads.splice(idx, 1);
+          return;
+        }
+        finish(null, String(e));
+      });
+  }
 }
 
 // ---- Split-screen sessions ----
