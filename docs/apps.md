@@ -295,7 +295,7 @@ app 和 skill/tool 一样是**一等公民**：有固定的安装位置、自己
 
 **后续工作（未在本文敲定，分阶段）：**
 1. 内核：`agent.run`（scoped，HTTP + CLI 入口）。
-2. app runtime：**索引层**（扫 manifest → app registry + 每个 app 的 `APP.md` 注册成 skill stub）+ **激活层按需**（APP.md 全文 / MCP 连接 / UI 启动，用到才加载）。
+2. app runtime：**索引层**（扫 manifest → app registry；app 注入 system prompt 的 `# Available Apps` 段供 agent 发现）+ **激活层按需**（APP.md 全文 / MCP 连接 / **app 的 serve 进程 start/stop**，用到才加载）。**生命周期管理（start/stop/restart/status/自启/重启/`ziva app` CLI）见 [`docs/app-lifecycle.md`](app-lifecycle.md)。**
 3. APP.md / manifest 规范的正式实现与校验。
 4. 打包 / 分享 / 云端部署（bundle 分发、marketplace、remote 部署）。
 5. 安全：分享 app 的沙箱与签名。
