@@ -1,4 +1,4 @@
-/** IM bridge ("连接手机") modal — manage 飞书 / Telegram channels.
+/** IM bridge ("Connect Phone") modal — manage Feishu / Telegram channels.
  *
  * Redesigned UI: modern card layout, platform brand colors, status pills,
  * empty state illustration, and a two-step "add robot" flow. All server
@@ -8,25 +8,31 @@
 
 import * as api from "../api";
 import { channelIconHtml } from "../icons";
+import * as i18n from "../i18n";
 import { closeAllFullpageOverlays } from "../modals";
 
-const CHANNEL_LABELS: Record<string, string> = {
-  feishu: "飞书",
-  telegram: "Telegram",
-};
+function channelLabel(name: string): string {
+  return name === "feishu" ? i18n.t("im.feishu")
+    : name === "telegram" ? "Telegram"
+    : name;
+}
 
-const CHANNEL_HINTS: Record<string, string> = {
-  feishu: "App ID + App Secret 连接",
-  telegram: "BotFather Token 连接",
-};
+function channelHint(name: string): string {
+  return name === "feishu" ? i18n.t("im.hint.feishu")
+    : name === "telegram" ? i18n.t("im.hint.telegram")
+    : "";
+}
 
-const STATE_LABELS: Record<string, string> = {
-  connected: "已连接",
-  connecting: "连接中",
-  waiting_scan: "等待扫码",
-  error: "错误",
-  disconnected: "未连接",
-};
+function stateLabel(state: string): string {
+  switch (state) {
+    case "connected": return i18n.t("im.state.connected");
+    case "connecting": return i18n.t("im.state.connecting");
+    case "waiting_scan": return i18n.t("im.state.waitingScan");
+    case "error": return i18n.t("im.state.error");
+    case "disconnected": return i18n.t("im.state.disconnected");
+    default: return state;
+  }
+}
 
 function svgNode(svg: string): SVGSVGElement | null {
   if (!svg) return null;
@@ -54,18 +60,18 @@ export async function openIMBridgeModal(): Promise<void> {
   backdrop.innerHTML = `
     <div class="fullpage-shell">
       <div class="fullpage-topbar">
-        <div class="fullpage-title">连接手机</div>
+        <div class="fullpage-title">${i18n.t("im.title")}</div>
         <div class="fullpage-topbar-spacer"></div>
       </div>
       <div class="fullpage-body" id="imBridgeModalBody">
-        <div class="skills-modal-loading">Loading...</div>
+        <div class="skills-modal-loading">${i18n.t("im.loading")}</div>
       </div>
     </div>`;
   document.body.appendChild(backdrop);
   const closeBtn = document.createElement("button");
   closeBtn.className = "im-close-btn";
   closeBtn.textContent = "×";
-  closeBtn.title = "关闭";
+  closeBtn.title = i18n.t("common.close");
   closeBtn.onclick = () => closeIMBridgeModal();
   backdrop.querySelector(".fullpage-topbar")?.appendChild(closeBtn);
   await loadIMBridgeIntoModal();
@@ -81,7 +87,7 @@ async function loadIMBridgeIntoModal(): Promise<void> {
   body.textContent = "";
   const loading = document.createElement("div");
   loading.className = "skills-modal-loading";
-  loading.textContent = "Loading...";
+  loading.textContent = i18n.t("im.loading");
   body.appendChild(loading);
   try {
     const [channels, config, pending] = await Promise.all([
@@ -94,7 +100,7 @@ async function loadIMBridgeIntoModal(): Promise<void> {
     body.textContent = "";
     const err = document.createElement("div");
     err.className = "im-empty-state";
-    err.textContent = `加载失败: ${e?.message || e}`;
+    err.textContent = i18n.t("im.loadFailed", { err: e?.message || e });
     body.appendChild(err);
   }
 }
@@ -111,7 +117,7 @@ function renderMain(
 
   const intro = document.createElement("div");
   intro.className = "im-intro";
-  intro.textContent = "把 Ziva 接入飞书、Telegram，手机上也能给 AI 派活。收到消息会作为普通对话处理，回复发回 IM。";
+  intro.textContent = i18n.t("im.intro");
   container.appendChild(intro);
 
   const connected = channels.filter((c) => c.state === "connected" || c.state === "connecting" || c.state === "waiting_scan");
@@ -126,10 +132,10 @@ function renderMain(
     sectionHeader.className = "im-section-header";
     const title = document.createElement("div");
     title.className = "im-section-title";
-    title.textContent = connected.length > 0 ? `已连接的机器人 (${connected.length})` : "机器人";
+    title.textContent = connected.length > 0 ? i18n.t("im.connectedBots", { n: connected.length }) : i18n.t("im.bots");
     const addBtn = document.createElement("button");
     addBtn.className = "im-add-btn";
-    addBtn.innerHTML = `<span>+</span><span>添加机器人</span>`;
+    addBtn.innerHTML = `<span>+</span><span>${i18n.t("im.addBot")}</span>`;
     addBtn.onclick = () => openAddRobotOverlay();
     sectionHeader.append(title, addBtn);
     container.appendChild(sectionHeader);
@@ -152,13 +158,13 @@ function renderEmptyState(): HTMLElement {
   if (icon) iconWrap.appendChild(icon);
   const title = document.createElement("div");
   title.className = "im-empty-title";
-  title.textContent = "还没有连接任何机器人";
+  title.textContent = i18n.t("im.emptyTitle");
   const desc = document.createElement("div");
   desc.className = "im-empty-desc";
-  desc.textContent = "把 Ziva 接入飞书/Telegram，在手机上也能给 AI 派活。";
+  desc.textContent = i18n.t("im.emptyDesc");
   const btn = document.createElement("button");
   btn.className = "im-add-btn";
-  btn.innerHTML = `<span>+</span><span>添加机器人</span>`;
+  btn.innerHTML = `<span>+</span><span>${i18n.t("im.addBot")}</span>`;
   btn.onclick = () => openAddRobotOverlay();
   wrap.append(iconWrap, title, desc, btn);
   return wrap;
@@ -181,7 +187,7 @@ function renderChannelCard(ch: api.IMChannelStatus): HTMLElement {
   titleRow.className = "im-card-title-row";
   const title = document.createElement("div");
   title.className = "im-card-title";
-  title.textContent = CHANNEL_LABELS[ch.name] || ch.name;
+  title.textContent = channelLabel(ch.name);
   titleRow.appendChild(title);
   titleRow.appendChild(renderStatusPill(ch.state, ch.error));
 
@@ -193,9 +199,9 @@ function renderChannelCard(ch: api.IMChannelStatus): HTMLElement {
   } else if (ch.state === "connected" && ch.account_id) {
     sub.textContent = ch.account_id;
   } else if (!ch.configured) {
-    sub.textContent = CHANNEL_HINTS[ch.name] || "未配置";
+    sub.textContent = channelHint(ch.name) || i18n.t("im.notConfigured");
   } else {
-    sub.textContent = CHANNEL_HINTS[ch.name] || "";
+    sub.textContent = channelHint(ch.name);
   }
   main.append(titleRow, sub);
   card.appendChild(main);
@@ -206,13 +212,13 @@ function renderChannelCard(ch: api.IMChannelStatus): HTMLElement {
   if (active) {
     const btn = document.createElement("button");
     btn.className = "im-btn danger";
-    btn.textContent = "断开";
+    btn.textContent = i18n.t("im.disconnect");
     btn.onclick = () => void disconnect(ch.name);
     actions.appendChild(btn);
   } else {
     const btn = document.createElement("button");
     btn.className = "im-btn primary";
-    btn.textContent = "连接";
+    btn.textContent = i18n.t("im.connect");
     btn.onclick = () => openAddRobotOverlay(ch.name);
     actions.appendChild(btn);
   }
@@ -223,7 +229,7 @@ function renderChannelCard(ch: api.IMChannelStatus): HTMLElement {
 function renderStatusPill(state: string, error: string | null): HTMLElement {
   const pill = document.createElement("span");
   pill.className = `im-status-pill ${state}`;
-  pill.textContent = STATE_LABELS[state] || state;
+  pill.textContent = stateLabel(state);
   return pill;
 }
 
@@ -238,8 +244,8 @@ function openAddRobotOverlay(preselect?: string): void {
   overlay.id = "imBridgeAddOverlay";
   overlay.innerHTML = `
     <div class="fullpage-topbar">
-      <button class="fullpage-back" id="imBridgeAddBack">← 返回</button>
-      <div class="fullpage-title">添加机器人</div>
+      <button class="fullpage-back" id="imBridgeAddBack">${i18n.t("im.back")}</button>
+      <div class="fullpage-title">${i18n.t("im.addBot")}</div>
       <div class="fullpage-topbar-spacer"></div>
     </div>
     <div class="im-add-body" id="imBridgeAddBody"></div>`;
@@ -263,7 +269,7 @@ function renderPlatformGrid(body: HTMLElement): void {
   inner.className = "im-add-inner";
   const hint = document.createElement("div");
   hint.className = "im-intro";
-  hint.textContent = "选择要接入的 IM 平台，按提示完成授权即可在手机上使用 Ziva。";
+  hint.textContent = i18n.t("im.platformHint");
   inner.appendChild(hint);
 
   const grid = document.createElement("div");
@@ -277,10 +283,10 @@ function renderPlatformGrid(body: HTMLElement): void {
     if (icon) iconWrap.appendChild(icon);
     const title = document.createElement("div");
     title.className = "platform-name";
-    title.textContent = CHANNEL_LABELS[name];
+    title.textContent = channelLabel(name);
     const sub = document.createElement("div");
     sub.className = "platform-hint";
-    sub.textContent = CHANNEL_HINTS[name];
+    sub.textContent = channelHint(name);
     card.append(iconWrap, title, sub);
     card.onclick = () => renderPlatformForm(body, name);
     grid.appendChild(card);
@@ -302,7 +308,7 @@ function renderPlatformForm(body: HTMLElement, name: string): void {
   if (icon) iconWrap.appendChild(icon);
   const title = document.createElement("div");
   title.className = "im-section-title";
-  title.textContent = `连接${CHANNEL_LABELS[name]}`;
+  title.textContent = name === "telegram" ? i18n.t("im.connectTelegram") : i18n.t("im.connectFeishu");
   header.append(iconWrap, title);
   inner.appendChild(header);
 
@@ -311,13 +317,13 @@ function renderPlatformForm(body: HTMLElement, name: string): void {
   const fields: { key: string; label: string; type?: string }[] =
     name === "feishu"
       ? [
-          { key: "app_id", label: "App ID" },
-          { key: "app_secret", label: "App Secret", type: "password" },
+          { key: "app_id", label: i18n.t("im.field.appId") },
+          { key: "app_secret", label: i18n.t("im.field.appSecret"), type: "password" },
         ]
       : name === "telegram"
       ? [
-          { key: "bot_token", label: "Bot Token", type: "password" },
-          { key: "proxy_url", label: "代理地址（可选，例如 http://127.0.0.1:7890）" },
+          { key: "bot_token", label: i18n.t("im.field.botToken"), type: "password" },
+          { key: "proxy_url", label: i18n.t("im.field.proxyUrl") },
         ]
       : [];
 
@@ -341,10 +347,10 @@ function renderPlatformForm(body: HTMLElement, name: string): void {
   actions.className = "im-form-actions";
   const submit = document.createElement("button");
   submit.className = "im-btn primary";
-  submit.textContent = "验证并连接";
+  submit.textContent = i18n.t("im.verifyAndConnect");
   const cancel = document.createElement("button");
   cancel.className = "im-btn ghost";
-  cancel.textContent = "取消";
+  cancel.textContent = i18n.t("common.cancel");
   cancel.onclick = () => document.getElementById("imBridgeAddOverlay")?.remove();
   submit.onclick = async () => {
     errorEl.classList.remove("visible");
@@ -354,14 +360,14 @@ function renderPlatformForm(body: HTMLElement, name: string): void {
       const v = inputs[f.key].value.trim();
       if (v) payload[f.key] = v;
       else {
-        errorEl.textContent = `请填写 ${f.label}`;
+        errorEl.textContent = i18n.t("im.fillField", { field: f.label });
         errorEl.classList.add("visible");
         return;
       }
     }
     submit.disabled = true;
     const originalText = submit.textContent;
-    submit.innerHTML = `<span class="im-spinner"></span>连接中…`;
+    submit.innerHTML = `<span class="im-spinner"></span>${i18n.t("im.connecting")}`;
     try {
       const res = await api.startIMChannel(name, payload);
       if (res && res.error) {
@@ -391,7 +397,7 @@ async function disconnect(name: string): Promise<void> {
     await api.stopIMChannel(name);
     await loadIMBridgeIntoModal();
   } catch (e: any) {
-    alert(`断开失败: ${e?.message || e}`);
+    alert(i18n.t("im.disconnectFailed", { err: e?.message || e }));
   }
 }
 
@@ -401,18 +407,18 @@ function renderConfigSection(config: api.IMConfigPublic, pendingSenders: api.IMP
 
   const h = document.createElement("div");
   h.className = "im-section-title";
-  h.textContent = "安全 · 允许的发送者（白名单）";
+  h.textContent = i18n.t("im.allowlistTitle");
   sec.appendChild(h);
 
   const hint = document.createElement("div");
   hint.className = "im-config-hint";
-  hint.innerHTML = "只有白名单内的发送者能触发 Ziva。白名单为空时拒绝所有消息（fail-closed）。这里的 ID 是<b>给你发消息的人</b>的 ID，不是机器人自己的 ID。";
+  hint.innerHTML = i18n.t("im.allowlistHint");
   sec.appendChild(hint);
 
   if (pendingSenders.length > 0) {
     const pendingH = document.createElement("div");
     pendingH.className = "im-config-subtitle";
-    pendingH.textContent = "等待审批的发送者（先发送一条消息才会出现在这里）";
+    pendingH.textContent = i18n.t("im.pendingTitle");
     sec.appendChild(pendingH);
 
     const pendingList = document.createElement("div");
@@ -422,12 +428,12 @@ function renderConfigSection(config: api.IMConfigPublic, pendingSenders: api.IMP
       row.className = "im-pending-row";
       const info = document.createElement("div");
       info.className = "im-pending-info";
-      info.textContent = `${s.sender_name || s.sender_id} · ${CHANNEL_LABELS[s.channel] || s.channel}`;
+      info.textContent = i18n.t("im.pendingSender", { name: s.sender_name || s.sender_id, channel: channelLabel(s.channel) });
       const idEl = document.createElement("code");
       idEl.textContent = s.sender_id;
       const approve = document.createElement("button");
       approve.className = "im-btn primary";
-      approve.textContent = "允许";
+      approve.textContent = i18n.t("im.allow");
       approve.onclick = () => void approveAndReload(s.sender_id);
       row.append(info, idEl, approve);
       pendingList.appendChild(row);
@@ -437,7 +443,7 @@ function renderConfigSection(config: api.IMConfigPublic, pendingSenders: api.IMP
 
   const listH = document.createElement("div");
   listH.className = "im-config-subtitle";
-  listH.textContent = "已允许";
+  listH.textContent = i18n.t("im.allowed");
   sec.appendChild(listH);
 
   const chipList = document.createElement("div");
@@ -450,7 +456,7 @@ function renderConfigSection(config: api.IMConfigPublic, pendingSenders: api.IMP
     const rm = document.createElement("button");
     rm.className = "im-chip-remove";
     rm.textContent = "×";
-    rm.title = "移除";
+    rm.title = i18n.t("im.removeSender");
     rm.onclick = () => void updateSenders(config.allowed_senders.filter((s) => s !== sender));
     chip.append(txt, rm);
     chipList.appendChild(chip);
@@ -458,7 +464,7 @@ function renderConfigSection(config: api.IMConfigPublic, pendingSenders: api.IMP
   if (config.allowed_senders.length === 0) {
     const empty = document.createElement("div");
     empty.className = "im-config-hint";
-    empty.textContent = "暂无白名单发送者";
+    empty.textContent = i18n.t("im.noAllowlist");
     chipList.appendChild(empty);
   }
   sec.appendChild(chipList);
@@ -466,10 +472,10 @@ function renderConfigSection(config: api.IMConfigPublic, pendingSenders: api.IMP
   const addRow = document.createElement("div");
   addRow.className = "im-whitelist-add";
   const inp = document.createElement("input");
-  inp.placeholder = "发送者 ID（feishu open_id / tg user id）";
+  inp.placeholder = i18n.t("im.senderIdPlaceholder");
   const addBtn = document.createElement("button");
   addBtn.className = "im-btn primary";
-  addBtn.textContent = "添加";
+  addBtn.textContent = i18n.t("common.add");
   addBtn.onclick = async () => {
     const v = inp.value.trim();
     if (!v) return;
@@ -485,39 +491,39 @@ function renderConfigSection(config: api.IMConfigPublic, pendingSenders: api.IMP
   const wsH = document.createElement("div");
   wsH.className = "im-section-title";
   wsH.style.marginTop = "24px";
-  wsH.textContent = "默认工作区";
+  wsH.textContent = i18n.t("im.defaultWorkspace");
   sec.appendChild(wsH);
   const wsHint = document.createElement("div");
   wsHint.className = "im-config-hint";
-  wsHint.textContent = "IM 触发的对话绑定的 workspace（决定工具的 cwd）。留空则用当前活跃工作区。";
+  wsHint.textContent = i18n.t("im.workspaceHint");
   sec.appendChild(wsHint);
 
   const wsRow = document.createElement("div");
   wsRow.className = "im-workspace-row";
   const wsInp = document.createElement("input");
-  wsInp.placeholder = "/path/to/workspace";
+  wsInp.placeholder = i18n.t("im.workspacePlaceholder");
   wsInp.value = config.default_workspace || "";
   const chooseBtn = document.createElement("button");
   chooseBtn.className = "im-btn";
-  chooseBtn.textContent = "选择…";
+  chooseBtn.textContent = i18n.t("im.choose");
   chooseBtn.onclick = async () => {
     try {
       const res = await api.chooseSystemFolder();
       if (res.path) wsInp.value = res.path;
     } catch (e: any) {
-      alert(`选择失败: ${e?.message || e}`);
+      alert(i18n.t("im.chooseFailed", { err: e?.message || e }));
     }
   };
   const saveBtn = document.createElement("button");
   saveBtn.className = "im-btn primary";
-  saveBtn.textContent = "保存";
+  saveBtn.textContent = i18n.t("common.save");
   saveBtn.onclick = async () => {
     try {
       await api.updateIMConfig({ default_workspace: wsInp.value.trim() || null });
-      saveBtn.textContent = "已保存";
-      setTimeout(() => (saveBtn.textContent = "保存"), 1500);
+      saveBtn.textContent = i18n.t("common.saved");
+      setTimeout(() => (saveBtn.textContent = i18n.t("common.save")), 1500);
     } catch (e: any) {
-      alert(`保存失败: ${e?.message || e}`);
+      alert(i18n.t("im.saveFailed", { err: e?.message || e }));
     }
   };
   wsRow.append(wsInp, chooseBtn, saveBtn);
@@ -531,7 +537,7 @@ async function approveAndReload(senderId: string): Promise<void> {
     await api.approvePendingSender(senderId);
     await loadIMBridgeIntoModal();
   } catch (e: any) {
-    alert(`添加失败: ${e?.message || e}`);
+    alert(i18n.t("im.allowApproveFailed", { err: e?.message || e }));
   }
 }
 
@@ -540,6 +546,6 @@ async function updateSenders(allowed_senders: string[]): Promise<void> {
     await api.updateIMConfig({ allowed_senders });
     await loadIMBridgeIntoModal();
   } catch (e: any) {
-    alert(`保存失败: ${e?.message || e}`);
+    alert(i18n.t("im.saveFailed", { err: e?.message || e }));
   }
 }

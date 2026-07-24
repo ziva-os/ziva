@@ -2,6 +2,7 @@
 
 import * as api from "../api";
 import { esc } from "../dom";
+import * as i18n from "../i18n";
 import { closeSettingsModal, renderSessions } from "../main";
 import { closeAllFullpageOverlays } from "../modals";
 
@@ -9,6 +10,13 @@ import { closeAllFullpageOverlays } from "../modals";
 let _refreshConfig: () => Promise<void> = async () => {};
 export function setSettingsDeps(opts: { refreshConfig: () => Promise<void> }): void {
   _refreshConfig = opts.refreshConfig;
+}
+
+// Label for the "Add <kind>..." dropdown placeholder inside agent cards.
+function addKindLabel(kind: string): string {
+  return kind === "tools" ? i18n.t("settings.addTools")
+    : kind === "skills" ? i18n.t("settings.addSkills")
+    : i18n.t("settings.addHooks");
 }
 
 export async function openSettingsModal() {
@@ -21,12 +29,12 @@ export async function openSettingsModal() {
   backdrop.innerHTML = `
     <div class="fullpage-shell">
       <div class="fullpage-topbar">
-        <div class="fullpage-title">Settings</div>
+        <div class="fullpage-title">${i18n.t("settings.title")}</div>
         <div class="fullpage-topbar-spacer"></div>
-        <button class="settings-save-btn" id="settingsSaveBtn">Save</button>
+        <button class="settings-save-btn" id="settingsSaveBtn">${i18n.t("settings.save")}</button>
       </div>
       <div class="fullpage-body settings-body">
-        <div class="settings-loading">Loading config...</div>
+        <div class="settings-loading">${i18n.t("settings.loadingConfig")}</div>
       </div>
     </div>`;
   document.body.appendChild(backdrop);
@@ -67,20 +75,20 @@ export async function openSettingsModal() {
       mcpServersHtml += `
         <div class="settings-mcp-card" data-mcp-server="${esc(sname)}">
           <div class="settings-mcp-card-header">
-            <input class="settings-input settings-mcp-name" data-mcp-name="${esc(sname)}" value="${esc(sname)}" placeholder="Server name" style="font-weight:600;font-size:13px" />
+            <input class="settings-input settings-mcp-name" data-mcp-name="${esc(sname)}" value="${esc(sname)}" placeholder="${i18n.t("settings.serverName")}" style="font-weight:600;font-size:13px" />
             <div>
               <select class="settings-select" style="width:auto;padding:4px 8px;font-size:12px" data-mcp-enabled="${esc(sname)}">
-                <option value="true" ${srv.enabled !== false ? "selected" : ""}>Enabled</option>
-                <option value="false" ${srv.enabled === false ? "selected" : ""}>Disabled</option>
+                <option value="true" ${srv.enabled !== false ? "selected" : ""}>${i18n.t("common.enabled")}</option>
+                <option value="false" ${srv.enabled === false ? "selected" : ""}>${i18n.t("common.disabled")}</option>
               </select>
-              <button class="settings-hook-remove" data-mcp-remove="${esc(sname)}" title="Remove">×</button>
+              <button class="settings-hook-remove" data-mcp-remove="${esc(sname)}" title="${i18n.t("common.remove")}">×</button>
             </div>
           </div>
-          <div class="settings-row"><label class="settings-label">Command</label><input class="settings-input" data-mcp-command="${esc(sname)}" value="${esc(cmd)}" /></div>
-          <div class="settings-row"><label class="settings-label">Type</label>
+          <div class="settings-row"><label class="settings-label">${i18n.t("settings.command")}</label><input class="settings-input" data-mcp-command="${esc(sname)}" value="${esc(cmd)}" /></div>
+          <div class="settings-row"><label class="settings-label">${i18n.t("common.type")}</label>
             <select class="settings-select" data-mcp-type="${esc(sname)}">
-              <option value="local" ${srv.type !== "remote" ? "selected" : ""}>local</option>
-              <option value="remote" ${srv.type === "remote" ? "selected" : ""}>remote</option>
+              <option value="local" ${srv.type !== "remote" ? "selected" : ""}>${i18n.t("settings.mcpTypeLocal")}</option>
+              <option value="remote" ${srv.type === "remote" ? "selected" : ""}>${i18n.t("settings.mcpTypeRemote")}</option>
             </select>
           </div>
         </div>`;
@@ -88,6 +96,12 @@ export async function openSettingsModal() {
 
     // Build hooks HTML per hook type
     const hookTypes = ["before_turn", "after_turn", "before_tool", "after_tool"];
+    const hookPhaseLabel: Record<string, string> = {
+      before_turn: i18n.t("settings.hookPhase.beforeTurn"),
+      after_turn: i18n.t("settings.hookPhase.afterTurn"),
+      before_tool: i18n.t("settings.hookPhase.beforeTool"),
+      after_tool: i18n.t("settings.hookPhase.afterTool"),
+    };
     let hooksHtml = "";
     for (const ht of hookTypes) {
       const items: string[] = hooks[ht] || [];
@@ -97,10 +111,10 @@ export async function openSettingsModal() {
       }
       hooksHtml += `
         <div class="settings-section">
-          <div class="settings-section-title">${ht.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())}</div>
-          <div class="settings-desc">Shell commands to run ${ht.replace(/_/g, " ")}.</div>
+          <div class="settings-section-title">${hookPhaseLabel[ht] || ht}</div>
+          <div class="settings-desc">${i18n.t("settings.hooksDesc", { phase: hookPhaseLabel[ht] || ht })}</div>
           <div data-hook-list="${ht}">${rows}</div>
-          <button class="settings-add-btn" data-hook-add="${ht}">+ Add command</button>
+          <button class="settings-add-btn" data-hook-add="${ht}">${i18n.t("settings.addCommand")}</button>
         </div>`;
     }
 
@@ -126,7 +140,7 @@ export async function openSettingsModal() {
       // Build dropdown + removable selected-tag boxes for tools/skills/hooks.
       const buildSelect = (cls: string, kind: string, all: string[], selected: string[]) => {
         const options = all.filter((x) => !selected.includes(x)).map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join("");
-        return `<select class="settings-select ${cls}" data-agent-select-${kind}="${esc(name)}"><option value="">Add ${kind}...</option>${options}</select>`;
+        return `<select class="settings-select ${cls}" data-agent-select-${kind}="${esc(name)}"><option value="">${addKindLabel(kind)}</option>${options}</select>`;
       };
       const buildBox = (kind: string, selected: string[]) => {
         const tags = selected.map((x) => `<span class="agent-selected-tag" data-kind="${kind}" data-value="${esc(x)}">${esc(x)}<button type="button" class="agent-selected-remove" data-remove-kind="${kind}" data-remove="${esc(x)}">×</button></span>`).join("");
@@ -141,40 +155,40 @@ export async function openSettingsModal() {
       return `
         <div class="settings-agent-card" data-agent-name="${esc(name)}">
           <div class="settings-agent-card-header">
-            <input class="settings-input settings-agent-name" data-agent-rename="${esc(name)}" value="${esc(name)}" placeholder="agent name (e.g. explore)" style="font-weight:600;font-size:13px" />
-            <label class="agent-bg-label"><input type="checkbox" data-agent-bg="${esc(name)}" ${background ? "checked" : ""} /> background</label>
-            <button class="settings-hook-remove" data-agent-remove="${esc(name)}" title="Remove agent">×</button>
+            <input class="settings-input settings-agent-name" data-agent-rename="${esc(name)}" value="${esc(name)}" placeholder="${i18n.t("settings.agentNameExample")}" style="font-weight:600;font-size:13px" />
+            <label class="agent-bg-label"><input type="checkbox" data-agent-bg="${esc(name)}" ${background ? "checked" : ""} /> ${i18n.t("settings.background")}</label>
+            <button class="settings-hook-remove" data-agent-remove="${esc(name)}" title="${i18n.t("settings.removeAgent")}">×</button>
           </div>
           <div class="settings-section">
-            <div class="settings-section-title">Instructions</div>
-            <textarea class="settings-input settings-agent-instructions" data-agent-instructions="${esc(name)}" rows="8" placeholder="System prompt for the sub-agent">${esc(instructions)}</textarea>
+            <div class="settings-section-title">${i18n.t("settings.instructions")}</div>
+            <textarea class="settings-input settings-agent-instructions" data-agent-instructions="${esc(name)}" rows="8" placeholder="${i18n.t("settings.instructionsPlaceholder")}">${esc(instructions)}</textarea>
           </div>
           <div class="settings-section">
-            <div class="settings-section-title">Tools <span style="color:var(--muted);font-weight:400;font-size:11px">(${agentTools.length} selected)</span></div>
-            <div class="settings-desc">Whitelist of tools the sub-agent can call. Empty = no tools (pure LLM). spawn_agent / get_agent_result / cancel_agent are always blocked.</div>
+            <div class="settings-section-title">${i18n.t("settings.tools")} <span style="color:var(--muted);font-weight:400;font-size:11px">${i18n.t("settings.nSelected", { n: agentTools.length })}</span></div>
+            <div class="settings-desc">${i18n.t("settings.toolsDesc")}</div>
             <div class="settings-row" style="margin:6px 0;gap:8px">
-              <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="tools" data-agent-name="${esc(name)}" style="padding:3px 10px">Select all</button>
-              <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="tools" data-agent-name="${esc(name)}" style="padding:3px 10px">Clear</button>
+              <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="tools" data-agent-name="${esc(name)}" style="padding:3px 10px">${i18n.t("settings.selectAll")}</button>
+              <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="tools" data-agent-name="${esc(name)}" style="padding:3px 10px">${i18n.t("settings.clear")}</button>
             </div>
             ${toolSelect}
             ${toolBox}
           </div>
           <div class="settings-section">
-            <div class="settings-section-title">Skills <span style="color:var(--muted);font-weight:400;font-size:11px">(${agentSkills.length} selected)</span></div>
-            <div class="settings-desc">Skills available to the sub-agent.</div>
+            <div class="settings-section-title">${i18n.t("settings.skills")} <span style="color:var(--muted);font-weight:400;font-size:11px">${i18n.t("settings.nSelected", { n: agentSkills.length })}</span></div>
+            <div class="settings-desc">${i18n.t("settings.skillsDesc")}</div>
             <div class="settings-row" style="margin:6px 0;gap:8px">
-              <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="skills" data-agent-name="${esc(name)}" style="padding:3px 10px">Select all</button>
-              <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="skills" data-agent-name="${esc(name)}" style="padding:3px 10px">Clear</button>
+              <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="skills" data-agent-name="${esc(name)}" style="padding:3px 10px">${i18n.t("settings.selectAll")}</button>
+              <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="skills" data-agent-name="${esc(name)}" style="padding:3px 10px">${i18n.t("settings.clear")}</button>
             </div>
             ${skillSelect}
             ${skillBox}
           </div>
           <div class="settings-section">
-            <div class="settings-section-title">Hooks <span style="color:var(--muted);font-weight:400;font-size:11px">(${agentHooks.length} selected)</span></div>
-            <div class="settings-desc">Hook types this sub-agent triggers. Each selected type runs the matching <code>hooks.&lt;type&gt;</code> commands from config on the sub-agent's own turns/tools. Empty = inherit all hook types from main.</div>
+            <div class="settings-section-title">${i18n.t("settings.hooks")} <span style="color:var(--muted);font-weight:400;font-size:11px">${i18n.t("settings.nSelected", { n: agentHooks.length })}</span></div>
+            <div class="settings-desc">${i18n.t("settings.agentHooksDesc")}</div>
             <div class="settings-row" style="margin:6px 0;gap:8px">
-              <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="hooks" data-agent-name="${esc(name)}" style="padding:3px 10px">Select all</button>
-              <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="hooks" data-agent-name="${esc(name)}" style="padding:3px 10px">Clear</button>
+              <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="hooks" data-agent-name="${esc(name)}" style="padding:3px 10px">${i18n.t("settings.selectAll")}</button>
+              <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="hooks" data-agent-name="${esc(name)}" style="padding:3px 10px">${i18n.t("settings.clear")}</button>
             </div>
             ${hookSelect}
             ${hookBox}
@@ -188,7 +202,7 @@ export async function openSettingsModal() {
         const count = card.querySelectorAll(`.agent-selected-tag[data-kind="${kind}"]`).length;
         const box = card.querySelector(`[data-agent-box-${kind}="${name}"]`);
         const titleSpan = box?.parentElement?.querySelector(".settings-section-title span");
-        if (titleSpan) titleSpan.textContent = `(${count} selected)`;
+        if (titleSpan) titleSpan.textContent = i18n.t("settings.nSelected", { n: count });
       };
       const addTag = (kind: string, value: string) => {
         if (!value) return;
@@ -212,7 +226,7 @@ export async function openSettingsModal() {
         box.querySelector(`[data-value="${esc(value)}"]`)?.remove();
         const all = kind === "tools" ? allToolNames : kind === "skills" ? allSkillNames : hookTypes;
         const remaining = all.filter((x) => !Array.from(box.querySelectorAll(".agent-selected-tag")).map(t => (t as HTMLElement).dataset.value).includes(x));
-        select.innerHTML = `<option value="">Add ${kind}...</option>` + remaining.map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join("");
+        select.innerHTML = `<option value="">${addKindLabel(kind)}</option>` + remaining.map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join("");
         updateCount(kind);
       };
       const selectAll = (kind: string) => {
@@ -225,7 +239,7 @@ export async function openSettingsModal() {
         if (!box || !select) return;
         box.innerHTML = "";
         const all = kind === "tools" ? allToolNames : kind === "skills" ? allSkillNames : hookTypes;
-        select.innerHTML = `<option value="">Add ${kind}...</option>` + all.map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join("");
+        select.innerHTML = `<option value="">${addKindLabel(kind)}</option>` + all.map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join("");
         updateCount(kind);
       };
       card.addEventListener("change", (e) => {
@@ -276,80 +290,80 @@ export async function openSettingsModal() {
         const supportsImage = model.capabilities?.vision ?? true;  // default True = vision-capable
         modelRows += `
           <div class="settings-model-row">
-            <input class="settings-input s-model-name" value="${esc(model.name)}" placeholder="Model name" style="flex:1" />
-            <label class="settings-model-check" title="Can consume image_url blocks. Uncheck for text-only models — the runtime will then surface attachments as path text instead of base64."><input type="checkbox" class="s-model-image" ${supportsImage ? "checked" : ""} /> Vision</label>
-            <label class="settings-model-check" title="Set as default model"><input type="radio" name="modelDefault" class="s-model-default" ${model.name === defaultModelName ? "checked" : ""} /> Default</label>
-            <button class="settings-hook-remove s-model-remove" title="Remove">×</button>
+            <input class="settings-input s-model-name" value="${esc(model.name)}" placeholder="${i18n.t("settings.modelName")}" style="flex:1" />
+            <label class="settings-model-check" title="${i18n.t("settings.visionTitle")}"><input type="checkbox" class="s-model-image" ${supportsImage ? "checked" : ""} /> ${i18n.t("settings.vision")}</label>
+            <label class="settings-model-check" title="${i18n.t("settings.defaultModelTitle")}"><input type="radio" name="modelDefault" class="s-model-default" ${model.name === defaultModelName ? "checked" : ""} /> ${i18n.t("settings.default")}</label>
+            <button class="settings-hook-remove s-model-remove" title="${i18n.t("common.remove")}">×</button>
           </div>`;
       }
       providersHtml += `
         <div class="settings-provider-card" data-provider-idx="${pi}">
           <div class="settings-provider-card-header">
-            <input class="settings-input settings-provider-name" data-field="provider_name" value="${esc(p.name)}" placeholder="Provider name" />
-            <button class="settings-hook-remove" data-provider-remove title="Remove provider">×</button>
+            <input class="settings-input settings-provider-name" data-field="provider_name" value="${esc(p.name)}" placeholder="${i18n.t("settings.providerName")}" />
+            <button class="settings-hook-remove" data-provider-remove title="${i18n.t("settings.removeProvider")}">×</button>
           </div>
-          <div class="settings-row"><label class="settings-label">API Type</label>
+          <div class="settings-row"><label class="settings-label">${i18n.t("settings.apiType")}</label>
             <select class="settings-select" data-field="api_type">
               <option value="openai_compatible" ${isOpenAI ? "selected" : ""}>OpenAI Compatible</option>
               <option value="anthropic" ${!isOpenAI ? "selected" : ""}>Anthropic</option>
             </select>
           </div>
-          <div class="settings-row"><label class="settings-label">API Key</label><input class="settings-input" type="password" data-field="api_key" value="${esc(p.api_key)}" /></div>
-          <div class="settings-row"><label class="settings-label">Base URL</label><input class="settings-input" data-field="base_url" value="${esc(p.base_url)}" placeholder="e.g. https://api.openai.com/v1" /></div>
-          <div class="settings-section-title" style="margin-top:8px">Models</div>
+          <div class="settings-row"><label class="settings-label">${i18n.t("settings.apiKey")}</label><input class="settings-input" type="password" data-field="api_key" value="${esc(p.api_key)}" /></div>
+          <div class="settings-row"><label class="settings-label">${i18n.t("settings.baseUrl")}</label><input class="settings-input" data-field="base_url" value="${esc(p.base_url)}" placeholder="${i18n.t("settings.baseUrlPlaceholder")}" /></div>
+          <div class="settings-section-title" style="margin-top:8px">${i18n.t("settings.models")}</div>
           <div class="settings-provider-models">${modelRows}</div>
-          <button class="settings-add-btn s-add-model-btn">+ Add Model</button>
+          <button class="settings-add-btn s-add-model-btn">${i18n.t("settings.addModel")}</button>
         </div>`;
     }
 
     body.innerHTML = `
       <div class="settings-layout">
         <div class="settings-tabs">
-          <button class="settings-tab active" data-tab="model">${icons.model}<span>Model</span></button>
-          <button class="settings-tab" data-tab="approval">${icons.approval}<span>Approval</span></button>
-          <button class="settings-tab" data-tab="mcp">${icons.mcp}<span>MCP Servers</span></button>
-          <button class="settings-tab" data-tab="tool">${icons.tool}<span>Tool</span></button>
-          <button class="settings-tab" data-tab="hooks">${icons.hooks}<span>Hooks</span></button>
-          <button class="settings-tab" data-tab="memory">${icons.memory}<span>Memory</span></button>
-          <button class="settings-tab" data-tab="sandbox">${icons.sandbox}<span>Sandbox</span></button>
-          <button class="settings-tab" data-tab="prompt">${icons.prompt}<span>Prompt</span></button>
-          <button class="settings-tab" data-tab="agents">${icons.agents}<span>Agents</span></button>
+          <button class="settings-tab active" data-tab="model">${icons.model}<span>${i18n.t("settings.tab.model")}</span></button>
+          <button class="settings-tab" data-tab="approval">${icons.approval}<span>${i18n.t("settings.tab.approval")}</span></button>
+          <button class="settings-tab" data-tab="mcp">${icons.mcp}<span>${i18n.t("settings.tab.mcp")}</span></button>
+          <button class="settings-tab" data-tab="tool">${icons.tool}<span>${i18n.t("settings.tab.tool")}</span></button>
+          <button class="settings-tab" data-tab="hooks">${icons.hooks}<span>${i18n.t("settings.tab.hooks")}</span></button>
+          <button class="settings-tab" data-tab="memory">${icons.memory}<span>${i18n.t("settings.tab.memory")}</span></button>
+          <button class="settings-tab" data-tab="sandbox">${icons.sandbox}<span>${i18n.t("settings.tab.sandbox")}</span></button>
+          <button class="settings-tab" data-tab="prompt">${icons.prompt}<span>${i18n.t("settings.tab.prompt")}</span></button>
+          <button class="settings-tab" data-tab="agents">${icons.agents}<span>${i18n.t("settings.tab.agents")}</span></button>
         </div>
         <div class="settings-content">
           <!-- Model -->
           <div class="settings-panel active" data-panel="model">
             <div class="settings-panel-inner">
               <div class="settings-section">
-                <div class="settings-section-title">Thinking Mode</div>
-                <div class="settings-desc">Configure reasoning effort for supported models (e.g., Claude 3.7 Sonnet).</div>
-                <div class="settings-row"><label class="settings-label">Mode</label>
+                <div class="settings-section-title">${i18n.t("settings.thinkingMode")}</div>
+                <div class="settings-desc">${i18n.t("settings.thinkingModeDesc")}</div>
+                <div class="settings-row"><label class="settings-label">${i18n.t("common.mode")}</label>
                   <select class="settings-select" id="s_thinking_mode">
-                    <option value="disabled" ${(cfg.model?.thinking_mode || "disabled") === "disabled" ? "selected" : ""}>Disabled</option>
-                    <option value="low" ${(cfg.model?.thinking_mode || "disabled") === "low" ? "selected" : ""}>Low</option>
-                    <option value="medium" ${(cfg.model?.thinking_mode || "disabled") === "medium" ? "selected" : ""}>Medium</option>
-                    <option value="high" ${(cfg.model?.thinking_mode || "disabled") === "high" ? "selected" : ""}>High</option>
+                    <option value="disabled" ${(cfg.model?.thinking_mode || "disabled") === "disabled" ? "selected" : ""}>${i18n.t("settings.thinking.disabled")}</option>
+                    <option value="low" ${(cfg.model?.thinking_mode || "disabled") === "low" ? "selected" : ""}>${i18n.t("settings.thinking.low")}</option>
+                    <option value="medium" ${(cfg.model?.thinking_mode || "disabled") === "medium" ? "selected" : ""}>${i18n.t("settings.thinking.medium")}</option>
+                    <option value="high" ${(cfg.model?.thinking_mode || "disabled") === "high" ? "selected" : ""}>${i18n.t("settings.thinking.high")}</option>
                   </select>
                 </div>
-                <div class="settings-row"><label class="settings-label">Budget Tokens</label>
+                <div class="settings-row"><label class="settings-label">${i18n.t("settings.budgetTokens")}</label>
                   <input class="settings-input" id="s_thinking_budget" type="number" value="${cfg.model?.thinking_budget_tokens || 4000}" />
                 </div>
               </div>
-              <div class="settings-section-title" style="margin-top:16px;margin-bottom:8px;">Providers</div>
+              <div class="settings-section-title" style="margin-top:16px;margin-bottom:8px;">${i18n.t("settings.providers")}</div>
               <div id="sProvidersList">${providersHtml}</div>
-              <button class="settings-add-btn" id="addProviderBtn">+ Add Provider</button>
+              <button class="settings-add-btn" id="addProviderBtn">${i18n.t("settings.addProvider")}</button>
             </div>
           </div>
           <!-- Approval -->
           <div class="settings-panel" data-panel="approval">
             <div class="settings-panel-inner">
               <div class="settings-section">
-                <div class="settings-section-title">Approval Policy</div>
-                <div class="settings-desc">Controls how tools request permission before execution.</div>
-                <div class="settings-row"><label class="settings-label">Policy</label>
+                <div class="settings-section-title">${i18n.t("settings.approvalPolicy")}</div>
+                <div class="settings-desc">${i18n.t("settings.approvalPolicyDesc")}</div>
+                <div class="settings-row"><label class="settings-label">${i18n.t("settings.policy")}</label>
                   <select class="settings-select" id="s_approval_policy">
-                    <option value="suggest" ${ap.policy === "suggest" ? "selected" : ""}>suggest (ask every time)</option>
-                    <option value="auto-edit" ${ap.policy === "auto-edit" ? "selected" : ""}>auto-edit (auto file edits)</option>
-                    <option value="full-auto" ${ap.policy === "full-auto" ? "selected" : ""}>full-auto (no prompts)</option>
+                    <option value="suggest" ${ap.policy === "suggest" ? "selected" : ""}>${i18n.t("settings.policy.suggest")}</option>
+                    <option value="auto-edit" ${ap.policy === "auto-edit" ? "selected" : ""}>${i18n.t("settings.policy.autoEdit")}</option>
+                    <option value="full-auto" ${ap.policy === "full-auto" ? "selected" : ""}>${i18n.t("settings.policy.fullAuto")}</option>
                   </select>
                 </div>
               </div>
@@ -359,18 +373,18 @@ export async function openSettingsModal() {
           <div class="settings-panel" data-panel="mcp">
             <div class="settings-panel-inner">
               <div class="settings-section">
-                <div class="settings-section-title">MCP</div>
-                <div class="settings-row"><label class="settings-label">MCP Enabled</label>
+                <div class="settings-section-title">${i18n.t("settings.mcp")}</div>
+                <div class="settings-row"><label class="settings-label">${i18n.t("settings.mcpEnabled")}</label>
                   <select class="settings-select" id="s_mcp_enabled">
-                    <option value="true" ${mcp.enabled ? "selected" : ""}>Yes</option>
-                    <option value="false" ${!mcp.enabled ? "selected" : ""}>No</option>
+                    <option value="true" ${mcp.enabled ? "selected" : ""}>${i18n.t("common.yes")}</option>
+                    <option value="false" ${!mcp.enabled ? "selected" : ""}>${i18n.t("common.no")}</option>
                   </select>
                 </div>
               </div>
               <div class="settings-section">
-                <div class="settings-section-title">Servers</div>
+                <div class="settings-section-title">${i18n.t("settings.servers")}</div>
                 <div id="mcpServersList">${mcpServersHtml}</div>
-                <button class="settings-add-btn" id="addMcpServer">+ Add MCP server</button>
+                <button class="settings-add-btn" id="addMcpServer">${i18n.t("settings.addMcpServer")}</button>
               </div>
             </div>
           </div>
@@ -378,8 +392,8 @@ export async function openSettingsModal() {
           <div class="settings-panel" data-panel="tool">
             <div class="settings-panel-inner">
               <div class="settings-section">
-                <div class="settings-section-title">Tool Settings</div>
-                <div class="settings-row"><label class="settings-label">Max Rounds</label><input class="settings-input" type="number" id="s_tool_max_rounds" value="${tool.max_rounds || 0}" /><span style="font-size:12px;color:var(--muted);margin-left:4px">0 = unlimited</span></div>
+                <div class="settings-section-title">${i18n.t("settings.toolSettings")}</div>
+                <div class="settings-row"><label class="settings-label">${i18n.t("settings.maxRounds")}</label><input class="settings-input" type="number" id="s_tool_max_rounds" value="${tool.max_rounds || 0}" /><span style="font-size:12px;color:var(--muted);margin-left:4px">${i18n.t("settings.maxRoundsHint")}</span></div>
               </div>
             </div>
           </div>
@@ -391,13 +405,13 @@ export async function openSettingsModal() {
           <div class="settings-panel" data-panel="memory">
             <div class="settings-panel-inner">
               <div class="settings-section">
-                <div class="settings-section-title">Memory</div>
-                <div class="settings-row"><label class="settings-label">Backend</label>
+                <div class="settings-section-title">${i18n.t("settings.memory")}</div>
+                <div class="settings-row"><label class="settings-label">${i18n.t("settings.backend")}</label>
                   <select class="settings-select" id="s_memory_backend">
-                    <option value="inmemory" ${mem.backend === "inmemory" || !mem.backend ? "selected" : ""}>In-memory</option>
+                    <option value="inmemory" ${mem.backend === "inmemory" || !mem.backend ? "selected" : ""}>${i18n.t("settings.backend.inmemory")}</option>
                   </select>
                 </div>
-                <div class="settings-row"><label class="settings-label">Context Window</label><input class="settings-input" type="number" id="s_memory_tokens" value="${mem.context_window_tokens || 200000}" /><span style="font-size:12px;color:var(--muted);margin-left:4px">tokens</span></div>
+                <div class="settings-row"><label class="settings-label">${i18n.t("settings.contextWindow")}</label><input class="settings-input" type="number" id="s_memory_tokens" value="${mem.context_window_tokens || 200000}" /><span style="font-size:12px;color:var(--muted);margin-left:4px">${i18n.t("settings.tokens")}</span></div>
               </div>
             </div>
           </div>
@@ -405,12 +419,12 @@ export async function openSettingsModal() {
           <div class="settings-panel" data-panel="sandbox">
             <div class="settings-panel-inner">
               <div class="settings-section">
-                <div class="settings-section-title">Sandbox</div>
-                <div class="settings-row"><label class="settings-label">Mode</label>
+                <div class="settings-section-title">${i18n.t("settings.sandbox")}</div>
+                <div class="settings-row"><label class="settings-label">${i18n.t("common.mode")}</label>
                   <select class="settings-select" id="s_sandbox_mode">
-                    <option value="off" ${sandbox.mode !== "docker" && sandbox.mode !== "restrictive" ? "selected" : ""}>Off</option>
-                    <option value="docker" ${sandbox.mode === "docker" ? "selected" : ""}>Docker</option>
-                    <option value="restrictive" ${sandbox.mode === "restrictive" ? "selected" : ""}>Restrictive</option>
+                    <option value="off" ${sandbox.mode !== "docker" && sandbox.mode !== "restrictive" ? "selected" : ""}>${i18n.t("settings.sandbox.off")}</option>
+                    <option value="docker" ${sandbox.mode === "docker" ? "selected" : ""}>${i18n.t("settings.sandbox.docker")}</option>
+                    <option value="restrictive" ${sandbox.mode === "restrictive" ? "selected" : ""}>${i18n.t("settings.sandbox.restrictive")}</option>
                   </select>
                 </div>
               </div>
@@ -420,13 +434,13 @@ export async function openSettingsModal() {
           <div class="settings-panel" data-panel="prompt">
             <div class="settings-panel-inner">
               <div class="settings-section">
-                <div class="settings-section-title">Prompt Profile</div>
-                <div class="settings-row"><label class="settings-label">Profile</label>
+                <div class="settings-section-title">${i18n.t("settings.promptProfile")}</div>
+                <div class="settings-row"><label class="settings-label">${i18n.t("settings.profile")}</label>
                   <select class="settings-select" id="s_prompt_profile">
-                    <option value="default" ${prompt.profile === "default" || !prompt.profile ? "selected" : ""}>default</option>
-                    <option value="concise" ${prompt.profile === "concise" ? "selected" : ""}>concise</option>
-                    <option value="detailed" ${prompt.profile === "detailed" ? "selected" : ""}>detailed</option>
-                    <option value="" ${!["default","concise","detailed"].includes(prompt.profile) && prompt.profile ? "selected" : ""}>custom</option>
+                    <option value="default" ${prompt.profile === "default" || !prompt.profile ? "selected" : ""}>${i18n.t("settings.profile.default")}</option>
+                    <option value="concise" ${prompt.profile === "concise" ? "selected" : ""}>${i18n.t("settings.profile.concise")}</option>
+                    <option value="detailed" ${prompt.profile === "detailed" ? "selected" : ""}>${i18n.t("settings.profile.detailed")}</option>
+                    <option value="" ${!["default","concise","detailed"].includes(prompt.profile) && prompt.profile ? "selected" : ""}>${i18n.t("settings.profile.custom")}</option>
                   </select>
                 </div>
               </div>
@@ -436,10 +450,10 @@ export async function openSettingsModal() {
           <div class="settings-panel" data-panel="agents">
             <div class="settings-panel-inner settings-panel-wide">
               <div class="settings-section">
-                <div class="settings-section-title">Sub-Agents</div>
-                <div class="settings-desc">Predefined agent profiles the main agent can spawn via <code>spawn_agent(agent="name", task="...")</code>. Each agent has its own instructions, tool whitelist, skill set, and memory setting. The main agent may still pass <code>instructions</code> / <code>tools</code> / <code>background</code> at call time to override the defaults below.</div>
-                <div id="agentsList">${agentsHtml || '<div style="color:var(--muted);font-size:12px;padding:12px 0">No agents defined yet. Click <strong>+ Add agent</strong> below to create one.</div>'}</div>
-                <button class="settings-add-btn" id="addAgentBtn">+ Add agent</button>
+                <div class="settings-section-title">${i18n.t("settings.subAgents")}</div>
+                <div class="settings-desc">${i18n.t("settings.agentsDesc")}</div>
+                <div id="agentsList">${agentsHtml || `<div style="color:var(--muted);font-size:12px;padding:12px 0">${i18n.t("settings.noAgents")}</div>`}</div>
+                <button class="settings-add-btn" id="addAgentBtn">${i18n.t("settings.addAgent")}</button>
               </div>
             </div>
           </div>
@@ -466,7 +480,7 @@ export async function openSettingsModal() {
         const idx = list.children.length;
         const row = document.createElement("div");
         row.className = "settings-hook-row";
-        row.innerHTML = `<input class="settings-input" data-hook="${ht}" data-hook-idx="${idx}" value="" placeholder="e.g. npm run lint" /><button class="settings-hook-remove" data-hook-remove="${ht}:${idx}" title="Remove">×</button>`;
+        row.innerHTML = `<input class="settings-input" data-hook="${ht}" data-hook-idx="${idx}" value="" placeholder="${i18n.t("settings.hookPlaceholder")}" /><button class="settings-hook-remove" data-hook-remove="${ht}:${idx}" title="${i18n.t("common.remove")}">×</button>`;
         (row.querySelector(".settings-hook-remove") as HTMLElement | null)!.onclick = () => row.remove();
         list.appendChild(row);
         row.querySelector("input")?.focus();
@@ -509,39 +523,39 @@ export async function openSettingsModal() {
         card.dataset.agentName = n;
         card.innerHTML = `
           <div class="settings-agent-card-header">
-            <input class="settings-input settings-agent-name" data-agent-rename="${esc(n)}" value="${esc(n)}" placeholder="agent name" style="font-weight:600;font-size:13px" />
-            <label class="agent-bg-label"><input type="checkbox" data-agent-bg="${esc(n)}" /> background</label>
-            <button class="settings-hook-remove" data-agent-remove="${esc(n)}" title="Remove agent">×</button>
+            <input class="settings-input settings-agent-name" data-agent-rename="${esc(n)}" value="${esc(n)}" placeholder="${i18n.t("settings.agentNamePlaceholder")}" style="font-weight:600;font-size:13px" />
+            <label class="agent-bg-label"><input type="checkbox" data-agent-bg="${esc(n)}" /> ${i18n.t("settings.background")}</label>
+            <button class="settings-hook-remove" data-agent-remove="${esc(n)}" title="${i18n.t("settings.removeAgent")}">×</button>
           </div>
           <div class="settings-section">
-            <div class="settings-section-title">Instructions</div>
-            <textarea class="settings-input settings-agent-instructions" data-agent-instructions="${esc(n)}" rows="8" placeholder="System prompt for the sub-agent"></textarea>
+            <div class="settings-section-title">${i18n.t("settings.instructions")}</div>
+            <textarea class="settings-input settings-agent-instructions" data-agent-instructions="${esc(n)}" rows="8" placeholder="${i18n.t("settings.instructionsPlaceholder")}"></textarea>
           </div>
           <div class="settings-section">
-            <div class="settings-section-title">Tools <span style="color:var(--muted);font-weight:400;font-size:11px">(0 selected)</span></div>
+            <div class="settings-section-title">${i18n.t("settings.tools")} <span style="color:var(--muted);font-weight:400;font-size:11px">${i18n.t("settings.nSelected", { n: 0 })}</span></div>
             <div class="settings-row" style="margin:6px 0;gap:8px">
-              <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="tools" data-agent-name="${esc(n)}" style="padding:3px 10px">Select all</button>
-              <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="tools" data-agent-name="${esc(n)}" style="padding:3px 10px">Clear</button>
+              <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="tools" data-agent-name="${esc(n)}" style="padding:3px 10px">${i18n.t("settings.selectAll")}</button>
+              <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="tools" data-agent-name="${esc(n)}" style="padding:3px 10px">${i18n.t("settings.clear")}</button>
             </div>
-            <select class="settings-select agent-tools-select" data-agent-select-tools="${esc(n)}"><option value="">Add tools...</option>${toolOptions}</select>
+            <select class="settings-select agent-tools-select" data-agent-select-tools="${esc(n)}"><option value="">${i18n.t("settings.addTools")}</option>${toolOptions}</select>
             <div class="agent-selected-box" data-agent-box-tools="${esc(n)}"></div>
           </div>
           <div class="settings-section">
-            <div class="settings-section-title">Skills <span style="color:var(--muted);font-weight:400;font-size:11px">(0 selected)</span></div>
+            <div class="settings-section-title">${i18n.t("settings.skills")} <span style="color:var(--muted);font-weight:400;font-size:11px">${i18n.t("settings.nSelected", { n: 0 })}</span></div>
             <div class="settings-row" style="margin:6px 0;gap:8px">
-              <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="skills" data-agent-name="${esc(n)}" style="padding:3px 10px">Select all</button>
-              <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="skills" data-agent-name="${esc(n)}" style="padding:3px 10px">Clear</button>
+              <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="skills" data-agent-name="${esc(n)}" style="padding:3px 10px">${i18n.t("settings.selectAll")}</button>
+              <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="skills" data-agent-name="${esc(n)}" style="padding:3px 10px">${i18n.t("settings.clear")}</button>
             </div>
-            <select class="settings-select agent-skills-select" data-agent-select-skills="${esc(n)}"><option value="">Add skills...</option>${skillOptions}</select>
+            <select class="settings-select agent-skills-select" data-agent-select-skills="${esc(n)}"><option value="">${i18n.t("settings.addSkills")}</option>${skillOptions}</select>
             <div class="agent-selected-box" data-agent-box-skills="${esc(n)}"></div>
           </div>
           <div class="settings-section">
-            <div class="settings-section-title">Hooks <span style="color:var(--muted);font-weight:400;font-size:11px">(0 selected)</span></div>
+            <div class="settings-section-title">${i18n.t("settings.hooks")} <span style="color:var(--muted);font-weight:400;font-size:11px">${i18n.t("settings.nSelected", { n: 0 })}</span></div>
             <div class="settings-row" style="margin:6px 0;gap:8px">
-              <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="hooks" data-agent-name="${esc(n)}" style="padding:3px 10px">Select all</button>
-              <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="hooks" data-agent-name="${esc(n)}" style="padding:3px 10px">Clear</button>
+              <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="hooks" data-agent-name="${esc(n)}" style="padding:3px 10px">${i18n.t("settings.selectAll")}</button>
+              <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="hooks" data-agent-name="${esc(n)}" style="padding:3px 10px">${i18n.t("settings.clear")}</button>
             </div>
-            <select class="settings-select agent-hooks-select" data-agent-select-hooks="${esc(n)}"><option value="">Add hooks...</option>${hookOptions}</select>
+            <select class="settings-select agent-hooks-select" data-agent-select-hooks="${esc(n)}"><option value="">${i18n.t("settings.addHooks")}</option>${hookOptions}</select>
              <div class="agent-selected-box" data-agent-box-hooks="${esc(n)}"></div>
           </div>`;
         // Wire the new card's remove button and selections
@@ -583,10 +597,10 @@ export async function openSettingsModal() {
           const row = document.createElement("div");
           row.className = "settings-model-row";
           row.innerHTML = `
-            <input class="settings-input s-model-name" value="" placeholder="Model name" style="flex:1" />
-            <label class="settings-model-check"><input type="checkbox" class="s-model-image" /> Image</label>
-            <label class="settings-model-check"><input type="radio" name="modelDefault" class="s-model-default" /> Default</label>
-            <button class="settings-hook-remove s-model-remove" title="Remove">×</button>`;
+            <input class="settings-input s-model-name" value="" placeholder="${i18n.t("settings.modelName")}" style="flex:1" />
+            <label class="settings-model-check"><input type="checkbox" class="s-model-image" /> ${i18n.t("settings.image")}</label>
+            <label class="settings-model-check"><input type="radio" name="modelDefault" class="s-model-default" /> ${i18n.t("settings.default")}</label>
+            <button class="settings-hook-remove s-model-remove" title="${i18n.t("common.remove")}">×</button>`;
           (row.querySelector(".s-model-remove") as HTMLElement).onclick = () => row.remove();
           (row.querySelector(".s-model-default") as HTMLElement).onchange = () => {
             body.querySelectorAll(".s-model-default").forEach((r) => {
@@ -613,20 +627,20 @@ export async function openSettingsModal() {
         card.dataset.providerIdx = String(list.children.length);
         card.innerHTML = `
           <div class="settings-provider-card-header">
-            <input class="settings-input settings-provider-name" data-field="provider_name" value="" placeholder="Provider name" />
-            <button class="settings-hook-remove" data-provider-remove title="Remove provider">×</button>
+            <input class="settings-input settings-provider-name" data-field="provider_name" value="" placeholder="${i18n.t("settings.providerName")}" />
+            <button class="settings-hook-remove" data-provider-remove title="${i18n.t("settings.removeProvider")}">×</button>
           </div>
-          <div class="settings-row"><label class="settings-label">API Type</label>
+          <div class="settings-row"><label class="settings-label">${i18n.t("settings.apiType")}</label>
             <select class="settings-select" data-field="api_type">
               <option value="openai_compatible" selected>OpenAI Compatible</option>
               <option value="anthropic">Anthropic</option>
             </select>
           </div>
-          <div class="settings-row"><label class="settings-label">API Key</label><input class="settings-input" type="password" data-field="api_key" value="" /></div>
-          <div class="settings-row"><label class="settings-label">Base URL</label><input class="settings-input" data-field="base_url" value="" placeholder="e.g. https://api.openai.com/v1" /></div>
-          <div class="settings-section-title" style="margin-top:8px">Models</div>
+          <div class="settings-row"><label class="settings-label">${i18n.t("settings.apiKey")}</label><input class="settings-input" type="password" data-field="api_key" value="" /></div>
+          <div class="settings-row"><label class="settings-label">${i18n.t("settings.baseUrl")}</label><input class="settings-input" data-field="base_url" value="" placeholder="${i18n.t("settings.baseUrlPlaceholder")}" /></div>
+          <div class="settings-section-title" style="margin-top:8px">${i18n.t("settings.models")}</div>
           <div class="settings-provider-models"></div>
-          <button class="settings-add-btn s-add-model-btn">+ Add Model</button>`;
+          <button class="settings-add-btn s-add-model-btn">${i18n.t("settings.addModel")}</button>`;
         wireProviderCardEvents(card);
         list.appendChild(card);
         card.querySelector("input")?.focus();
@@ -644,20 +658,20 @@ export async function openSettingsModal() {
         card.dataset.mcpServer = name;
         card.innerHTML = `
           <div class="settings-mcp-card-header">
-            <input class="settings-input settings-mcp-name" data-mcp-name="${esc(name)}" value="${esc(name)}" placeholder="Server name" style="font-weight:600;font-size:13px" />
+            <input class="settings-input settings-mcp-name" data-mcp-name="${esc(name)}" value="${esc(name)}" placeholder="${i18n.t("settings.serverName")}" style="font-weight:600;font-size:13px" />
             <div>
               <select class="settings-select" style="width:auto;padding:4px 8px;font-size:12px" data-mcp-enabled="${esc(name)}">
-                <option value="true" selected>Enabled</option>
-                <option value="false">Disabled</option>
+                <option value="true" selected>${i18n.t("common.enabled")}</option>
+                <option value="false">${i18n.t("common.disabled")}</option>
               </select>
-              <button class="settings-hook-remove" data-mcp-remove="${esc(name)}" title="Remove">×</button>
+              <button class="settings-hook-remove" data-mcp-remove="${esc(name)}" title="${i18n.t("common.remove")}">×</button>
             </div>
           </div>
-          <div class="settings-row"><label class="settings-label">Command</label><input class="settings-input" data-mcp-command="${esc(name)}" value="" placeholder="e.g. npx @anthropic/mcp-server" /></div>
-          <div class="settings-row"><label class="settings-label">Type</label>
+          <div class="settings-row"><label class="settings-label">${i18n.t("settings.command")}</label><input class="settings-input" data-mcp-command="${esc(name)}" value="" placeholder="${i18n.t("settings.commandPlaceholder")}" /></div>
+          <div class="settings-row"><label class="settings-label">${i18n.t("common.type")}</label>
             <select class="settings-select" data-mcp-type="${esc(name)}">
-              <option value="local" selected>local</option>
-              <option value="remote">remote</option>
+              <option value="local" selected>${i18n.t("settings.mcpTypeLocal")}</option>
+              <option value="remote">${i18n.t("settings.mcpTypeRemote")}</option>
             </select>
           </div>`;
         (card.querySelector(".settings-hook-remove") as HTMLElement).onclick = () => card.remove();
@@ -669,7 +683,7 @@ export async function openSettingsModal() {
     // Save
     (backdrop.querySelector("#settingsSaveBtn") as HTMLElement).onclick = async () => {
       const btn = backdrop.querySelector("#settingsSaveBtn") as HTMLElement;
-      btn.textContent = "Saving...";
+      btn.textContent = i18n.t("settings.saving");
       btn.setAttribute("disabled", "true");
       try {
         const updated = { ...cfg };
@@ -772,15 +786,15 @@ export async function openSettingsModal() {
         await api.saveConfigJson(updated);
         await _refreshConfig();
         renderSessions();
-        btn.textContent = "Saved";
-        setTimeout(() => { btn.textContent = "Save"; btn.removeAttribute("disabled"); }, 1500);
+        btn.textContent = i18n.t("settings.saved");
+        setTimeout(() => { btn.textContent = i18n.t("settings.save"); btn.removeAttribute("disabled"); }, 1500);
       } catch (e) {
-        btn.textContent = "Error";
+        btn.textContent = i18n.t("settings.error");
         alert((e as Error).message);
-        setTimeout(() => { btn.textContent = "Save"; btn.removeAttribute("disabled"); }, 1500);
+        setTimeout(() => { btn.textContent = i18n.t("settings.save"); btn.removeAttribute("disabled"); }, 1500);
       }
     };
   } catch (e) {
-    body.innerHTML = `<div class="skills-modal-error">Failed to load config: ${esc((e as Error).message)}</div>`;
+    body.innerHTML = `<div class="skills-modal-error">${i18n.t("settings.loadFailed", { err: (e as Error).message })}</div>`;
   }
 }

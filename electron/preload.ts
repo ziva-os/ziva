@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 
 // Embedded-browser event channels: the main process (which owns the native
@@ -43,6 +43,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   openExternal: (url: string) => ipcRenderer.invoke("open-external", url),
   getCdpPort: () => ipcRenderer.invoke("get-cdp-port"),
   setTheme: (theme: string) => ipcRenderer.invoke("set-theme", theme),
+  // Resolve the absolute path of a file chosen via <input type="file">.
+  // Electron 32 deprecated and 35 removed File.path; webUtils.getPathForFile
+  // is the supported replacement. Lets the composer skip copying a local file
+  // into the attachments dir and just hand the runtime its real path.
+  getPathForFile: (file: File): string => webUtils.getPathForFile(file),
   // ---- Clipboard ----
   // Renderer 加载在 http://127.0.0.1:4097，被 Chromium 视作 non-secure context，
   // `navigator.clipboard.writeText` 在那里会被拒。提供一个统一入口：

@@ -22,6 +22,8 @@ export interface BrowserTab {
   el?: HTMLElement; // the <iframe> for web-mode fallback (unused in Electron)
 }
 
+import * as i18n from "./i18n";
+
 const ZIVA_TAB_ID = "ziva";
 let tabs: BrowserTab[] = [{ id: ZIVA_TAB_ID, type: "ziva", title: "Ziva" }];
 let activeTabId = ZIVA_TAB_ID;
@@ -45,7 +47,7 @@ function addMainProcessTab(e: { id: string; url?: string; targetId?: string }) {
     pendingTabCreated.push(e);
     return;
   }
-  const tab: BrowserTab = { id: nextId(), type: "web", url: e.url, title: e.url ? prettyHost(e.url) : "New Tab" };
+  const tab: BrowserTab = { id: nextId(), type: "web", url: e.url, title: e.url ? prettyHost(e.url) : i18n.t("browser.newTab") };
   (tab as any).mainId = e.id;
   tabs.push(tab);
   if (activeTabId === ZIVA_TAB_ID) {
@@ -145,7 +147,7 @@ export function openInBrowserTab(url: string): void {
 }
 
 function createWebTab(url?: string): void {
-  const tab: BrowserTab = { id: nextId(), type: "web", url, title: url ? prettyHost(url) : "New Tab" };
+  const tab: BrowserTab = { id: nextId(), type: "web", url, title: url ? prettyHost(url) : i18n.t("browser.newTab") };
   if (!isElectron) {
     // Web/dev fallback: an <iframe> via the proxy. Not a real browser, just
     // keeps the UI drivable outside Electron.
@@ -261,7 +263,7 @@ function renderTabstrip(): void {
     const title = document.createElement("span"); title.className = "b-tab-title"; title.textContent = t.title; el.appendChild(title);
     if (t.type !== "ziva") {
       const close = document.createElement("button");
-      close.className = "b-tab-close"; close.title = "Close tab"; close.textContent = "×";
+      close.className = "b-tab-close"; close.title = i18n.t("browser.closeTab"); close.textContent = "×";
       close.onclick = (e) => { e.stopPropagation(); closeTab(t.id); };
       el.appendChild(close);
     }
@@ -269,7 +271,7 @@ function renderTabstrip(): void {
     strip.appendChild(el);
   }
   const add = document.createElement("button");
-  add.className = "b-tab-new"; add.title = "New tab"; add.textContent = "+";
+  add.className = "b-tab-new"; add.title = i18n.t("browser.newTabTitle"); add.textContent = "+";
   add.onclick = () => createWebTab();
   strip.appendChild(add);
 }
@@ -292,15 +294,15 @@ function renderOmnibox(): void {
     if (disabled) { b.disabled = true; b.style.opacity = "0.3"; }
     return b;
   };
-  const back = mkBtn("◂", "back", "Back", !isWeb);
-  const fwd = mkBtn("▸", "forward", "Forward", !isWeb);
-  const reload = mkBtn("⟳", "reload", "Reload", !isWeb);
+  const back = mkBtn("◂", "back", i18n.t("browser.back"), !isWeb);
+  const fwd = mkBtn("▸", "forward", i18n.t("browser.forward"), !isWeb);
+  const reload = mkBtn("⟳", "reload", i18n.t("browser.reload"), !isWeb);
   const input = document.createElement("input");
   input.type = "text"; input.className = "bt-url";
   input.value = active!.url || "";
-  input.placeholder = "Search or enter URL…";
-  
-  const goBtn = document.createElement("button"); goBtn.className = "bt-go"; goBtn.textContent = "Go";
+  input.placeholder = i18n.t("browser.urlPlaceholder");
+
+  const goBtn = document.createElement("button"); goBtn.className = "bt-go"; goBtn.textContent = i18n.t("browser.go");
   omnibox.append(back, fwd, reload, input, goBtn);
 
   const go = () => {

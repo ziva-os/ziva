@@ -4,6 +4,7 @@
  *  (no main.ts deps) — imports store/api/dom/@xterm/prism directly. */
 
 import * as api from "./api";
+import * as i18n from "./i18n";
 import { $, esc, bindResizer } from "./dom";
 import { store } from "./state";
 import type { RightPanelTab } from "./state";
@@ -12,10 +13,10 @@ import { FitAddon } from "@xterm/addon-fit";
 import Prism from "prismjs";
 
 const panelTypes = [
-  { type: "review", label: "Code Review", icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>' },
-  { type: "plan", label: "Plan", icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>' },
-  { type: "terminal", label: "Terminal", icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>' },
-  { type: "files", label: "Files", icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>' },
+  { type: "review", labelKey: "panel.types.review", icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>' },
+  { type: "plan", labelKey: "panel.types.plan", icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>' },
+  { type: "terminal", labelKey: "panel.types.terminal", icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>' },
+  { type: "files", labelKey: "panel.types.files", icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>' },
 ] as const;
 
 let _tabIdCounter = 0;
@@ -24,7 +25,7 @@ function nextTabId(): string { return "tab_" + (++_tabIdCounter); }
 function openRightPanel(type: RightPanelTab["type"], title?: string, initialUrl?: string) {
   const { rightPanelTabs } = store.get();
   const pt = panelTypes.find(p => p.type === type);
-  const tab: RightPanelTab = { id: nextTabId(), type, title: title || (pt ? pt.label : type) };
+  const tab: RightPanelTab = { id: nextTabId(), type, title: title || (pt ? i18n.t(pt.labelKey) : type) };
   if (initialUrl) tab.initialUrl = initialUrl;
   const tabs = [...rightPanelTabs, tab];
   store.set({ rightPanelTabs: tabs, activeRightTabId: tab.id, rightPanelOpen: true });
@@ -102,12 +103,12 @@ function renderTabBar() {
     </div>`;
   }
   html += `</div>`;
-  html += `<button class="rp-tab-add" id="btnAddTab" title="New tab">+</button>`;
-  html += `<button class="rp-tab-toggle rp-tab-fullscreen" id="btnFullscreenPanel" title="Fullscreen">
+  html += `<button class="rp-tab-add" id="btnAddTab" title="${esc(i18n.t("panel.tab.new"))}">+</button>`;
+  html += `<button class="rp-tab-toggle rp-tab-fullscreen" id="btnFullscreenPanel" title="${esc(i18n.t("panel.tab.fullscreen"))}">
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
   </button>`;
   // Toggle/close button — same icon as toolbar-right-toggle (mirrored sidebar icon)
-  html += `<button class="rp-tab-toggle" id="btnToggleRight" title="Close panel">
+  html += `<button class="rp-tab-toggle" id="btnToggleRight" title="${esc(i18n.t("panel.tab.close"))}">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
   </button>`;
   bar.innerHTML = html;
@@ -146,10 +147,10 @@ function renderWelcomeState() {
           <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
         </svg>
       </div>
-      <div class="welcome-title">工具面板</div>
-      <div class="welcome-desc">点击 <strong>+</strong> 按钮打开面板</div>
+      <div class="welcome-title">${esc(i18n.t("panel.welcomeTitle"))}</div>
+      <div class="welcome-desc">${i18n.t("panel.welcomeDesc")}</div>
       <div class="welcome-actions">
-        ${panelTypes.map(pt => `<button class="welcome-action-btn" data-panel-type="${pt.type}">${pt.icon}<span>${pt.label}</span></button>`).join("")}
+        ${panelTypes.map(pt => `<button class="welcome-action-btn" data-panel-type="${pt.type}">${pt.icon}<span>${esc(i18n.t(pt.labelKey))}</span></button>`).join("")}
       </div>`;
     body.appendChild(welcome);
     welcome.querySelectorAll(".welcome-action-btn").forEach(btn => {
@@ -171,7 +172,7 @@ function showAddTabMenu() {
   for (const pt of panelTypes) {
     const el = document.createElement("div");
     el.className = "panel-dropdown-item";
-    el.innerHTML = pt.icon + `<span>${pt.label}</span>`;
+    el.innerHTML = pt.icon + `<span>${esc(i18n.t(pt.labelKey))}</span>`;
     el.addEventListener("click", (ev) => {
       ev.stopPropagation();
       closeAddTabMenu();
@@ -301,10 +302,10 @@ function renderPlanTab(container: HTMLElement) {
   // Replace the placeholder text now; the subscriber will overwrite
   // once we resolve from the server.
   const placeholder = container.querySelector(".plan-panel") as HTMLElement | null;
-  if (placeholder) placeholder.innerHTML = `<div class="plan-empty">Loading...</div>`;
+  if (placeholder) placeholder.innerHTML = `<div class="plan-empty">${esc(i18n.t("panel.plan.loading"))}</div>`;
   const sid = store.get().activeSid;
   if (!sid) {
-    if (placeholder) placeholder.innerHTML = `<div class="plan-empty">No active plan</div>`;
+    if (placeholder) placeholder.innerHTML = `<div class="plan-empty">${esc(i18n.t("panel.plan.empty"))}</div>`;
     return;
   }
   api.getPlan(sid).then(steps => {
@@ -318,12 +319,12 @@ function renderPlanTab(container: HTMLElement) {
       // anything, leave it; otherwise paint the empty state.
       const cached = store.get().currentPlanSteps?.[sid];
       if (!cached || cached.length === 0) {
-        if (placeholder) placeholder.innerHTML = `<div class="plan-empty">No active plan</div>`;
+        if (placeholder) placeholder.innerHTML = `<div class="plan-empty">${esc(i18n.t("panel.plan.empty"))}</div>`;
       }
     }
   }).catch(() => {
     const ph = container.querySelector(".plan-panel") as HTMLElement | null;
-    if (ph) ph.innerHTML = `<div class="plan-empty">No active plan</div>`;
+    if (ph) ph.innerHTML = `<div class="plan-empty">${esc(i18n.t("panel.plan.empty"))}</div>`;
   });
 }
 
@@ -380,7 +381,7 @@ function buildPlanHtml(steps: { id?: string; description?: string; status?: stri
   const completed = steps.filter((s) => s.status === "completed").length;
   const total = steps.length;
   const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
-  let html = `<div class="plan-summary">${completed}/${total} done (${pct}%)</div>`;
+  let html = `<div class="plan-summary">${esc(i18n.t("panel.plan.summary", { done: completed, total, pct }))}</div>`;
   html += `<div class="plan-progress-bar"><div class="plan-progress-fill" style="width:${pct}%"></div></div>`;
   html += `<div class="plan-steps">`;
   for (const step of steps) {
@@ -414,7 +415,7 @@ function paintPlanFromStore() {
   if (!panel) return;
   const steps = (activeSid && currentPlanSteps?.[activeSid]) || [];
   if (steps.length === 0) {
-    panel.innerHTML = `<div class="plan-empty">No active plan</div>`;
+    panel.innerHTML = `<div class="plan-empty">${esc(i18n.t("panel.plan.empty"))}</div>`;
     return;
   }
   panel.innerHTML = buildPlanHtml(steps);
@@ -435,19 +436,19 @@ function renderReviewTab(container: HTMLElement) {
         <span class="review-stats" data-review-stats></span>
       </div>
       <div class="review-header-actions">
-        <button class="review-action-btn" data-action="expand-all" title="Expand all">Expand All</button>
-        <button class="review-action-btn" data-action="collapse-all" title="Collapse all">Collapse All</button>
+        <button class="review-action-btn" data-action="expand-all" title="${esc(i18n.t("panel.review.expandAllTitle"))}">${esc(i18n.t("panel.review.expandAll"))}</button>
+        <button class="review-action-btn" data-action="collapse-all" title="${esc(i18n.t("panel.review.collapseAllTitle"))}">${esc(i18n.t("panel.review.collapseAll"))}</button>
       </div>
     </div>
     <div class="panel-content-body">
       <div class="review-layout">
         <div class="review-diff-area" data-review-body>
-          <div class="diff-empty">No changes yet</div>
+          <div class="diff-empty">${esc(i18n.t("panel.review.noChanges"))}</div>
         </div>
-        <div class="resizer" data-review-resizer title="Drag to resize"></div>
+        <div class="resizer" data-review-resizer title="${esc(i18n.t("panel.review.resizerTitle"))}"></div>
         <div class="review-file-sidebar">
           <div class="review-file-search">
-            <input type="text" placeholder="Filter files..." data-review-filter />
+            <input type="text" placeholder="${esc(i18n.t("panel.review.filterPlaceholder"))}" data-review-filter />
           </div>
           <div class="review-file-list" data-review-files></div>
         </div>
@@ -480,7 +481,7 @@ function renderTerminalTab(container: HTMLElement) {
 
 function renderFilesTab(container: HTMLElement) {
   const ws = store.get().config.workspace || "";
-  const wsName = ws.split("/").pop() || ws || "Files";
+  const wsName = ws.split("/").pop() || ws || i18n.t("panel.files.defaultName");
   container.innerHTML = `
     <div class="panel-content-header">
       <span class="panel-content-title" title="${esc(ws)}">${esc(wsName)}</span>
@@ -489,9 +490,9 @@ function renderFilesTab(container: HTMLElement) {
     <div class="panel-content-body">
       <div class="files-layout">
         <div class="files-tree" data-files-tree></div>
-        <div class="resizer" data-files-resizer title="Drag to resize"></div>
+        <div class="resizer" data-files-resizer title="${esc(i18n.t("panel.review.resizerTitle"))}"></div>
         <div class="files-viewer" data-files-viewer>
-          <div class="files-viewer-empty">Select a file to view</div>
+          <div class="files-viewer-empty">${esc(i18n.t("panel.files.selectToView"))}</div>
         </div>
       </div>
     </div>`;
@@ -532,14 +533,14 @@ async function loadFileTreeForContainer(panelContainer: HTMLElement) {
   const tree = panelContainer.querySelector("[data-files-tree]") as HTMLElement;
   const viewer = panelContainer.querySelector("[data-files-viewer]") as HTMLElement;
   if (!tree) return;
-  tree.innerHTML = '<div style="padding:14px;color:var(--muted);font-size:12px">Loading...</div>';
+  tree.innerHTML = `<div style="padding:14px;color:var(--muted);font-size:12px">${esc(i18n.t("panel.files.loading"))}</div>`;
   try {
     const resp = await fetch("/api/files/tree?depth=2");
     if (!resp.ok) throw new Error("Failed");
     const data = await resp.json();
     renderFileTreeIn(tree, data.entries || [], 0, viewer);
   } catch {
-    tree.innerHTML = '<div style="padding:14px;color:var(--red);font-size:12px">Failed to load files</div>';
+    tree.innerHTML = `<div style="padding:14px;color:var(--red);font-size:12px">${esc(i18n.t("panel.files.loadFailed"))}</div>`;
   }
 }
 
@@ -639,7 +640,7 @@ function renderFileTreeAtIn(afterEl: HTMLElement, entries: any[], depth: number,
 }
 
 async function loadFileContentIn(viewer: HTMLElement, path: string) {
-  viewer.innerHTML = '<div class="file-empty">Loading...</div>';
+  viewer.innerHTML = `<div class="file-empty">${esc(i18n.t("panel.files.fileLoading"))}</div>`;
   const ext = (path.split(".").pop() || "").toLowerCase();
   const imgExts = ["png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "bmp"];
   if (imgExts.includes(ext)) {
@@ -661,7 +662,7 @@ async function loadFileContentIn(viewer: HTMLElement, path: string) {
     viewer.appendChild(pre);
     if (typeof Prism !== "undefined") Prism.highlightElement(pre);
   } catch {
-    viewer.innerHTML = '<div class="file-empty">Failed to load file</div>';
+    viewer.innerHTML = `<div class="file-empty">${esc(i18n.t("panel.files.fileLoadFailed"))}</div>`;
   }
 }
 
@@ -728,7 +729,7 @@ async function refreshDiffForContainer(container: HTMLElement) {
   }
 
   if (!diff) {
-    body.innerHTML = '<div class="diff-empty">No changes</div>';
+    body.innerHTML = `<div class="diff-empty">${esc(i18n.t("panel.review.noChangesShort"))}</div>`;
     fileList.innerHTML = "";
     if (statsEl) statsEl.textContent = "";
     return;
@@ -772,14 +773,14 @@ async function refreshDiffForContainer(container: HTMLElement) {
   let selectedIdx = 0;
   const renderFileDiff = (idx: number) => {
     const fg = fileGroups[idx];
-    if (!fg) { body.innerHTML = '<div class="diff-empty">Select a file</div>'; return; }
+    if (!fg) { body.innerHTML = `<div class="diff-empty">${esc(i18n.t("panel.review.selectFile"))}</div>`; return; }
     let lineNum = 0;
     let html = `<div class="diff-file-active">`;
     html += `<div class="diff-active-header">`;
     html += `<span class="diff-active-indicator"></span>`;
     html += `<span class="diff-active-path">${esc(fg.path)}</span>`;
     html += `<span class="diff-active-stats">+${fg.adds} -${fg.dels}</span>`;
-    html += `<button class="revert-btn" data-path="${esc(fg.path)}" title="Revert this file">Revert</button>`;
+    html += `<button class="revert-btn" data-path="${esc(fg.path)}" title="${esc(i18n.t("panel.review.revertTitle"))}">${esc(i18n.t("panel.review.revert"))}</button>`;
     html += `</div>`;
     html += `<div class="diff-file-content" style="display:block">`;
     for (const line of fg.lines) {
@@ -807,7 +808,7 @@ async function refreshDiffForContainer(container: HTMLElement) {
       (btn as HTMLElement).onclick = async (e) => {
         e.stopPropagation();
         const path = (btn as HTMLElement).dataset.path!;
-        if (!confirm(`Revert ${path}?`)) return;
+        if (!confirm(i18n.t("panel.review.confirmRevert", { path }))) return;
         try {
           await api.revertFiles(activeSid, [path]);
           refreshDiffForContainer(container);

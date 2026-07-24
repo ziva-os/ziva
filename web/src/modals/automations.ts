@@ -1,6 +1,7 @@
 /** Automations modal + detail — extracted verbatim from main.ts. */
 
 import * as api from "../api";
+import * as i18n from "../i18n";
 import { stripThinking } from "../main";
 import { renderMarkdown } from "../markdown";
 import { esc } from "../dom";
@@ -31,11 +32,11 @@ export async function openAutomationsModal() {
   backdrop.innerHTML = `
     <div class="fullpage-shell">
       <div class="fullpage-topbar">
-        <div class="fullpage-title">⏰ 自动化</div>
+        <div class="fullpage-title">${esc(i18n.t("automations.title"))}</div>
         <div class="fullpage-topbar-spacer"></div>
       </div>
       <div class="fullpage-body" id="automationsModalBody">
-        <div class="skills-modal-loading">Loading automations...</div>
+        <div class="skills-modal-loading">${esc(i18n.t("automations.loading"))}</div>
       </div>
     </div>`;
   document.body.appendChild(backdrop);
@@ -86,25 +87,25 @@ function openRunDetail(run: NonNullable<api.Automation["runs"]>[number]) {
   shell.className = "fullpage-shell";
   shell.innerHTML = `
     <div class="fullpage-topbar">
-      <button class="fullpage-back-btn" id="runDetailBackBtn" title="Back">← Back</button>
-      <div class="fullpage-title">Run · ${esc(time)}</div>
+      <button class="fullpage-back-btn" id="runDetailBackBtn" title="${esc(i18n.t("automations.detail.back"))}">← ${esc(i18n.t("automations.detail.back"))}</button>
+      <div class="fullpage-title">${esc(i18n.t("automations.detail.runTitle", { time }))}</div>
       <div class="fullpage-topbar-spacer"></div>
     </div>
     <div class="fullpage-body">
       <div class="automation-run-detail">
         <div class="automation-run-detail-status ${ok ? "ok" : "fail"}">
-          <span>${ok ? "✓ Completed" : "✗ Failed"}</span>
+          <span>${ok ? esc(i18n.t("automations.detail.completed")) : esc(i18n.t("automations.detail.failed"))}</span>
           <span class="automation-run-detail-status-time">${esc(time)}</span>
         </div>
         <div class="automation-detail-section">
-          <div class="automation-detail-section-header">📝 Input</div>
+          <div class="automation-detail-section-header">${esc(i18n.t("automations.detail.input"))}</div>
           <pre class="automation-detail-block"></pre>
         </div>
         <div class="automation-detail-section">
-          <div class="automation-detail-section-header">📤 Output</div>
+          <div class="automation-detail-section-header">${esc(i18n.t("automations.detail.output"))}</div>
           <div class="run-output-host"></div>
         </div>
-        ${run.error ? `<div class="automation-detail-section"><div class="automation-detail-section-header">⚠️ Error</div><pre class="automation-detail-block error"></pre></div>` : ""}
+        ${run.error ? `<div class="automation-detail-section"><div class="automation-detail-section-header">${esc(i18n.t("automations.detail.error"))}</div><pre class="automation-detail-block error"></pre></div>` : ""}
       </div>
     </div>`;
   // Set untrusted text via textContent, markdown output via innerHTML
@@ -114,7 +115,7 @@ function openRunDetail(run: NonNullable<api.Automation["runs"]>[number]) {
   const outputHost = shell.querySelector<HTMLElement>(".run-output-host");
   if (outputHost) {
     if (outputHtml) outputHost.innerHTML = `<div class="md run-output-markdown">${outputHtml}</div>`;
-    else outputHost.textContent = "(no output)";
+    else outputHost.textContent = i18n.t("automations.detail.noOutput");
   }
   const errorPre = shell.querySelector<HTMLElement>("pre.error");
   if (errorPre) errorPre.textContent = run.error || "";
@@ -139,7 +140,7 @@ async function openAutomationDetail(a: api.Automation) {
   backdrop.innerHTML = `
     <div class="fullpage-shell">
       <div class="fullpage-topbar">
-        <button class="fullpage-back-btn" id="automationDetailBackBtn" title="Back">← Back</button>
+        <button class="fullpage-back-btn" id="automationDetailBackBtn" title="${esc(i18n.t("automations.detail.back"))}">← ${esc(i18n.t("automations.detail.back"))}</button>
         <div class="fullpage-title" id="automationDetailTitle">${esc(a.name)}</div>
         <div class="fullpage-topbar-spacer"></div>
       </div>
@@ -153,13 +154,13 @@ async function openAutomationDetail(a: api.Automation) {
 
 function renderAutomationDetailBody(a: api.Automation): string {
   const intervalLabel = formatInterval(a.interval_seconds);
-  const scheduleLabel = a.schedule_time ? ` at ${esc(a.schedule_time)}` : "";
-  const lastRunLabel = a.last_run ? _deps.formatRelativeTime(Math.floor(a.last_run)) || "just now" : "never";
-  const promptText = a.prompt || "(no prompt)";
+  const scheduleLabel = a.schedule_time ? i18n.t("automations.row.scheduleAt", { time: a.schedule_time }) : "";
+  const lastRunLabel = a.last_run ? _deps.formatRelativeTime(Math.floor(a.last_run)) || i18n.t("automations.row.justNow") : i18n.t("automations.row.never");
+  const promptText = a.prompt || i18n.t("automations.row.noPrompt");
   const runs = a.runs || [];
   const createdLabel = a.created_at ? new Date(a.created_at * 1000).toLocaleString() : "";
   const runsHtml = runs.length === 0
-    ? `<div class="automation-detail-block muted">No runs yet — click ▶ Run now, or wait for the schedule.</div>`
+    ? `<div class="automation-detail-block muted">${esc(i18n.t("automations.detail.noRunsHint"))}</div>`
     : runs.map((r) => {
         const time = r.ts ? new Date(r.ts * 1000).toLocaleString() : "—";
         const ok = r.status === "done";
@@ -171,31 +172,31 @@ function renderAutomationDetailBody(a: api.Automation): string {
             <span class="automation-run-time">${esc(time)}</span>
             <span class="automation-run-arrow" aria-hidden="true">→</span>
           </div>
-          <div class="automation-run-preview">${preview ? esc(preview) + (previewText.length > 160 ? "…" : "") : '<span class="muted">(no output)</span>'}</div>
+          <div class="automation-run-preview">${preview ? esc(preview) + (previewText.length > 160 ? "…" : "") : `<span class="muted">${esc(i18n.t("automations.detail.noOutput"))}</span>`}</div>
         </div>`;
       }).join("");
   return `
     <div class="automation-detail">
       <div class="automation-detail-header">
-        <div class="automation-detail-status ${a.enabled ? "on" : "off"}">${a.enabled ? "● running" : "○ stopped"}</div>
+        <div class="automation-detail-status ${a.enabled ? "on" : "off"}">${esc(a.enabled ? i18n.t("automations.detail.statusRunning") : i18n.t("automations.detail.statusStopped"))}</div>
         <div class="automation-detail-actions">
-          <button class="automation-detail-btn" id="automationRunNowBtn">▶ Run now</button>
-          <button class="automation-detail-btn" id="automationToggleBtn">${a.enabled ? "⏸ Pause" : "▶ Resume"}</button>
-          <button class="automation-detail-btn danger" id="automationDeleteBtn">🗑 Delete</button>
+          <button class="automation-detail-btn" id="automationRunNowBtn">${esc(i18n.t("automations.detail.runNow"))}</button>
+          <button class="automation-detail-btn" id="automationToggleBtn">${esc(a.enabled ? i18n.t("automations.detail.pause") : i18n.t("automations.detail.resume"))}</button>
+          <button class="automation-detail-btn danger" id="automationDeleteBtn">${esc(i18n.t("automations.detail.delete"))}</button>
         </div>
       </div>
       <div class="automation-detail-meta">
-        <div class="automation-detail-meta-item"><span class="automation-detail-meta-label">Interval</span><span class="automation-detail-meta-value">⏰ ${esc(intervalLabel)}${scheduleLabel}</span></div>
-        <div class="automation-detail-meta-item"><span class="automation-detail-meta-label">Last run</span><span class="automation-detail-meta-value">${esc(lastRunLabel)}</span></div>
-        <div class="automation-detail-meta-item"><span class="automation-detail-meta-label">Run count</span><span class="automation-detail-meta-value">${a.run_count ?? 0}</span></div>
-        ${createdLabel ? `<div class="automation-detail-meta-item"><span class="automation-detail-meta-label">Created</span><span class="automation-detail-meta-value">${esc(createdLabel)}</span></div>` : ""}
+        <div class="automation-detail-meta-item"><span class="automation-detail-meta-label">${esc(i18n.t("automations.detail.metaInterval"))}</span><span class="automation-detail-meta-value">⏰ ${esc(intervalLabel)}${esc(scheduleLabel)}</span></div>
+        <div class="automation-detail-meta-item"><span class="automation-detail-meta-label">${esc(i18n.t("automations.detail.metaLastRun"))}</span><span class="automation-detail-meta-value">${esc(lastRunLabel)}</span></div>
+        <div class="automation-detail-meta-item"><span class="automation-detail-meta-label">${esc(i18n.t("automations.detail.metaRunCount"))}</span><span class="automation-detail-meta-value">${a.run_count ?? 0}</span></div>
+        ${createdLabel ? `<div class="automation-detail-meta-item"><span class="automation-detail-meta-label">${esc(i18n.t("automations.detail.metaCreated"))}</span><span class="automation-detail-meta-value">${esc(createdLabel)}</span></div>` : ""}
       </div>
       <div class="automation-detail-section">
-        <div class="automation-detail-section-header">📝 Prompt</div>
+        <div class="automation-detail-section-header">${esc(i18n.t("automations.detail.prompt"))}</div>
         <pre class="automation-detail-block">${esc(promptText)}</pre>
       </div>
       <div class="automation-detail-section">
-        <div class="automation-detail-section-header">📤 Runs (${runs.length})</div>
+        <div class="automation-detail-section-header">${esc(i18n.t("automations.detail.runs", { n: runs.length }))}</div>
         <div class="automation-runs-list">${runsHtml}</div>
       </div>
     </div>`;
@@ -242,7 +243,7 @@ function wireAutomationDetailActions(initial: api.Automation) {
     if (run) run.onclick = async (e) => {
       const btn = e.currentTarget as HTMLButtonElement;
       btn.disabled = true;
-      btn.textContent = "▶ Running…";
+      btn.textContent = i18n.t("automations.detail.running");
       try {
         // Run in the automation's hidden backing session — runs (manual and
         // scheduled) surface as cards in this detail view, not in the chat.
@@ -252,11 +253,11 @@ function wireAutomationDetailActions(initial: api.Automation) {
         // → refetch + rerender, rebuilding this button (so it resets to
         // "Run now") and showing the new last_result. Keep a long safety
         // timeout in case the event is missed so the button isn't stuck.
-        setTimeout(() => { btn.disabled = false; btn.textContent = "▶ Run now"; }, 300000);
+        setTimeout(() => { btn.disabled = false; btn.textContent = i18n.t("automations.detail.runNow"); }, 300000);
       } catch (err) {
-        alert(`Run failed: ${(err as Error).message}`);
+        alert(i18n.t("automations.alert.runFailed", { err: (err as Error).message }));
         btn.disabled = false;
-        btn.textContent = "▶ Run now";
+        btn.textContent = i18n.t("automations.detail.runNow");
       }
     };
     const toggle = document.getElementById("automationToggleBtn") as HTMLButtonElement | null;
@@ -269,19 +270,19 @@ function wireAutomationDetailActions(initial: api.Automation) {
         await refetch();
         rerender();
       } catch (err) {
-        alert(`Toggle failed: ${(err as Error).message}`);
+        alert(i18n.t("automations.alert.toggleFailed", { err: (err as Error).message }));
         btn.disabled = false;
       }
     };
     const del = document.getElementById("automationDeleteBtn") as HTMLButtonElement | null;
     if (del) del.onclick = async () => {
-      if (!confirm(`Delete "${current.name}"?`)) return;
+      if (!confirm(i18n.t("automations.confirm.deleteName", { name: current.name }))) return;
       try {
         await api.deleteAutomation(current.id);
         closeAutomationDetail();
         void loadAutomationsIntoModal();
       } catch (err) {
-        alert(`Delete failed: ${(err as Error).message}`);
+        alert(i18n.t("automations.alert.deleteFailed", { err: (err as Error).message }));
       }
     };
   };
@@ -296,12 +297,12 @@ export async function loadAutomationsIntoModal() {
   try {
     automations = await api.listAutomations();
   } catch (e) {
-    body.innerHTML = `<div class="skills-modal-error">Failed to load: ${esc((e as Error).message)}</div>`;
+    body.innerHTML = `<div class="skills-modal-error">${esc(i18n.t("automations.loadFailed", { err: (e as Error).message }))}</div>`;
     return;
   }
   let html = "";
   if (automations.length === 0) {
-    html = '<div class="automations-empty">No scheduled tasks yet. Add one below to have the agent re-run a prompt on a timer.</div>';
+    html = `<div class="automations-empty">${esc(i18n.t("automations.empty"))}</div>`;
   } else {
     html = '<div class="automations-list">' + automations
       .map((a) => renderAutomationRow(a))
@@ -309,28 +310,28 @@ export async function loadAutomationsIntoModal() {
   }
   html += `
     <div class="automation-create-form" id="automationCreateForm">
-      <div class="automation-create-header">+ New scheduled task</div>
-      <label class="automation-label">Name<input type="text" class="automation-input" id="automationNameInput" placeholder="Daily standup summary" /></label>
-      <label class="automation-label">Prompt<textarea class="automation-input automation-textarea" id="automationPromptInput" placeholder="What should the agent do each time the timer fires?"></textarea></label>
+      <div class="automation-create-header">${esc(i18n.t("automations.form.newHeader"))}</div>
+      <label class="automation-label">${esc(i18n.t("automations.form.name"))}<input type="text" class="automation-input" id="automationNameInput" placeholder="${esc(i18n.t("automations.form.namePlaceholder"))}" /></label>
+      <label class="automation-label">${esc(i18n.t("automations.form.prompt"))}<textarea class="automation-input automation-textarea" id="automationPromptInput" placeholder="${esc(i18n.t("automations.form.promptPlaceholder"))}"></textarea></label>
       <div class="automation-label-row">
-        <label class="automation-label">Interval
+        <label class="automation-label">${esc(i18n.t("automations.form.interval"))}
           <select class="automation-input" id="automationIntervalInput">
-            <option value="60">Every 1 minute</option>
-            <option value="300" selected>Every 5 minutes</option>
-            <option value="900">Every 15 minutes</option>
-            <option value="3600">Every hour</option>
-            <option value="21600">Every 6 hours</option>
-            <option value="86400">Once a day</option>
-            <option value="604800">Once a week</option>
+            <option value="60">${esc(i18n.t("automations.interval.1m"))}</option>
+            <option value="300" selected>${esc(i18n.t("automations.interval.5m"))}</option>
+            <option value="900">${esc(i18n.t("automations.interval.15m"))}</option>
+            <option value="3600">${esc(i18n.t("automations.interval.hour"))}</option>
+            <option value="21600">${esc(i18n.t("automations.interval.6h"))}</option>
+            <option value="86400">${esc(i18n.t("automations.interval.day"))}</option>
+            <option value="604800">${esc(i18n.t("automations.interval.week"))}</option>
           </select>
         </label>
-        <label class="automation-label">Time (HH:MM:SS)
+        <label class="automation-label">${esc(i18n.t("automations.form.time"))}
           <input type="time" class="automation-input" id="automationTimeInput" step="1" />
         </label>
       </div>
       <div class="automation-form-actions">
-        <button class="automation-submit-btn" id="automationSubmitBtn">Create</button>
-        <button class="automation-submit-btn secondary" id="automationFromChatBtn" title="Fill prompt from last user message">From chat</button>
+        <button class="automation-submit-btn" id="automationSubmitBtn">${esc(i18n.t("automations.form.create"))}</button>
+        <button class="automation-submit-btn secondary" id="automationFromChatBtn" title="${esc(i18n.t("automations.form.fromChatTitle"))}">${esc(i18n.t("automations.form.fromChat"))}</button>
         <span class="automation-form-status" id="automationFormStatus"></span>
       </div>
     </div>`;
@@ -342,12 +343,12 @@ export async function loadAutomationsIntoModal() {
       e.stopPropagation();
       const aid = btn.dataset.aid!;
       const name = btn.dataset.name || aid;
-      if (!confirm(`Delete "${name}"?`)) return;
+      if (!confirm(i18n.t("automations.confirm.deleteName", { name }))) return;
       try {
         await api.deleteAutomation(aid);
         await loadAutomationsIntoModal();
       } catch (e) {
-        alert(`Delete failed: ${(e as Error).message}`);
+        alert(i18n.t("automations.alert.deleteFailed", { err: (e as Error).message }));
       }
     };
   });
@@ -403,20 +404,20 @@ export async function loadAutomationsIntoModal() {
     const scheduleTime = timeVal || undefined;
     const statusEl = body.querySelector("#automationFormStatus") as HTMLElement;
     if (!prompt) {
-      statusEl.textContent = "Prompt is required";
+      statusEl.textContent = i18n.t("automations.form.promptRequired");
       statusEl.className = "automation-form-status error";
       return;
     }
-    statusEl.textContent = "Creating...";
+    statusEl.textContent = i18n.t("automations.form.creating");
     statusEl.className = "automation-form-status";
     try {
-      await api.createAutomation(name || "Untitled task", prompt, interval, scheduleTime);
-      statusEl.textContent = "Created";
+      await api.createAutomation(name || i18n.t("automations.untitled"), prompt, interval, scheduleTime);
+      statusEl.textContent = i18n.t("automations.form.created");
       statusEl.className = "automation-form-status success";
       // Brief success flash, then re-render the list
       setTimeout(() => loadAutomationsIntoModal(), 400);
     } catch (e) {
-      statusEl.textContent = (e as Error).message || "Failed to create";
+      statusEl.textContent = (e as Error).message || i18n.t("automations.form.createFailed");
       statusEl.className = "automation-form-status error";
     }
   };
@@ -424,20 +425,20 @@ export async function loadAutomationsIntoModal() {
 
 function renderAutomationRow(a: api.Automation): string {
   const intervalLabel = formatInterval(a.interval_seconds);
-  const scheduleLabel = a.schedule_time ? ` at ${esc(a.schedule_time)}` : "";
-  const lastRunLabel = a.last_run ? _deps.formatRelativeTime(Math.floor(a.last_run)) || "just now" : "never";
-  const promptText = (a.prompt || "").trim() || "(no prompt)";
+  const scheduleLabel = a.schedule_time ? i18n.t("automations.row.scheduleAt", { time: a.schedule_time }) : "";
+  const lastRunLabel = a.last_run ? _deps.formatRelativeTime(Math.floor(a.last_run)) || i18n.t("automations.row.justNow") : i18n.t("automations.row.never");
+  const promptText = (a.prompt || "").trim() || i18n.t("automations.row.noPrompt");
   const cleanedResult = stripThinking(a.last_result || "");
-  const resultText = cleanedResult || "No runs yet";
+  const resultText = cleanedResult || i18n.t("automations.row.noRuns");
   const hasResult = !!cleanedResult;
   return `
     <div class="automation-row" data-aid="${esc(a.id)}" data-enabled="${a.enabled ? "true" : "false"}" tabindex="0" role="button" aria-label="Open automation details">
       <div class="automation-row-main">
         <div class="automation-row-name">${esc(a.name)}</div>
         <div class="automation-row-meta">
-          <span class="automation-row-meta-item">⏰ ${esc(intervalLabel)}${scheduleLabel}</span>
-          <span class="automation-row-meta-item">Last run · ${esc(lastRunLabel)}</span>
-          <span class="automation-row-meta-item automation-row-status ${a.enabled ? "on" : "off"}">${a.enabled ? "● running" : "○ stopped"}</span>
+          <span class="automation-row-meta-item">⏰ ${esc(intervalLabel)}${esc(scheduleLabel)}</span>
+          <span class="automation-row-meta-item">${esc(i18n.t("automations.row.lastRun", { when: lastRunLabel }))}</span>
+          <span class="automation-row-meta-item automation-row-status ${a.enabled ? "on" : "off"}">${esc(a.enabled ? i18n.t("automations.row.running") : i18n.t("automations.row.stopped"))}</span>
         </div>
         <div class="automation-row-preview automation-row-preview-prompt" title="${esc(promptText)}">
           <span class="automation-row-preview-icon">📝</span><span class="automation-row-preview-text">${esc(promptText)}</span>
@@ -447,7 +448,7 @@ function renderAutomationRow(a: api.Automation): string {
         </div>
       </div>
       <div class="automation-row-actions">
-        <button class="automation-row-delete" data-aid="${esc(a.id)}" data-name="${esc(a.name)}" title="Delete">🗑</button>
+        <button class="automation-row-delete" data-aid="${esc(a.id)}" data-name="${esc(a.name)}" title="${esc(i18n.t("automations.detail.delete"))}">🗑</button>
       </div>
     </div>`;
 }

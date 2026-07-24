@@ -1571,21 +1571,27 @@ class DesktopAPIServer:
         if not file_bytes:
             return web.json_response({"error": "no_file"}, status=400)
 
-        # Sanitize the file name to something we can put on disk
-        # safely (no path traversal via a user-supplied filename).
-        suffix = Path(file_name).suffix.lower()
-        if suffix not in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
-            suffix = ".png"
-        # Filename is a timestamp + a small random suffix so concurrent
-        # pastes (or two pastes within the same millisecond) never
-        # collide on disk.
-        ts_ms = int(time.time() * 1000)
-        nonce = uuid.uuid4().hex[:6]
-        disk_name = f"clip-{ts_ms}-{nonce}{suffix}"
-
+        # Keep the client-supplied filename (and its extension) — only
+        # sanitizing it so a hostile name can't escape the attachments dir.
+        # Previously every upload was forced to clip-*.png, which silently
+        # renamed a user's .pdf / .zip / .mp4 to .png and dropped the name.
+        raw_name = (file_name or "").replace("\\", "/").split("/")[-1]
+        for _ch in '\\/:*?"<>|':
+            raw_name = raw_name.replace(_ch, "_")
+        safe_name = raw_name.strip(". ")[:120] or f"clip-{uuid.uuid4().hex[:8]}"
+        stem = Path(safe_name).stem or "clip"
+        suffix = Path(safe_name).suffix.lower()
+        if not suffix:
+            # No extension on the name — infer one from the MIME so the file
+            # is still recognizable on disk (and previewable by extension).
+            suffix = mimetypes.guess_extension((mime or "").split(";")[0].strip()) or ".bin"
         attachments_dir = FileStorage._project_dir(pid) / "attachments" / sid
         attachments_dir.mkdir(parents=True, exist_ok=True)
-        disk_path = attachments_dir / disk_name
+        # Two uploads of the same filename must not overwrite each other —
+        # fall back to a nonce-suffixed name on collision.
+        disk_path = attachments_dir / safe_name
+        if disk_path.exists():
+            disk_path = attachments_dir / f"{stem}-{uuid.uuid4().hex[:6]}{suffix}"
         disk_path.write_bytes(file_bytes)
 
         return web.json_response({

@@ -1791,6 +1791,20 @@ webview.browser-frame {
   cursor: pointer;
 }
 .pending-bar-thumb:hover { opacity: 0.85; }
+.pending-bar-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 11px;
+  max-width: 160px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 .ziva-composer:focus-within {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-light);
@@ -3728,6 +3742,27 @@ textarea.settings-input, .settings-agent-instructions { width: 100%; box-sizing:
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+.image-preview-item .file-preview-chip {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 6px 4px;
+  box-sizing: border-box;
+  text-align: center;
+  color: var(--text);
+}
+.image-preview-item .file-preview-chip .file-preview-name {
+  font-size: 10px;
+  line-height: 1.2;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .image-preview-remove {
   position: absolute;

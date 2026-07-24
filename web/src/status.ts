@@ -1,6 +1,7 @@
 /** Status-bar refresh — extracted from main.ts. */
 
 import * as api from "./api";
+import * as i18n from "./i18n";
 import { $ } from "./dom";
 import { store } from "./state";
 
@@ -26,7 +27,10 @@ export async function refreshMCPStatus(): Promise<void> {
     const status = await api.getMCPStatus();
     if (status.servers.length > 0) {
       ($("mcpStatus") as HTMLElement).style.display = "flex";
-      $("mcpDetail").textContent = `${status.servers.length} server${status.servers.length > 1 ? "s" : ""}, ${status.tools.length} tools`;
+      const servers = status.servers.length;
+      const tools = status.tools.length;
+      const key = servers > 1 ? "status.mcpBadge" : "status.mcpBadgeOne";
+      $("mcpDetail").textContent = i18n.t(key, { servers, tools });
     } else {
       ($("mcpStatus") as HTMLElement).style.display = "none";
     }

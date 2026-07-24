@@ -24,6 +24,7 @@ import { openSettingsModal, setSettingsDeps } from "./modals/settings";
 import { openAutomationsModal, closeAutomationsModal, loadAutomationsIntoModal, setAutomationsDeps, refreshAutomationDetailIfOpen } from "./modals/automations";
 import { openIMBridgeModal } from "./modals/im-bridge";
 import { channelIconHtml } from "./icons";
+import * as i18n from "./i18n";
 import { formatRelativeTime } from "./format";
 import { refreshStatus, refreshMCPStatus, updateConnStatus, setStatusDeps } from "./status";
 import {   toggleRightPanel, initResizablePanel, updatePlanTabContent, scheduleDiffRefresh, refreshActiveReviewTabs, refreshActivePlanTab, ensurePlanSubscriber } from "./right-panel";
@@ -123,7 +124,7 @@ function showEmptyState(show: boolean) {
 }
 
 function setPaneEmptyPlaceholder(target: HTMLElement) {
-  target.innerHTML = `<div class="pane-empty-state"><svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><div>No messages yet</div></div>`;
+  target.innerHTML = `<div class="pane-empty-state"><svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><div>${i18n.t("msg.empty")}</div></div>`;
 }
 
 function clearPaneEmptyPlaceholder(target: HTMLElement) {
@@ -154,40 +155,40 @@ function init() {
     <div class="ziva-layout">
       <aside class="ziva-sidebar" id="sidebar">
         <div class="sidebar-header">
-          <button class="sidebar-toggle-btn" id="btnToggleSidebar" title="Toggle sidebar" aria-label="Toggle sidebar">
+          <button class="sidebar-toggle-btn" id="btnToggleSidebar" title="${i18n.t("sidebar.toggle")}" aria-label="${i18n.t("sidebar.toggle")}">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
           </button>
         </div>
         <div class="sidebar-top">
           <button id="btnNewSession" class="sidebar-btn">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
-            <span>新对话</span>
+            <span>${i18n.t("sidebar.newSession")}</span>
           </button>
         </div>
         <div class="sidebar-nav">
           <button class="sidebar-nav-item" id="btnSkills">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
-            <span>Skills</span>
+            <span>${i18n.t("sidebar.skills")}</span>
           </button>
           <button class="sidebar-nav-item" id="btnScheduled">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
-            <span>自动化</span>
+            <span>${i18n.t("sidebar.automations")}</span>
           </button>
-          <button class="sidebar-nav-item" id="btnConnectIM" title="连接手机">
+          <button class="sidebar-nav-item" id="btnConnectIM" title="${i18n.t("sidebar.connectIM")}">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect><line x1="12" y1="18" x2="12.01" y2="18"></line></svg>
-            <span>连接手机</span>
+            <span>${i18n.t("sidebar.connectIM")}</span>
           </button>
         </div>
         <div class="sidebar-section-header">
-          <span>Projects</span>
+          <span>${i18n.t("sidebar.projects")}</span>
           <div class="section-actions">
-            <button class="section-action-btn" id="btnFilterSessions" title="Filter"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></button>
-            <button class="section-action-btn" id="btnSelectMode" title="Select all">☐</button>
-            <button class="section-action-btn delete-selected-btn" id="batchDeleteBtn" title="Delete selected" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg></button>
+            <button class="section-action-btn" id="btnFilterSessions" title="${i18n.t("sidebar.filter")}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></button>
+            <button class="section-action-btn" id="btnSelectMode" title="${i18n.t("sidebar.selectAll")}">☐</button>
+            <button class="section-action-btn delete-selected-btn" id="batchDeleteBtn" title="${i18n.t("sidebar.deleteSelected")}" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg></button>
           </div>
         </div>
         <div class="sidebar-search" id="sessionSearch" style="display:none">
-          <input type="text" id="sessionSearchInput" placeholder="Search conversations..." />
+          <input type="text" id="sessionSearchInput" placeholder="${i18n.t("sidebar.searchPlaceholder")}" />
         </div>
         <div class="sessions-list" id="sessionList"></div>
         <div class="sidebar-bottom">
@@ -196,27 +197,31 @@ function init() {
             <span class="mcp-label">MCP:</span>
             <span class="mcp-detail" id="mcpDetail"></span>
           </div>
+          <button class="sidebar-nav-item" id="btnLang" title="${i18n.t("sidebar.language")}">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+            <span>中 / EN</span>
+          </button>
           <button class="sidebar-nav-item" id="btnTheme">
             <span class="theme-icon">
               <svg id="themeIconMoon" class="ico-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
               <svg id="themeIconSun" class="ico-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
             </span>
-            <span>Theme</span>
+            <span>${i18n.t("sidebar.theme")}</span>
           </button>
           <button class="sidebar-nav-item" id="btnSettings">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-            <span>Settings</span>
+            <span>${i18n.t("sidebar.settings")}</span>
           </button>
         </div>
       </aside>
       <main class="ziva-center">
         <div class="ziva-toolbar" id="zivaToolbar">
-          <button class="toolbar-sidebar-open" id="btnOpenSidebar" title="Open sidebar" aria-label="Open sidebar">
+          <button class="toolbar-sidebar-open" id="btnOpenSidebar" title="${i18n.t("sidebar.openSidebar")}" aria-label="${i18n.t("sidebar.openSidebar")}">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
           </button>
           <div class="toolbar-title" id="toolbarTitle"></div>
           <div class="toolbar-actions">
-            <button class="toolbar-right-toggle" id="btnOpenRightPanel" title="Toggle panel" aria-label="Toggle panel">
+            <button class="toolbar-right-toggle" id="btnOpenRightPanel" title="${i18n.t("sidebar.togglePanel")}" aria-label="${i18n.t("sidebar.togglePanel")}">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
             </button>
           </div>
@@ -242,12 +247,12 @@ function init() {
         <div class="ziva-composer-wrapper" id="composerWrapper">
           <div class="pane-composer" id="composerHost"></div>
           <div class="ziva-status-bar" id="statusBar">
-            <div class="status-item" id="contextWorkspace" title="Switch workspace">
+            <div class="status-item" id="contextWorkspace" title="${i18n.t("status.workspace")}">
               <span class="status-icon"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-1.22-1.8A2 2 0 0 0 7.53 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg></span>
               <span id="workspaceName">ziva</span>
               <span class="status-chevron"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
             </div>
-            <div class="status-item" id="gitBranchContext" title="Switch Git branch">
+            <div class="status-item" id="gitBranchContext" title="${i18n.t("status.gitBranch")}">
               <span class="status-icon"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg></span>
               <span id="gitBranchName">main</span>
               <span class="status-chevron"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
@@ -315,11 +320,11 @@ function init() {
 
 // ---- Slash Commands ----
 const SLASH_COMMANDS = [
-  { name: "/new", description: "Start a new conversation" },
-  { name: "/model", description: "Switch model (e.g. /model MiniMax-M3)" },
-  { name: "/compact", description: "Compact context window" },
-  { name: "/prune", description: "Prune tool outputs" },
-  { name: "/automation", description: "Create a scheduled automation" },
+  { name: "/new", description: i18n.t("slash.new.desc") },
+  { name: "/model", description: i18n.t("slash.model.desc") },
+  { name: "/compact", description: i18n.t("slash.compact.desc") },
+  { name: "/prune", description: i18n.t("slash.prune.desc") },
+  { name: "/automation", description: i18n.t("slash.automation.desc") },
 ];
 
 let slashMenuIndex = -1;
@@ -346,10 +351,10 @@ async function startComposerMic(sid: string, btn: HTMLButtonElement) {
       stream.getTracks().forEach((t) => t.stop());
       isRecording = false;
       btn.classList.remove("recording");
-      btn.title = "Voice input";
+      btn.title = i18n.t("composer.voiceInput");
       const blob = new Blob(audioChunks, { type: mediaRecorder?.mimeType || "audio/webm" });
       try {
-        btn.title = "Transcribing…";
+        btn.title = i18n.t("composer.transcribing");
         const formData = new FormData();
         formData.append("audio", blob, "recording.webm");
         const res = await fetch("/api/stt", { method: "POST", body: formData });
@@ -360,7 +365,7 @@ async function startComposerMic(sid: string, btn: HTMLButtonElement) {
         if (!res.ok) {
           let detail = "";
           try { detail = (await res.text()).slice(0, 200); } catch {}
-          appendError(`STT failed (${res.status}): ${detail || res.statusText}`);
+          appendError(i18n.t("toast.sttFailedStatus", { status: res.status, detail: detail || res.statusText }));
           return;
         }
         const data = await res.json();
@@ -377,7 +382,7 @@ async function startComposerMic(sid: string, btn: HTMLButtonElement) {
           // silent, or no speech detected. Surface a hint so the user
           // doesn't think the button is broken.
           const ta = composerTextarea(sid);
-          const hint = "Voice input: no speech detected — try again, speak louder or hold the mic closer.";
+          const hint = i18n.t("toast.noSpeech");
           if (ta) {
             ta.placeholder = hint;
             setTimeout(() => {
@@ -389,16 +394,16 @@ async function startComposerMic(sid: string, btn: HTMLButtonElement) {
           console.warn("STT returned empty text — recording likely had no detectable speech.");
         }
       } catch (err: any) {
-        appendError(`STT failed: ${err?.message || err}`);
+        appendError(i18n.t("toast.sttFailed", { err: err?.message || err }));
         console.error("STT failed:", err);
       } finally {
-        btn.title = "Voice input";
+        btn.title = i18n.t("composer.voiceInput");
       }
     };
     mediaRecorder.start();
     isRecording = true;
     btn.classList.add("recording");
-    btn.title = "Stop recording";
+    btn.title = i18n.t("composer.stopRecording");
   } catch (err: any) {
     console.error("Mic failed:", err);
   }
@@ -505,7 +510,7 @@ function bindComposerEvents() {
           // Roll back UI to match server state.
           if (s && prevModel !== undefined) (s as any).model_name = prevModel;
           sel.value = prevModel ?? sel.value;
-          appendError(`Failed to switch model: ${err?.message || err}`);
+          appendError(i18n.t("toast.modelSwitchFailed", { err: err?.message || err }));
           console.error("updateSession(model_name) failed:", err);
         }
       }
@@ -525,7 +530,7 @@ function bindComposerEvents() {
         } catch (err: any) {
           if (s && prevPolicy !== undefined) (s as any).approval_policy = prevPolicy;
           sel.value = prevPolicy ?? sel.value;
-          appendError(`Failed to change approval: ${err?.message || err}`);
+          appendError(i18n.t("toast.approvalChangeFailed", { err: err?.message || err }));
           console.error("updateSession(approval_policy) failed:", err);
         }
       }
@@ -545,9 +550,8 @@ function bindComposerEvents() {
     const sid = (target as HTMLTextAreaElement).dataset.sid || "";
     const files = (e as ClipboardEvent).clipboardData?.files;
     if (!files || files.length === 0) return;
-    for (const f of Array.from(files)) {
-      if (f.type.startsWith("image/")) { e.preventDefault(); addImageFile(f, sid); }
-    }
+    e.preventDefault();
+    for (const f of Array.from(files)) addImageFile(f, sid);
   });
 
   document.addEventListener("dragover", (e) => {
@@ -561,7 +565,7 @@ function bindComposerEvents() {
     e.preventDefault();
     const sid = (target as HTMLTextAreaElement).dataset.sid || "";
     const files = (e as DragEvent).dataTransfer?.files;
-    if (files) for (const f of Array.from(files)) { if (f.type.startsWith("image/")) addImageFile(f, sid); }
+    if (files) for (const f of Array.from(files)) addImageFile(f, sid);
   });
 }
 
@@ -590,6 +594,8 @@ function bindEvents() {
     // Icon visibility is now driven purely by CSS via [data-theme] on <html>
     // (see .theme-icon rules in base.css) — sun/moon crossfade on switch.
   }
+
+  $("btnLang").onclick = () => i18n.setLang(i18n.getLang() === "zh" ? "en" : "zh");
 
   $("btnTheme").onclick = () => {
     const current = store.get().theme;
@@ -625,7 +631,7 @@ function bindEvents() {
     const checked = $("sessionList").querySelectorAll<HTMLInputElement>(".session-checkbox:checked");
     const items = Array.from(checked).map(cb => ({ sid: cb.dataset.sid!, workspace: cb.dataset.workspace }));
     if (items.length === 0) return;
-    if (!confirm(`Delete ${items.length} sessions?`)) return;
+    if (!confirm(i18n.t("confirm.deleteSessions", { n: items.length }))) return;
     const { activeSid } = store.get();
     for (const { sid, workspace } of items) {
       await api.deleteSession(sid, workspace ? { workspace } : undefined);
@@ -805,12 +811,12 @@ async function addImageFile(file: File, sid?: string) {
     try {
       await createSession();
     } catch (e: any) {
-      appendError(`Cannot attach image: failed to create session (${e?.message || "unknown"})`);
+      appendError(i18n.t("toast.attachNoSessionCreate", { err: e?.message || "unknown" }));
       return;
     }
     uploadSid = sid || store.get().activeSid;
     if (!uploadSid) {
-      appendError("Cannot attach image: failed to create a session");
+      appendError(i18n.t("toast.attachNoSession"));
       return;
     }
   }
@@ -832,7 +838,7 @@ async function addImageFile(file: File, sid?: string) {
     if (!result) {
       URL.revokeObjectURL(thumbUrl);
       console.error("image upload failed", err);
-      appendError(`Failed to attach ${file.name}: ${err || "upload failed"}`);
+      appendError(i18n.t("toast.attachFailed", { name: file.name, err: err || "upload failed" }));
       return;
     }
 
@@ -844,11 +850,14 @@ async function addImageFile(file: File, sid?: string) {
     renderComposerPreviews(uploadSid);
   };
 
-  // Electron exposes file.path for files from <input type="file"> — use
-  // the original path directly, no need to copy into the attachments dir.
-  // Clipboard-pasted files don't have .path (in-memory blob) → upload.
-  if ((file as any).path) {
-    finish({ path: (file as any).path, mime: file.type, size: file.size });
+  // Resolve the absolute path of a file chosen via <input type="file"> so we
+  // can hand the runtime the real path and skip copying it into the
+  // attachments dir. Electron 35 removed File.path; webUtils.getPathForFile
+  // (exposed by the preload bridge) is the replacement, with File.path as a
+  // fallback for older Electron. Clipboard-paste blobs have neither → upload.
+  const localPath = (window as any).electronAPI?.getPathForFile?.(file) || (file as any).path;
+  if (localPath) {
+    finish({ path: localPath, mime: file.type, size: file.size });
   } else {
     const fd = new FormData();
     fd.append("file", file, file.name);
@@ -935,27 +944,27 @@ function refreshSplitPane(sid: string) {
 function composerTemplate(sid: string): string {
   return `
     <div class="pending-bar pane-pending" data-sid="${esc(sid)}" hidden>
-      <span class="pending-bar-label">排队中</span>
+      <span class="pending-bar-label">${i18n.t("composer.queued")}</span>
       <span class="pending-bar-text"></span>
-      <button class="pending-bar-clear" title="取消排队" type="button">×</button>
+      <button class="pending-bar-clear" title="${i18n.t("composer.cancelQueue")}" type="button">×</button>
     </div>
     <div class="image-previews pane-previews" data-sid="${esc(sid)}" style="display:none"></div>
-    <input type="file" class="pane-image-input" data-sid="${esc(sid)}" accept="image/*" multiple style="display:none" />
-    <textarea class="pane-prompt" data-sid="${esc(sid)}" placeholder="Ask anything, @ to mention, / for workflows" rows="1"></textarea>
+    <input type="file" class="pane-image-input" data-sid="${esc(sid)}" multiple style="display:none" />
+    <textarea class="pane-prompt" data-sid="${esc(sid)}" placeholder="${i18n.t("composer.placeholder")}" rows="1"></textarea>
     <div class="slash-menu pane-slash" data-sid="${esc(sid)}" style="display:none"></div>
     <div class="composer-toolbar">
       <div class="toolbar-left">
-        <button class="composer-action-btn pane-btn-attach" data-sid="${esc(sid)}" title="Attach image">+</button>
-        <select class="pane-approval" data-sid="${esc(sid)}" title="Mode">
-          <option value="suggest">Fast</option>
-          <option value="auto-edit">Auto Edit</option>
-          <option value="full-auto">Full Auto</option>
+        <button class="composer-action-btn pane-btn-attach" data-sid="${esc(sid)}" title="${i18n.t("composer.attachTitle")}">+</button>
+        <select class="pane-approval" data-sid="${esc(sid)}" title="${i18n.t("composer.modeTitle")}">
+          <option value="suggest">${i18n.t("composer.modeSuggest")}</option>
+          <option value="auto-edit">${i18n.t("composer.modeAutoEdit")}</option>
+          <option value="full-auto">${i18n.t("composer.modeFullAuto")}</option>
         </select>
-        <select class="pane-model" data-sid="${esc(sid)}" title="Model"></select>
+        <select class="pane-model" data-sid="${esc(sid)}" title="${i18n.t("composer.modelTitle")}"></select>
       </div>
       <div class="toolbar-right">
         <span class="char-count pane-charcount" data-sid="${esc(sid)}"></span>
-        <div class="context-ring" title="Context usage">
+        <div class="context-ring" title="${i18n.t("composer.contextTitle")}">
           <svg viewBox="0 0 24 24" width="28" height="28">
             <circle cx="12" cy="12" r="11" fill="none" stroke="var(--line)" stroke-width="2.5" />
             <circle cx="12" cy="12" r="11" fill="none" stroke="var(--accent)" stroke-width="2.5"
@@ -964,10 +973,10 @@ function composerTemplate(sid: string): string {
           </svg>
           <span class="context-pct pane-context-pct" data-sid="${esc(sid)}"></span>
         </div>
-        <button class="composer-action-btn mic-btn pane-btn-mic" data-sid="${esc(sid)}" title="Voice input">
+        <button class="composer-action-btn mic-btn pane-btn-mic" data-sid="${esc(sid)}" title="${i18n.t("composer.voiceInput")}">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
         </button>
-        <button class="pane-send" data-sid="${esc(sid)}" title="Send">→</button>
+        <button class="pane-send" data-sid="${esc(sid)}" title="${i18n.t("composer.send")}">→</button>
       </div>
     </div>
   `;
@@ -1346,13 +1355,13 @@ async function refreshSessions() {
         const fullData = await api.getMessages(s.id, { includeDropped: true });
         userMsg = (fullData.messages || []).find(m => m.role === "user");
       }
-      s.preview = userMsg ? previewText(userMsg.content) : "Empty session";
+      s.preview = userMsg ? previewText(userMsg.content) : i18n.t("session.empty");
       const turns = await api.getTurns(s.id);
       s.turnCount = turns.length;
       const hasRunning = turns.some(t => t.status === "running");
       s.status = hasRunning ? "running" : turns.length > 0 ? "done" : "idle";
     } catch {
-      s.preview = "Session";
+      s.preview = i18n.t("session.fallback");
     }
   }
   renderSessions();
@@ -1467,7 +1476,7 @@ function _doRenderSessions() {
   if (groups.length === 0) {
     const empty = document.createElement("div");
     empty.className = "sessions-empty";
-    empty.textContent = "No conversations yet";
+    empty.textContent = i18n.t("sidebar.noConversations");
     list.appendChild(empty);
     return;
   }
@@ -1478,7 +1487,7 @@ function _doRenderSessions() {
     const projectDiv = document.createElement("div");
     projectDiv.className = "session-project-group" + (isActive ? " active-project" : "");
     const trimmedBadge = group.trimmed
-      ? `<span class="project-trimmed">showing ${group.sessions.length} of ${group.totalCount}</span>`
+      ? `<span class="project-trimmed">${i18n.t("sidebar.trimmed", { shown: group.sessions.length, total: group.totalCount })}</span>`
       : "";
     projectDiv.innerHTML = `
       <details ${isActive ? "open" : ""}>
@@ -1497,7 +1506,7 @@ function _doRenderSessions() {
     if (group.sessions.length === 0) {
       const empty = document.createElement("div");
       empty.className = "project-sessions-empty";
-      empty.textContent = isActive ? "No conversations in this project" : "No conversations";
+      empty.textContent = isActive ? i18n.t("sidebar.noConvActive") : i18n.t("sidebar.noConvOther");
       sessionsContainer.appendChild(empty);
     } else {
       for (const s of group.sessions) {
@@ -1568,7 +1577,7 @@ function _doRenderSessions() {
         if (delBtn) {
           (delBtn as HTMLElement).onclick = (e) => {
             e.stopPropagation();
-            if (confirm("Delete this session?")) deleteSession(s.id, s.workspace);
+            if (confirm(i18n.t("confirm.deleteSession"))) deleteSession(s.id, s.workspace);
           };
         }
         sessionsContainer.appendChild(div);
@@ -1590,13 +1599,13 @@ function _doRenderSessions() {
     if (activeGroup.trimmed) {
       const btn = document.createElement("button");
       btn.className = "show-all-btn";
-      btn.textContent = `Show all ${activeGroup.totalCount} conversations in ${activeGroup.label}`;
+      btn.textContent = i18n.t("sidebar.showAll", { n: activeGroup.totalCount, name: activeGroup.label });
       btn.onclick = () => { list.dataset.showAll = "true"; renderSessions(); };
       list.appendChild(btn);
     } else if (showAll && !filter) {
       const btn = document.createElement("button");
       btn.className = "show-all-btn";
-      btn.textContent = "Show recent only";
+      btn.textContent = i18n.t("sidebar.showRecent");
       btn.onclick = () => { list.dataset.showAll = "false"; renderSessions(); };
       list.appendChild(btn);
     }
@@ -1622,7 +1631,7 @@ async function createSession() {
   // next /sessions refresh.
   const activeWs = store.get().config.workspace || "";
   const sessions = [...store.get().sessions];
-  sessions.unshift({ id, turnCount: 0, status: "idle", preview: "Empty session", workspace: activeWs, model_name: modelName } as any);
+  sessions.unshift({ id, turnCount: 0, status: "idle", preview: i18n.t("session.empty"), workspace: activeWs, model_name: modelName } as any);
   store.set({ sessions });
   renderSessions();
   await switchSession(id);
@@ -1771,7 +1780,7 @@ async function switchSession(sid: string, opts: { skipGitRefresh?: boolean } = {
   // Show/hide compact toast based on session state
   const { compactingSessions } = store.get();
   if (compactingSessions[sid]) {
-    setCompactToastState("loading", "Compacting context...", sid);
+    setCompactToastState("loading", i18n.t("toast.compacting"), sid);
   } else {
     hideCompactToast();
   }
@@ -1781,7 +1790,7 @@ async function deleteSession(sid: string, workspace?: string) {
   try {
     await api.deleteSession(sid, workspace ? { workspace } : undefined);
   } catch (e: any) {
-    alert("Failed to delete session: " + (e?.message || "unknown"));
+    alert(i18n.t("alert.deleteSessionFailed", { err: e?.message || "unknown" }));
     return;
   }
   const sessions = store.get().sessions.filter(s => s.id !== sid);
@@ -2099,7 +2108,7 @@ function renderMessages(target: HTMLElement, msgs: any[], offset: number = 0, wi
         if (q) {
           const card = document.createElement("div");
           card.className = "question-card question-card-answered";
-          card.innerHTML = `<div class="question-text">${esc(q)}</div><div class="question-reply">You: ${esc(answer)}</div>`;
+          card.innerHTML = `<div class="question-text">${esc(q)}</div><div class="question-reply">${i18n.t("question.you", { answer: esc(answer) })}</div>`;
           target.appendChild(card);
         }
         continue;
@@ -2132,12 +2141,12 @@ function appendCompactBoundary(
   const bar = document.createElement("details");
   bar.className = "compact-collapse";
   const sum = document.createElement("summary");
-  sum.textContent = `📚 之前 ${droppedCount} 条消息已压缩为摘要`;
+  sum.textContent = i18n.t("msg.compactBoundary", { n: droppedCount });
   bar.appendChild(sum);
 
   const dropZone = document.createElement("div");
   dropZone.className = "compact-dropped";
-  dropZone.textContent = "展开以查看原文…";
+  dropZone.textContent = i18n.t("msg.expandOriginal");
   bar.appendChild(dropZone);
 
   bar.addEventListener("toggle", async () => {
@@ -2154,7 +2163,7 @@ function appendCompactBoundary(
       renderMessages(dropZone, originals, 0, false);
       dropZone.dataset.loaded = "1";
     } catch (e) {
-      dropZone.textContent = `加载失败: ${(e as Error).message}`;
+      dropZone.textContent = i18n.t("toast.loadFailed", { err: (e as Error).message });
     }
   });
 
@@ -2222,7 +2231,7 @@ function appendUserMsg(text: string | unknown[], target: HTMLElement = (getLiveS
   if (globalIndex !== undefined) {
     const btn = document.createElement("button");
     btn.className = "rewind-btn";
-    btn.title = "回退到这里（删除此条及之后，原文回到输入框）";
+    btn.title = i18n.t("msg.rewindUserEdit");
     btn.textContent = "↩";
     div.querySelector(".role-label")?.appendChild(btn);
   }
@@ -2265,7 +2274,7 @@ async function patchRewindButtons(sid: string): Promise<void> {
         if (!el.querySelector(".rewind-btn")) {
           const btn = document.createElement("button");
           btn.className = "rewind-btn";
-          btn.title = "回退到这里（删除此条及之后，内容回到输入框）";
+          btn.title = i18n.t("msg.rewindUserContent");
           btn.textContent = "↩";
           el.querySelector(".role-label")?.appendChild(btn);
         }
@@ -2277,7 +2286,7 @@ async function patchRewindButtons(sid: string): Promise<void> {
         if (!el.querySelector(".rewind-btn-tool")) {
           const btn = document.createElement("button");
           btn.className = "rewind-btn-tool";
-          btn.title = "回退到这里（删除此后的消息，停在这里等你输入）";
+          btn.title = i18n.t("msg.rewindTool");
           btn.textContent = "↩";
           const header = el.querySelector(".tool-card-header");
           const copyBtn = el.querySelector(".copy-tool-btn");
@@ -2293,8 +2302,8 @@ async function patchRewindButtons(sid: string): Promise<void> {
 // editing/resend. Stops there — does NOT auto-run the model.
 async function rewindUserMsg(sid: string, idx: number, kind: "user" | "tool"): Promise<void> {
   const tip = kind === "tool"
-    ? "回退到这里？之后的消息都会删除。"
-    : "回退到这里？这条及之后的消息都会删除，内容回到输入框。";
+    ? i18n.t("confirm.rewindTool")
+    : i18n.t("confirm.rewindUser");
   if (!confirm(tip)) return;
   try {
     const res = await api.rewindSession(sid, idx);
@@ -2323,7 +2332,7 @@ async function rewindUserMsg(sid: string, idx: number, kind: "user" | "tool"): P
       ta.focus();
     }
   } catch (e: any) {
-    appendError(`回退失败: ${e?.message || e}`);
+    appendError(i18n.t("toast.rewindFailed", { err: e?.message || e }));
   }
 }
 
@@ -2333,10 +2342,10 @@ async function rewindUserMsg(sid: string, idx: number, kind: "user" | "tool"): P
 async function insertBrowserSelection({ text, url, screenshotDataUrl }: { text: string; url: string; screenshotDataUrl: string }): Promise<void> {
   const sid = store.get().activeSid;
   if (!sid) {
-    appendError("请先打开一个对话，再从网页发送选中内容。");
+    appendError(i18n.t("toast.openSessionFirst"));
     return;
   }
-  const draft = `> ${text}\n\n来源：${url}`;
+  const draft = `> ${text}\n\n${i18n.t("common.source")}${url}`;
   setDraftText(sid, draft);
   const ta = composerTextarea(sid);
   if (ta) {
@@ -2351,7 +2360,7 @@ async function insertBrowserSelection({ text, url, screenshotDataUrl }: { text: 
       const file = new File([blob], "selection.png", { type: "image/png" });
       await addImageFile(file, sid);
     } catch (e: any) {
-      appendError(`截图添加失败: ${e?.message || e}`);
+      appendError(i18n.t("toast.screenshotFailed", { err: e?.message || e }));
     }
   }
 }
@@ -2444,7 +2453,7 @@ function appendTyping(target: HTMLElement = (getLiveStreamTarget() || $("message
   if (target.querySelector(".typing-indicator")) return;
   const el = document.createElement("div");
   el.className = "typing-indicator";
-  el.innerHTML = '<div class="typing-dots"><span></span><span></span><span></span></div> Thinking...';
+  el.innerHTML = `<div class="typing-dots"><span></span><span></span><span></span></div> Thinking...`;
   target.appendChild(el);
 }
 
@@ -2526,12 +2535,12 @@ function appendToolCard(
 
   let body = "";
   if (Object.keys(args).length > 0) {
-    body += `<div class="section-label">Input</div>`;
+    body += `<div class="section-label">${i18n.t("tool.input")}</div>`;
     body += `<div class="section-content"><code>${esc(JSON.stringify(args, null, 2))}</code></div>`;
   }
   if (isPruned) {
-    body += `<div class="section-label">Output</div>`;
-    body += `<div class="section-content pruned-output">Output pruned to save context — re-run the tool to see fresh results.</div>`;
+    body += `<div class="section-label">${i18n.t("tool.output")}</div>`;
+    body += `<div class="section-content pruned-output">${i18n.t("tool.prunedNote")}</div>`;
   } else if (output !== undefined) {
     if (toolName === "spawn_agent") {
       // Show the agent's completion text, which carries the grouped tools
@@ -2543,7 +2552,7 @@ function appendToolCard(
         ? String((output as any)._text)
         : (typeof output === "string" ? output : "");
       if (outText) {
-        body += `<div class="section-label">Output</div>`;
+        body += `<div class="section-label">${i18n.t("tool.output")}</div>`;
         body += `<div class="section-content"><pre>${esc(outText)}</pre></div>`;
       }
     } else if (typeof output === "object" && output !== null && ((output as any).type === "image" || (output as any).image_url)) {
@@ -2557,7 +2566,7 @@ function appendToolCard(
       const imgUrl = (output as any).image_url || "";
       const outText = (output as any)._text ? String((output as any)._text) : "";
       if (outText || imgUrl) {
-        body += `<div class="section-label">Output</div>`;
+        body += `<div class="section-label">${i18n.t("tool.output")}</div>`;
       }
       if (outText) {
         body += `<div class="section-content"><pre>${esc(outText)}</pre></div>`;
@@ -2566,7 +2575,7 @@ function appendToolCard(
         body += `<div class="section-content tool-output-image"><img src="${esc(imgUrl)}" alt="tool output" loading="lazy" /></div>`;
       }
     } else if (typeof output === "string" && /^data:image\//.test(output)) {
-      body += `<div class="section-label">Output</div>`;
+      body += `<div class="section-label">${i18n.t("tool.output")}</div>`;
       body += `<div class="section-content tool-output-image"><img src="${esc(output)}" alt="tool output" loading="lazy" /></div>`;
     } else {
       // Prefer plain text from _text field (what the model sees), not the
@@ -2574,11 +2583,11 @@ function appendToolCard(
       let outStr: string;
       if (typeof output === "object" && output !== null && (output as any)._text) {
         outStr = String((output as any)._text);
-        body += `<div class="section-label">Output</div>`;
+        body += `<div class="section-label">${i18n.t("tool.output")}</div>`;
         body += `<div class="section-content"><pre>${esc(outStr)}</pre></div>`;
       } else {
         outStr = typeof output === "string" ? output : JSON.stringify(output, null, 2);
-        body += `<div class="section-label">Output</div>`;
+        body += `<div class="section-label">${i18n.t("tool.output")}</div>`;
         body += `<div class="section-content"><code>${esc(outStr)}</code></div>`;
       }
     }
@@ -2587,7 +2596,7 @@ function appendToolCard(
     const summary = Object.entries(subagentTools)
       .map(([n, c]) => `${esc(n)} ×${c}`)
       .join(", ");
-    body += `<div class="section-label">used tools</div>`;
+    body += `<div class="section-label">${i18n.t("tool.usedTools")}</div>`;
     body += `<div class="section-content subagent-tools"><span class="subagent-tool-summary">${summary}</span></div>`;
   }
   // send_file: render the delivered file from the tool's `path` arg, by kind:
@@ -2602,11 +2611,11 @@ function appendToolCard(
     const fname = p.split("/").pop() || p;
     const isImg = /^(png|jpe?g|gif|webp|bmp|svg|ico|tiff?)$/.test(ext);
     const isPreviewable = /^(mp4|webm|mov|m4v|ogv|mkv|avi|mp3|wav|ogg|m4a|aac|flac|opus|pdf|html?|txt|markdown|log|csv|json|xml|py|js|tsx?|jsx|css|scss|sh|bash|rs|go|java|kt|c|cc|cpp|h|hpp|rb|php|swift|sql|md)$/.test(ext);
-    body += `<div class="section-label">File</div>`;
+    body += `<div class="section-label">${i18n.t("tool.file")}</div>`;
     if (isImg) {
       body += `<div class="section-content tool-output-image"><img src="${esc(src)}" alt="${esc(p)}" loading="lazy" /></div>`;
     } else if (isPreviewable) {
-      body += `<div class="section-content"><a class="send-file-link" href="${esc(src)}" target="_blank" rel="noopener" title="Open ${esc(fname)}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg> ${esc(fname)} <span class="send-file-open">↗ open</span></a></div>`;
+      body += `<div class="section-content"><a class="send-file-link" href="${esc(src)}" target="_blank" rel="noopener" title="Open ${esc(fname)}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg> ${esc(fname)} <span class="send-file-open">↗ ${i18n.t("tool.open")}</span></a></div>`;
     } else {
       body += `<div class="section-content send-file-name"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="opacity:.55;vertical-align:-2px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg> ${esc(fname)}</div>`;
     }
@@ -2618,7 +2627,7 @@ function appendToolCard(
       <span class="tool-name">${esc(toolName)}</span>
       <span class="tool-args">${esc(abbrevArg)}</span>
       <span class="tool-status"><span class="status-dot ${statusClass}"></span>${statusText}</span>
-      <button class="copy-tool-btn" title="Copy">⧉</button>
+      <button class="copy-tool-btn" title="${i18n.t("tool.copy")}">⧉</button>
     </div>
     <div class="tool-card-body">${body}</div>`;
 
@@ -2639,7 +2648,7 @@ function appendToolCard(
   if (globalIndex !== undefined) {
     const btn = document.createElement("button");
     btn.className = "rewind-btn-tool";
-    btn.title = "回退到这里（删除此后的消息，停在这里等你输入）";
+    btn.title = i18n.t("msg.rewindTool");
     btn.textContent = "↩";
     // Place inside the header next to the copy button (flex layout) instead
     // of an overlay, so it doesn't cover the copy button.
@@ -2657,12 +2666,12 @@ function appendApprovalCard(requestId: string, toolName: string, args: Record<st
   card.className = "approval-card";
   const argsStr = JSON.stringify(args, null, 2);
   card.innerHTML = `
-    <div class="approval-header">! Approval Required</div>
-    <div class="approval-detail">Tool: <strong>${esc(toolName)}</strong><br/><pre>${esc(argsStr.slice(0, 500))}${argsStr.length > 500 ? "..." : ""}</pre></div>
+    <div class="approval-header">${i18n.t("approval.title")}</div>
+    <div class="approval-detail">${i18n.t("approval.tool")} <strong>${esc(toolName)}</strong><br/><pre>${esc(argsStr.slice(0, 500))}${argsStr.length > 500 ? "..." : ""}</pre></div>
     <div class="approval-actions">
-      <button class="approve-once">Allow Once</button>
-      <button class="approve-always">Allow Always</button>
-      <button class="deny">Deny</button>
+      <button class="approve-once">${i18n.t("approval.allowOnce")}</button>
+      <button class="approve-always">${i18n.t("approval.allowAlways")}</button>
+      <button class="deny">${i18n.t("approval.deny")}</button>
     </div>`;
   (card.querySelector(".approve-once") as HTMLElement).onclick = async () => {
     await api.replyPermission(requestId, "once");
@@ -2759,22 +2768,22 @@ function appendQuestionCard(
         `<label class="question-checkbox-label"><input type="checkbox" class="question-checkbox" data-opt="${i}" value="${esc(o.submitValue)}" /><span>${o.display}</span></label>`
       ).join("")}</div>`;
       html += `<div class="question-input-row question-other-row">
-        <input type="text" class="question-input" placeholder="Or type your own answer..." />
-        <button class="question-submit" aria-label="Submit">↑</button>
+        <input type="text" class="question-input" placeholder="${i18n.t("question.customAnswer")}" />
+        <button class="question-submit" aria-label="${i18n.t("question.submit")}">↑</button>
       </div>`;
     } else {
       html += `<div class="question-options">${options.map((o, i) =>
         `<button class="question-option-btn" data-opt="${i}" data-submit="${esc(o.submitValue)}">${o.display}</button>`
       ).join("")}</div>`;
       html += `<div class="question-input-row question-other-row">
-        <input type="text" class="question-input" placeholder="Or type your own answer..." />
-        <button class="question-submit" aria-label="Send">↑</button>
+        <input type="text" class="question-input" placeholder="${i18n.t("question.customAnswer")}" />
+        <button class="question-submit" aria-label="${i18n.t("question.send")}">↑</button>
       </div>`;
     }
   } else {
     html += `<div class="question-input-row">
-      <input type="text" class="question-input" placeholder="Type your answer..." />
-      <button class="question-submit" aria-label="Send">↑</button>
+      <input type="text" class="question-input" placeholder="${i18n.t("question.typeAnswer")}" />
+      <button class="question-submit" aria-label="${i18n.t("question.send")}">↑</button>
     </div>`;
   }
   // "Chat about this" affordance — lets the user back out of the
@@ -2787,7 +2796,7 @@ function appendQuestionCard(
       <svg class="question-chat-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
       </svg>
-      <span>还是聊聊吧</span>
+      <span>${i18n.t("question.chatAbout")}</span>
     </button>
   </div>`;
   card.innerHTML = html;
@@ -2801,7 +2810,7 @@ function appendQuestionCard(
     card.classList.add("question-card-answered");
     const replyDiv = document.createElement("div");
     replyDiv.className = "question-reply";
-    replyDiv.textContent = `You: ${answer}`;
+    replyDiv.textContent = i18n.t("question.you", { answer });
     card.appendChild(replyDiv);
   };
 
@@ -2855,10 +2864,10 @@ function appendQuestionCard(
     if (submitted) return;
     const questionSid = sid || store.get().activeSid;
     if (!questionSid) return;
-    api.replyQuestion(questionSid, "（用户放弃当前选项，希望直接讨论这个话题）", callId).catch((e) => {
+    api.replyQuestion(questionSid, i18n.t("question.abandonReply"), callId).catch((e) => {
       console.error("replyQuestion failed:", e);
     });
-    lockCard("还是聊聊吧");
+    lockCard(i18n.t("question.chatAbout"));
     // Focus the chat composer so the user can immediately type
     // their new direction.
     setTimeout(() => {
@@ -2959,11 +2968,11 @@ function appendModelPicker(
   const head = document.createElement("div");
   head.className = "model-picker-head";
   const title = document.createElement("h4");
-  title.textContent = "Select a model";
+  title.textContent = i18n.t("modelPicker.title");
   head.appendChild(title);
   const pill = document.createElement("span");
   pill.className = "current-pill";
-  pill.textContent = `current: ${currentModel}`;
+  pill.textContent = i18n.t("modelPicker.current", { model: currentModel });
   head.appendChild(pill);
   card.appendChild(head);
 
@@ -2988,7 +2997,7 @@ function appendModelPicker(
     if (m.name === currentModel) {
       const badge = document.createElement("span");
       badge.className = "badge";
-      badge.textContent = "in use";
+      badge.textContent = i18n.t("modelPicker.inUse");
       row.appendChild(badge);
     }
 
@@ -3014,7 +3023,7 @@ function appendModelPicker(
           inner.innerHTML = `<span class="system-icon">${CHECK_ICON_SVG}</span>`;
           const lbl = document.createElement("span");
           lbl.className = "system-label";
-          lbl.textContent = "Switched model";
+          lbl.textContent = i18n.t("system.switchedModel");
           inner.appendChild(lbl);
           const det = document.createElement("span");
           det.className = "system-detail";
@@ -3024,7 +3033,7 @@ function appendModelPicker(
           return wrap;
         })());
       } catch (err: any) {
-        appendError(`Failed to switch model: ${err?.message || err}`);
+        appendError(i18n.t("toast.modelSwitchFailed", { err: err?.message || err }));
         console.error("updateSession(model_name) failed:", err);
       }
     });
@@ -3036,7 +3045,7 @@ function appendModelPicker(
   // Foot: hint
   const foot = document.createElement("div");
   foot.className = "model-picker-foot";
-  foot.innerHTML = "Type <code>/model &lt;name&gt;</code> to switch without clicking, or pass a name inline.";
+  foot.innerHTML = i18n.t("modelPicker.hint");
   card.appendChild(foot);
 
   target.appendChild(card);
@@ -3351,8 +3360,8 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
           <span class="agent-card-icon">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
           </span>
-          <span class="agent-card-title">Background Agent</span>
-          <span class="agent-card-status running">Running</span>
+          <span class="agent-card-title">${i18n.t("agent.title")}</span>
+          <span class="agent-card-status running">${i18n.t("agent.statusRunning")}</span>
         </div>
         <div class="agent-card-task">${esc(taskDesc)}</div>
       `;
@@ -3373,13 +3382,13 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
         if (statusEl) {
           statusEl.classList.remove("running");
           statusEl.classList.add(status === "failed" || status === "cancelled" ? "failed" : "done");
-          statusEl.textContent = status === "failed" ? "Failed" : status === "cancelled" ? "Cancelled" : "Done";
+          statusEl.textContent = status === "failed" ? i18n.t("agent.statusFailed") : status === "cancelled" ? i18n.t("agent.statusCancelled") : i18n.t("agent.statusDone");
         }
         const toolsUsed = (ev as any).tools_used || 0;
         const toolsSummary = (ev as any).tools_summary as Record<string, number> | undefined;
         const toolsLine = toolsSummary && Object.keys(toolsSummary).length > 0
           ? Object.entries(toolsSummary).map(([n, c]) => `${n} ×${c}`).join(" · ")
-          : `${toolsUsed} tool${toolsUsed === 1 ? "" : "s"} used`;
+          : i18n.plural(toolsUsed, { one: i18n.t("agent.toolsOne", { n: toolsUsed }), other: i18n.t("agent.toolsMany", { n: toolsUsed }) });
         const resultPreview = String((ev as any).result_preview || "");
         let detail = `<div class="agent-card-meta">${esc(toolsLine)}</div>`;
         if (resultPreview) {
@@ -3398,8 +3407,8 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
                 }
               </svg>
             </span>
-            <span class="agent-card-title">Background Agent</span>
-            <span class="agent-card-status ${status === 'failed' || status === 'cancelled' ? 'failed' : 'done'}">${status === 'failed' ? 'Failed' : status === 'cancelled' ? 'Cancelled' : 'Done'}</span>
+            <span class="agent-card-title">${i18n.t("agent.title")}</span>
+            <span class="agent-card-status ${status === 'failed' || status === 'cancelled' ? 'failed' : 'done'}">${status === 'failed' ? i18n.t("agent.statusFailed") : status === 'cancelled' ? i18n.t("agent.statusCancelled") : i18n.t("agent.statusDone")}</span>
           </div>
           <div class="agent-card-task">${esc(taskDesc)}</div>
           <div class="agent-card-meta">${esc(toolsLine)}</div>
@@ -3658,11 +3667,11 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
     }
   } else if (t === "status" && (ev as any).content === "compact") {
     const activeSid = store.get().activeSid;
-    if (activeSid) setCompactToastState("loading", "Compacting context...", activeSid);
+    if (activeSid) setCompactToastState("loading", i18n.t("toast.compacting"), activeSid);
   } else if (t === "context_compacted") {
     // Auto-compact finished (or the server's echo of a manual /compact).
     // Use the SAME completion path as /compact — one reload + toast.
-    if (sid) applyCompactionComplete(sid, "Context compacted");
+    if (sid) applyCompactionComplete(sid, i18n.t("toast.compacted"));
   } else if (t === "doom_loop_detected") {
     removeTyping();
   } else if (t === "turn_error") {
@@ -3681,7 +3690,7 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
       updateSendStopButton();
       streamCtx(sid).pendingTools.forEach((card) => updateToolCardStatus(card, "cancelled"));
       streamCtx(sid).pendingTools.clear();
-      appendError(ev.error as string || "Unknown error");
+      appendError((ev.error as string) || i18n.t("toast.unknownError"));
     }
   } else if (t === "turn_cancelled" || t === "turn_failed") {
     // The syncBackgroundSession handler (line ~2092) already updates
@@ -3731,7 +3740,7 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
         setActiveRunning(false);
         updateSendStopButton();
         if (t === "turn_failed") {
-          appendError("Turn failed");
+          appendError(i18n.t("toast.turnFailed"));
         }
       }
       // Any tool cards that were still in the running state are now
@@ -3837,8 +3846,8 @@ function applyCompactionComplete(sid: string, successMsg: string): void {
 }
 
 async function runCompactFlow(sid: string, isPrune: boolean, messagesEl: HTMLElement | null): Promise<void> {
-  const loadingMsg = isPrune ? "Pruning tool outputs..." : "Compacting context...";
-  const successMsg = isPrune ? "Tool outputs pruned" : "Context compacted successfully";
+  const loadingMsg = isPrune ? i18n.t("toast.pruning") : i18n.t("toast.compacting");
+  const successMsg = isPrune ? i18n.t("toast.toolOutputsPruned") : i18n.t("toast.compactedSuccess");
 
   ensureCompactToast();
   setCompactToastState("loading", loadingMsg, sid);
@@ -3868,10 +3877,10 @@ async function runCompactFlow(sid: string, isPrune: boolean, messagesEl: HTMLEle
       // context_compacted event (single source of truth for the reload
       // + success toast). The debounce absorbs the server's echo.
       const noop = !!(result as any).noop;
-      applyCompactionComplete(sid, noop ? "Nothing to compact — context is already minimal" : successMsg);
+      applyCompactionComplete(sid, noop ? i18n.t("toast.nothingToCompact") : successMsg);
     }
   } catch (e: any) {
-    setCompactToastState("error", (isPrune ? "Prune failed: " : "Compaction failed: ") + (e?.message || e), sid);
+    setCompactToastState("error", isPrune ? i18n.t("toast.pruneFailed", { err: e?.message || e }) : i18n.t("toast.compactionFailed", { err: e?.message || e }), sid);
     setTimeout(() => hideCompactToast(), 3000);
   }
 }
@@ -3892,11 +3901,11 @@ function setComposerRunning(sid: string, running: boolean) {
   if (running) {
     btn.textContent = "■";
     btn.className = "pane-send stop-btn";
-    btn.title = "Stop";
+    btn.title = i18n.t("composer.stop");
   } else {
     btn.textContent = "→";
     btn.className = "pane-send";
-    btn.title = "Send";
+    btn.title = i18n.t("composer.send");
   }
 }
 
@@ -3911,21 +3920,34 @@ function renderComposerPreviews(sid: string) {
   imgs.forEach((img, i) => {
     const item = document.createElement("div");
     item.className = "image-preview-item";
-    const im = document.createElement("img");
-    // Same blob-vs-disk strategy as the queued bar: live session uses
-    // the instant blob URL, post-refresh falls back to /attachments.
-    // state.ts also strips blob: URLs from localStorage on serialize,
-    // so img.thumbUrl is typically empty after a reload.
-    const fallbackSrc = attachmentUrl(img.path);
-    im.src = img.thumbUrl || fallbackSrc;
-    im.alt = img.name;
-    im.addEventListener("error", () => {
-      if (im.src === fallbackSrc) return;
-      im.src = fallbackSrc;
-    }, { once: true });
+    const isImage = (img.mime || "").startsWith("image/");
+    if (isImage) {
+      const im = document.createElement("img");
+      // Same blob-vs-disk strategy as the queued bar: live session uses
+      // the instant blob URL, post-refresh falls back to /attachments.
+      // state.ts also strips blob: URLs from localStorage on serialize,
+      // so img.thumbUrl is typically empty after a reload.
+      const fallbackSrc = attachmentUrl(img.path);
+      im.src = img.thumbUrl || fallbackSrc;
+      im.alt = img.name;
+      im.addEventListener("error", () => {
+        if (im.src === fallbackSrc) return;
+        im.src = fallbackSrc;
+      }, { once: true });
+      item.appendChild(im);
+    } else {
+      // Non-image attachment (pdf / video / archive / …): render a filename
+      // chip with a generic file icon. No <img> — a broken image for a type
+      // the browser can't render is worse than a label.
+      const chip = document.createElement("div");
+      chip.className = "file-preview-chip";
+      chip.title = img.name;
+      chip.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="opacity:.7"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span class="file-preview-name">${esc(img.name)}</span>`;
+      item.appendChild(chip);
+    }
     const rm = document.createElement("button");
     rm.className = "image-preview-remove";
-    rm.title = "Remove";
+    rm.title = i18n.t("composer.removePreview");
     rm.textContent = "×";
     rm.onclick = () => {
       const removed = imgs[i];
@@ -3936,7 +3958,6 @@ function renderComposerPreviews(sid: string) {
       setDraftImages(sid, imgs.filter((_, j) => j !== i));
       renderComposerPreviews(sid);
     };
-    item.appendChild(im);
     item.appendChild(rm);
     wrap.appendChild(item);
   });
@@ -3957,7 +3978,7 @@ function renderComposerPending(sid: string) {
   // Render a label + container for each item
   const label = document.createElement("div");
   label.className = "pending-bar-label";
-  label.textContent = "排队中";
+  label.textContent = i18n.t("composer.queued");
   bar.appendChild(label);
   queue.forEach((item) => {
     const itemEl = document.createElement("div");
@@ -3968,23 +3989,31 @@ function renderComposerPending(sid: string) {
       const thumbContainer = document.createElement("span");
       thumbContainer.className = "pending-bar-images";
       item.images.forEach(img => {
-        const im = document.createElement("img");
-        // Prefer the session-local blob URL (instant preview during a
-        // live session); fall back to the on-disk attachment on refresh
-        // — the blob URL is page-local (URL.createObjectURL) and dies
-        // when the page reloads, while path is durable server-side and
-        // served via GET /attachments. Same fallback applies to draft
-        // previews below.
-        const fallbackSrc = attachmentUrl(img.path);
-        im.src = img.thumbUrl || fallbackSrc;
-        im.alt = img.name;
-        im.className = "pending-bar-thumb";
-        im.setAttribute("data-full-src", fallbackSrc);
-        im.addEventListener("error", () => {
-          if (im.src === fallbackSrc) return;
-          im.src = fallbackSrc;
-        }, { once: true });
-        thumbContainer.appendChild(im);
+        if ((img.mime || "").startsWith("image/")) {
+          const im = document.createElement("img");
+          // Prefer the session-local blob URL (instant preview during a
+          // live session); fall back to the on-disk attachment on refresh
+          // — the blob URL is page-local (URL.createObjectURL) and dies
+          // when the page reloads, while path is durable server-side and
+          // served via GET /attachments. Same fallback applies to draft
+          // previews below.
+          const fallbackSrc = attachmentUrl(img.path);
+          im.src = img.thumbUrl || fallbackSrc;
+          im.alt = img.name;
+          im.className = "pending-bar-thumb";
+          im.setAttribute("data-full-src", fallbackSrc);
+          im.addEventListener("error", () => {
+            if (im.src === fallbackSrc) return;
+            im.src = fallbackSrc;
+          }, { once: true });
+          thumbContainer.appendChild(im);
+        } else {
+          const chip = document.createElement("span");
+          chip.className = "pending-bar-file";
+          chip.title = img.name;
+          chip.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="opacity:.7;vertical-align:-1px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg> ${esc(img.name)}`;
+          thumbContainer.appendChild(chip);
+        }
       });
       itemEl.appendChild(thumbContainer);
     }
@@ -3997,7 +4026,7 @@ function renderComposerPending(sid: string) {
     // Edit button
     const editBtn = document.createElement("button");
     editBtn.className = "pending-bar-edit";
-    editBtn.textContent = "[编辑]";
+    editBtn.textContent = i18n.t("common.edit");
     editBtn.onclick = () => editComposerPending(sid, item.id);
     itemEl.appendChild(editBtn);
     // Remove button
@@ -4069,9 +4098,9 @@ async function sendComposerMessage(sid: string) {
           // Refresh the per-pane model dropdown so the UI matches.
           const sel = composerModelSelect(sid);
           if (sel) sel.value = arg;
-          appendSystem(CHECK_ICON_SVG, "Switched model", arg);
+          appendSystem(CHECK_ICON_SVG, i18n.t("system.switchedModel"), arg);
         } catch (err: any) {
-          appendError(`Failed to switch model: ${err?.message || err}`);
+          appendError(i18n.t("toast.modelSwitchFailed", { err: err?.message || err }));
           console.error("updateSession(model_name) failed:", err);
         }
       }
@@ -4085,9 +4114,9 @@ async function sendComposerMessage(sid: string) {
       const prompt = trimmedCmd.slice("/automation ".length).trim();
       const name = (prompt.slice(0, 30) + (prompt.length > 30 ? "..." : "")) || "Chat task";
       ensureCompactToast();
-      setCompactToastState("loading", "Creating automation...", sid);
+      setCompactToastState("loading", i18n.t("toast.creatingAutomation"), sid);
       await api.createAutomation(name, prompt, 86400, "09:00:00");
-      setCompactToastState("success", `Automation "${name}" created (daily at 09:00)`, sid);
+      setCompactToastState("success", i18n.t("toast.automationCreated", { name }), sid);
       setTimeout(() => hideCompactToast(), 3000);
       return;
     }
@@ -4098,8 +4127,23 @@ async function sendComposerMessage(sid: string) {
     }
 
     const parts: unknown[] = [];
-    if (text) parts.push({ type: "text", text });
-    for (const img of imgs) parts.push({ type: "image_url", image_url: { url: img.path } });
+    // Images travel as image_url blocks (the runtime expands the path to a
+    // data URL for vision models). Non-image attachments (pdf / video /
+    // archive) can't go in image_url — surface them as a path note in the
+    // text so the model knows they exist and can read_file them. Mirrors
+    // how the IM bridge surfaces inbound files to the model.
+    const fileNotes: string[] = [];
+    for (const img of imgs) {
+      if ((img.mime || "").startsWith("image/")) {
+        parts.push({ type: "image_url", image_url: { url: img.path } });
+      } else {
+        fileNotes.push(`[Uploaded file: ${img.name}, saved to ${img.path}]`);
+      }
+    }
+    const fullText = fileNotes.length
+      ? (text ? `${text}\n${fileNotes.join("\n")}` : fileNotes.join("\n"))
+      : text;
+    if (fullText) parts.unshift({ type: "text", text: fullText });
     if (messagesEl) optimisticEl = appendUserMsg(parts, messagesEl);
     setDraftImages(sid, []);
     renderComposerPreviews(sid);
@@ -4155,8 +4199,18 @@ async function sendComposerFromQueue(sid: string, text: string, images: PendingA
   let optimisticEl: HTMLElement | null = null;
   try {
     const parts: unknown[] = [];
-    if (text) parts.push({ type: "text", text });
-    for (const img of images) parts.push({ type: "image_url", image_url: { url: img.path } });
+    const fileNotes: string[] = [];
+    for (const img of images) {
+      if ((img.mime || "").startsWith("image/")) {
+        parts.push({ type: "image_url", image_url: { url: img.path } });
+      } else {
+        fileNotes.push(`[Uploaded file: ${img.name}, saved to ${img.path}]`);
+      }
+    }
+    const fullText = fileNotes.length
+      ? (text ? `${text}\n${fileNotes.join("\n")}` : fileNotes.join("\n"))
+      : text;
+    if (fullText) parts.unshift({ type: "text", text: fullText });
     if (messagesEl) optimisticEl = appendUserMsg(parts, messagesEl);
     if (messagesEl) appendTyping(messagesEl);
     scrollSessionBottom(sid);
@@ -4171,7 +4225,7 @@ async function sendComposerFromQueue(sid: string, text: string, images: PendingA
     if (newRetries >= MAX_QUEUE_RETRIES) {
       // Permanently failed - don't re-enqueue
       disposePendingImageThumbs(images);
-      appendError(`Queued message permanently failed after ${MAX_QUEUE_RETRIES} attempts: ${e?.message || e}. Please re-type and send again.`, messagesEl || undefined);
+      appendError(i18n.t("toast.queueFailed", { n: MAX_QUEUE_RETRIES, err: e?.message || e }), messagesEl || undefined);
       console.error(`Queued message exceeded max retries (${MAX_QUEUE_RETRIES}):`, e);
       return;
     }
@@ -4481,7 +4535,7 @@ async function openGitBranchPicker(e?: Event | MouseEvent) {
       : await api.getWorkspaceGitBranches();
   } catch (err: any) {
     console.error("Failed to load git branches:", err);
-    alert("Failed to load git branches: " + (err.message || "unknown error"));
+    alert(i18n.t("alert.gitBranchLoadFailed", { err: err.message || "unknown error" }));
     return;
   }
   const current = res.current;
@@ -4522,7 +4576,7 @@ async function openGitBranchPicker(e?: Event | MouseEvent) {
             }
             await refreshGitBranch();
           } catch (err: any) {
-            alert("Failed to checkout branch: " + err.message);
+            alert(i18n.t("alert.checkoutFailed", { err: err.message }));
           }
         }
       };
@@ -4546,7 +4600,7 @@ async function openGitBranchPicker(e?: Event | MouseEvent) {
           }
           await refreshGitBranch();
         } catch (err: any) {
-          alert("Failed to create branch: " + err.message);
+          alert(i18n.t("alert.createBranchFailed", { err: err.message }));
         }
       };
       listDiv.appendChild(createEl);
@@ -4617,13 +4671,13 @@ async function openProjectPicker(e?: Event | MouseEvent) {
     if (removeBtn) {
       (removeBtn as HTMLElement).onclick = async (ev) => {
         ev.stopPropagation();
-        if (!confirm(`Remove "${name}" from recent projects?\nThis does not delete any data.`)) return;
+        if (!confirm(i18n.t("confirm.removeRecent", { name }))) return;
         try {
           await api.removeWorkspace(r);
           popup.remove();
           await refreshSessions();
         } catch (e: any) {
-          alert("Failed to remove project: " + (e?.message || "unknown"));
+          alert(i18n.t("alert.removeProjectFailed", { err: e?.message || "unknown" }));
         }
       };
     }
@@ -4645,7 +4699,7 @@ async function openProjectPicker(e?: Event | MouseEvent) {
     if (res.path) {
       await openProjectInSidebar(res.path);
     } else if (res.error && res.error !== "No folder selected") {
-      alert("Failed to choose folder: " + res.error);
+      alert(i18n.t("alert.chooseFolderFailed", { err: res.error }));
     }
   };
   listDiv.appendChild(addBtn);
@@ -4718,7 +4772,7 @@ async function openProjectInSidebar(
   try {
     await api.switchWorkspace(workspace);
   } catch (err: any) {
-    alert("Failed to switch workspace: " + (err?.message || "unknown"));
+    alert(i18n.t("alert.switchWorkspaceFailed", { err: err?.message || "unknown" }));
     return;
   }
   // Update local config and the status-bar label immediately so the user

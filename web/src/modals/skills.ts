@@ -7,6 +7,7 @@
  */
 
 import * as api from "../api";
+import * as i18n from "../i18n";
 import { esc } from "../dom";
 import { renderMarkdown, addCopyButtons, highlightCode } from "../markdown";
 import { closeAllFullpageOverlays } from "../modals";
@@ -29,18 +30,18 @@ export async function openSkillsBrowser() {
   backdrop.innerHTML = `
     <div class="fullpage-shell">
       <div class="fullpage-topbar">
-        <div class="fullpage-title">📚 Skills</div>
+        <div class="fullpage-title">${esc(i18n.t("skills.title"))}</div>
         <div class="fullpage-topbar-spacer"></div>
       </div>
       <div class="fullpage-toolbar">
         <div class="skills-search-box">
           <span class="skills-search-icon">🔍</span>
-          <input type="text" id="skillsSearchInput" placeholder="Search by name or description..." />
+          <input type="text" id="skillsSearchInput" placeholder="${esc(i18n.t("skills.searchPlaceholder"))}" />
         </div>
         <div class="skills-category-tabs" id="skillsCategoryTabs"></div>
       </div>
       <div class="fullpage-body" id="skillsModalBody">
-        <div class="skills-modal-loading">Loading skills...</div>
+        <div class="skills-modal-loading">${esc(i18n.t("skills.loading"))}</div>
       </div>
     </div>`;
   document.body.appendChild(backdrop);
@@ -55,7 +56,7 @@ export async function openSkillsBrowser() {
     renderSkillsBrowser();
   } catch (e) {
     const body = backdrop.querySelector("#skillsModalBody") as HTMLElement;
-    body.innerHTML = `<div class="skills-modal-error">Failed to load: ${esc((e as Error).message)}</div>`;
+    body.innerHTML = `<div class="skills-modal-error">${esc(i18n.t("skills.loadFailed", { err: (e as Error).message }))}</div>`;
   }
 }
 
@@ -69,7 +70,7 @@ function renderSkillsCategoryTabs() {
   if (!tabs || !skillsCache) return;
   const counts = new Map<string, number>();
   for (const s of skillsCache) {
-    const c = s.category || "其他";
+    const c = s.category || i18n.t("skills.uncategorized");
     counts.set(c, (counts.get(c) || 0) + 1);
   }
   // Stable sort by name, then by count desc
@@ -81,7 +82,7 @@ function renderSkillsCategoryTabs() {
   const active = skillsBrowserState.category;
   tabs.innerHTML = `
     <button class="skills-category-tab ${active === null ? "active" : ""}" data-cat="">
-      全部 <span class="skills-cat-count">${total}</span>
+      ${esc(i18n.t("skills.all"))} <span class="skills-cat-count">${total}</span>
     </button>` +
     sorted.map(([cat, n]) => `
       <button class="skills-category-tab ${active === cat ? "active" : ""}" data-cat="${esc(cat)}">
@@ -102,20 +103,20 @@ function renderSkillsBrowserBody() {
   const q = skillsBrowserState.query.trim().toLowerCase();
   const cat = skillsBrowserState.category;
   const filtered = skillsCache.filter((s) => {
-    if (cat && (s.category || "其他") !== cat) return false;
+    if (cat && (s.category || i18n.t("skills.uncategorized")) !== cat) return false;
     if (!q) return true;
     return s.name.toLowerCase().includes(q) || (s.description || "").toLowerCase().includes(q);
   });
 
   if (filtered.length === 0) {
-    body.innerHTML = '<div class="skills-empty">No skills match your search.</div>';
+    body.innerHTML = `<div class="skills-empty">${esc(i18n.t("skills.empty"))}</div>`;
     return;
   }
 
   // Group by category for the visual layout
   const groups = new Map<string, api.Skill[]>();
   for (const s of filtered) {
-    const c = s.category || "其他";
+    const c = s.category || i18n.t("skills.uncategorized");
     if (!groups.has(c)) groups.set(c, []);
     groups.get(c)!.push(s);
   }
@@ -132,9 +133,9 @@ function renderSkillsBrowserBody() {
       html += `
         <div class="skill-card" data-skill-path="${esc(s.path)}" data-skill-name="${esc(s.name)}">
           <div class="skill-card-name">${esc(s.name)}</div>
-          <div class="skill-card-desc">${esc(s.description || "(no description)")}</div>
+          <div class="skill-card-desc">${esc(s.description || i18n.t("skills.noDescription"))}</div>
           <div class="skill-card-footer">
-            <span class="skill-card-cat">${esc(s.category || "其他")}</span>
+            <span class="skill-card-cat">${esc(s.category || i18n.t("skills.uncategorized"))}</span>
           </div>
         </div>`;
     }
@@ -171,13 +172,13 @@ function openSkillViewer(displayName: string, filePath: string, pushToStack: boo
       <div class="fullpage-topbar">
         <button class="fullpage-back" id="skillsModalBack" style="display:${showBack ? "flex" : "none"}">
           <span class="back-arrow">←</span>
-          <span>back</span>
+          <span>${esc(i18n.t("skills.back"))}</span>
         </button>
         <div class="fullpage-title" id="skillsModalTitle">${esc(displayName)}</div>
         <div class="fullpage-topbar-spacer"></div>
       </div>
       <div class="fullpage-body fullpage-body-wide" id="skillsModalBody">
-        <div class="skills-modal-loading">Loading ${esc(displayName)}...</div>
+        <div class="skills-modal-loading">${esc(i18n.t("skills.loadingName", { name: displayName }))}</div>
       </div>
     </div>`;
   document.body.appendChild(backdrop);
@@ -210,7 +211,7 @@ async function loadSkillFileIntoModal(displayName: string, filePath: string) {
   const body = document.getElementById("skillsModalBody");
   const title = document.getElementById("skillsModalTitle");
   if (!body || !title) return;
-  body.innerHTML = '<div class="skills-modal-loading">Loading...</div>';
+  body.innerHTML = `<div class="skills-modal-loading">${esc(i18n.t("common.loading"))}</div>`;
   if (title) title.textContent = displayName;
   try {
     const data = await api.readSkillFile(filePath);
@@ -225,7 +226,7 @@ async function loadSkillFileIntoModal(displayName: string, filePath: string) {
     body.scrollTop = 0;
   } catch (e) {
     const msg = (e as any)?.error || (e as Error).message;
-    body.innerHTML = `<div class="skills-modal-error">Failed to load: ${esc(msg)}</div>`;
+    body.innerHTML = `<div class="skills-modal-error">${esc(i18n.t("skills.loadFailed", { err: msg }))}</div>`;
   }
 }
 
