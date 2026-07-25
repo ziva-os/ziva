@@ -8,6 +8,13 @@ Flow:
 Requires a bot token from @BotFather. Telegram long polling blocks the
 request for up to ``timeout`` seconds waiting for updates, so it runs in its
 own task; ``stop()`` cancels that task.
+
+Auto-reconnect (we own the loop, unlike Feishu which delegates to lark-oapi):
+after ``RECONNECT_AFTER_FAILURES`` consecutive ``getUpdates`` failures, the
+poll loop exits and ``_reconnect()`` probes ``getMe`` up to
+``RECONNECT_MAX_ATTEMPTS`` times at a fixed ``RECONNECT_INTERVAL`` (no
+backoff). On success a fresh poll loop is started; on exhaustion the state
+goes to ``error`` and the user reconnects manually.
 """
 
 from __future__ import annotations
@@ -30,6 +37,14 @@ logger = logging.getLogger(__name__)
 API_BASE = "https://api.telegram.org/bot{token}/{method}"
 POLL_TIMEOUT = 30  # seconds the long-poll holds open
 
+# Auto-reconnect knobs. We don't use exponential backoff — a fixed 3s
+# interval matches the original retry cadence and is enough to ride out
+# brief network blips without piling up requests against an already-sick
+# connection.
+RECONNECT_AFTER_FAILURES = 5   # consecutive getUpdates failures → reconnect
+RECONNECT_MAX_ATTEMPTS = 6     # getMe probes per reconnect session
+RECONNECT_INTERVAL = 3.0       # seconds between probes (fixed, no backoff)
+
 
 class TelegramAdapter(BaseAdapter):
     channel = "telegram"
@@ -46,6 +61,9 @@ class TelegramAdapter(BaseAdapter):
         # cancels it. Kept on the adapter so multiple chats can each have
         # their own typing task.
         self._typing_tasks: Dict[str, asyncio.Task] = {}
+        # Auto-reconnect bookkeeping.
+        self._consecutive_failures = 0
+        self._stop_flag = False
 
     @property
     def account_id(self) -> str:
@@ -57,6 +75,8 @@ class TelegramAdapter(BaseAdapter):
         if not self._token:
             self._set_state("error", "missing bot_token")
             return
+        self._stop_flag = False
+        self._consecutive_failures = 0
         self._session = aiohttp.ClientSession(trust_env=True)
         self._set_state("connecting")
         try:
@@ -95,6 +115,7 @@ class TelegramAdapter(BaseAdapter):
         self._task = asyncio.create_task(self._poll_loop())
 
     async def stop(self) -> None:
+        self._stop_flag = True
         if self._task:
             self._task.cancel()
             try:
@@ -241,10 +262,22 @@ class TelegramAdapter(BaseAdapter):
                         "offset": self._offset,
                         "timeout": POLL_TIMEOUT,
                     }, http_timeout=POLL_TIMEOUT + 10)
+                    self._consecutive_failures = 0
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    logger.warning("telegram getUpdates failed: %s", exc)
+                    self._consecutive_failures += 1
+                    logger.warning(
+                        "telegram getUpdates failed (%d in a row): %s",
+                        self._consecutive_failures, exc,
+                    )
+                    if self._consecutive_failures >= RECONNECT_AFTER_FAILURES:
+                        logger.warning(
+                            "telegram: %d consecutive failures, attempting reconnect",
+                            self._consecutive_failures,
+                        )
+                        asyncio.create_task(self._reconnect())
+                        return
                     await asyncio.sleep(3)
                     continue
                 for upd in updates or []:
@@ -252,6 +285,59 @@ class TelegramAdapter(BaseAdapter):
                     await self._handle_update(upd)
         except asyncio.CancelledError:
             pass
+
+    async def _reconnect(self) -> None:
+        """Tear down the aiohttp session and probe getMe up to
+        RECONNECT_MAX_ATTEMPTS times at RECONNECT_INTERVAL. On success,
+        restart the poll loop. On exhaustion, surface ``error`` so the user
+        can reconnect manually.
+        """
+        if self._stop_flag:
+            return
+        self._set_state("connecting", "Telegram 连接中断，正在重连…")
+        # Tear down old session; close failures are non-fatal.
+        try:
+            if self._session and not self._session.closed:
+                await self._session.close()
+        except Exception:
+            pass
+        self._session = None
+        last_err = ""
+        for attempt in range(1, RECONNECT_MAX_ATTEMPTS + 1):
+            if self._stop_flag:
+                return
+            await asyncio.sleep(RECONNECT_INTERVAL)
+            if self._stop_flag:
+                return
+            try:
+                self._session = aiohttp.ClientSession(trust_env=True)
+                me = await self._call("getMe", http_timeout=15)
+                self._bot_user_id = str(me.get("id", ""))
+                self.config.account_id = self._bot_user_id
+                self._consecutive_failures = 0
+                self._set_state("connected")
+                logger.info(
+                    "telegram: reconnected on attempt %d/%d",
+                    attempt, RECONNECT_MAX_ATTEMPTS,
+                )
+                self._task = asyncio.create_task(self._poll_loop())
+                return
+            except Exception as exc:
+                last_err = str(exc)
+                logger.warning(
+                    "telegram: reconnect attempt %d/%d failed: %s",
+                    attempt, RECONNECT_MAX_ATTEMPTS, exc,
+                )
+                try:
+                    if self._session and not self._session.closed:
+                        await self._session.close()
+                except Exception:
+                    pass
+                self._session = None
+        self._set_state(
+            "error",
+            f"Telegram 重连失败: {last_err or '未知错误'}，请检查网络/代理后重新连接",
+        )
 
     async def _handle_update(self, update: Dict[str, Any]) -> None:
         msg = update.get("message") or update.get("edited_message")
