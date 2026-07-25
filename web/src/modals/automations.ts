@@ -336,12 +336,12 @@ export async function loadAutomationsIntoModal() {
       </div>
       <div class="automation-form-fields" id="automationFieldsDaily" style="display:none">
         <label class="automation-label">${esc(i18n.t("automations.form.time"))}
-          <input type="time" class="automation-input" id="automationTimeInput" />
+          <input type="time" class="automation-input" id="automationTimeInput" step="1" />
         </label>
       </div>
       <div class="automation-form-fields" id="automationFieldsWeekly" style="display:none">
         <label class="automation-label">${esc(i18n.t("automations.form.time"))}
-          <input type="time" class="automation-input" id="automationWeeklyTimeInput" />
+          <input type="time" class="automation-input" id="automationWeeklyTimeInput" step="1" />
         </label>
         <div class="automation-label">${esc(i18n.t("automations.form.weeklyDays"))}
           <div class="automation-weekdays">
@@ -445,10 +445,10 @@ export async function loadAutomationsIntoModal() {
       const interval = parseInt((body.querySelector("#automationIntervalInput") as HTMLSelectElement).value, 10);
       schedule = { kind: "every", interval_seconds: interval };
     } else if (kind === "daily") {
-      const timeVal = normalizeTime((body.querySelector("#automationTimeInput") as HTMLInputElement).value) || "09:00";
+      const timeVal = (body.querySelector("#automationTimeInput") as HTMLInputElement).value || "09:00";
       schedule = { kind: "daily", time: timeVal };
     } else {
-      const timeVal = normalizeTime((body.querySelector("#automationWeeklyTimeInput") as HTMLInputElement).value) || "09:00";
+      const timeVal = (body.querySelector("#automationWeeklyTimeInput") as HTMLInputElement).value || "09:00";
       const days = Array.from(body.querySelectorAll<HTMLInputElement>("#automationFieldsWeekly input[type=checkbox]:checked"))
         .map((c) => c.value);
       if (days.length === 0) {
@@ -507,11 +507,6 @@ function formatIntervalSeconds(seconds: number): string {
   if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
   if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
   return `${Math.round(seconds / 86400)}d`;
-}
-
-/** Trim an `<input type="time">` value down to HH:MM (server expects that). */
-function normalizeTime(t: string): string {
-  return t.length >= 5 ? t.slice(0, 5) : t;
 }
 
 /** Human-readable schedule label for the row + detail header. */

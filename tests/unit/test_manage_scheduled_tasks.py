@@ -142,6 +142,38 @@ def test_normalize_daily_bad_time_rejected():
         sched.normalize_schedule({"kind": "daily", "time": "9am"})
 
 
+def test_normalize_daily_accepts_hhmmss():
+    """Seconds are honored — input ``HH:MM:SS`` round-trips to the same
+    canonical form (not coerced to ``HH:MM``)."""
+    sched = _load_scheduled()
+    out = sched.normalize_schedule({"kind": "daily", "time": "09:30:45"})
+    assert out == {"kind": "daily", "time": "09:30:45"}
+
+
+def test_normalize_daily_hhmm_canonicalized_without_seconds():
+    """Legacy ``HH:MM`` input round-trips to ``HH:MM`` (no silent
+    injection of ``:00`` seconds)."""
+    sched = _load_scheduled()
+    out = sched.normalize_schedule({"kind": "daily", "time": "09:00"})
+    assert out == {"kind": "daily", "time": "09:00"}
+
+
+def test_normalize_weekly_accepts_hhmmss():
+    sched = _load_scheduled()
+    out = sched.normalize_schedule(
+        {"kind": "weekly", "days": ["MO", "FR"], "time": "21:00:30"}
+    )
+    assert out["time"] == "21:00:30"
+
+
+def test_normalize_weekly_bad_seconds_rejected():
+    sched = _load_scheduled()
+    with pytest.raises(sched.ScheduleError, match="HH:MM"):
+        sched.normalize_schedule(
+            {"kind": "weekly", "days": ["MO"], "time": "09:00:60"}
+        )
+
+
 def test_normalize_weekly_invalid_day_code_rejected():
     sched = _load_scheduled()
     with pytest.raises(sched.ScheduleError, match="weekday"):
@@ -222,6 +254,30 @@ def test_next_run_invalid_schedule_returns_none():
     assert sched.compute_next_run({"kind": "every"}, 1_700_000_000.0) is None
 
 
+def test_next_run_daily_with_seconds():
+    """``time: "HH:MM:SS"`` fires at the exact second, not at :00."""
+    sched = _load_scheduled()
+    # Saturday afternoon — Sunday 09:30:45 must be the answer.
+    ref = time.mktime(time.struct_time((2030, 1, 5, 14, 0, 0, 5, 5, -1)))  # Sat Jan 5 2030 14:00:00
+    nxt = sched.compute_next_run({"kind": "daily", "time": "09:30:45"}, ref)
+    assert nxt is not None
+    local = time.localtime(nxt)
+    assert local.tm_wday == 6  # Sunday
+    assert (local.tm_hour, local.tm_min, local.tm_sec) == (9, 30, 45)
+
+
+def test_next_run_weekly_with_seconds():
+    """Weekly schedule honors seconds in ``time``."""
+    sched = _load_scheduled()
+    # Friday afternoon — next Monday 21:00:30.
+    ref = time.mktime(time.struct_time((2030, 1, 4, 15, 0, 0, 4, 4, -1)))  # Fri Jan 4 2030 15:00:00
+    nxt = sched.compute_next_run({"kind": "weekly", "days": ["MO"], "time": "21:00:30"}, ref)
+    assert nxt is not None
+    local = time.localtime(nxt)
+    assert local.tm_wday == 0  # Monday
+    assert (local.tm_hour, local.tm_min, local.tm_sec) == (21, 0, 30)
+
+
 def test_next_run_invalid_kind_returns_none():
     sched = _load_scheduled()
     assert sched.compute_next_run({"kind": "wat"}, 1_700_000_000.0) is None
@@ -260,6 +316,18 @@ def test_describe_legacy_record_with_schedule_field():
         sched.describe_schedule({"schedule": {"kind": "daily", "time": "21:00"}})
         == "daily at 21:00"
     )
+
+
+def test_describe_with_seconds():
+    """Seconds in ``time`` show up in the description only when non-zero."""
+    sched = _load_scheduled()
+    assert sched.describe_schedule({"kind": "daily", "time": "09:30:45"}) == "daily at 09:30:45"
+    assert (
+        sched.describe_schedule({"kind": "weekly", "days": ["MO"], "time": "21:00:30"})
+        == "every MO at 21:00:30"
+    )
+    # Zero seconds stays compact.
+    assert sched.describe_schedule({"kind": "daily", "time": "09:00:00"}) == "daily at 09:00"
 
 
 # ---------------------------------------------------------------------------

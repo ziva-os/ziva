@@ -10,10 +10,12 @@ Design (modeled after OpenClaw's `src/cron/{schedule,normalize,parse}.ts`):
 - `schedule.kind` is a discriminated union — `every | daily | weekly`.
   Exactly one mode per task; ambiguous combinations are rejected at
   normalization time, not silently coerced.
-- `time` is `HH:MM` (24-hour). `tz` is an optional IANA name; when
-  omitted we use the host's local timezone via `datetime.astimezone()`
-  with no argument, which preserves the runtime's existing
-  local-time behaviour.
+- `time` is `HH:MM` or `HH:MM:SS` (24-hour). `tz` is an optional IANA
+  name; when omitted we use the host's local timezone via
+  `datetime.astimezone()` with no argument, which preserves the
+  runtime's existing local-time behaviour. Seconds are honored by
+  `compute_next_run` — a daily/weekly schedule with `"time": "09:30:45"`
+  fires at exactly :45 of the chosen minute.
 - `interval_seconds` is the drift-free interval for `kind=every`.
   The `anchor_at` field is set when the task is created and is used to
   compute the next run as `anchor + ⌈(now − anchor) / N⌉ × N`, which
@@ -54,7 +56,26 @@ WEEKDAY_TO_INT = {"MO": 0, "TU": 1, "WE": 2, "TH": 3, "FR": 4, "SA": 5, "SU": 6}
 MAX_INTERVAL_SECONDS = 30 * 86400
 MIN_INTERVAL_SECONDS = 1
 
-_TIME_PATTERN = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+_TIME_PATTERN = re.compile(r"^([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$")
+
+
+def _parse_time(t: str) -> tuple[int, int, int]:
+    """Split ``HH:MM[:SS]`` into (hour, minute, second). Seconds default to 0
+    when the input omits them, matching ``datetime.replace(second=0)``
+    semantics for legacy HH:MM schedules."""
+    parts = t.split(":")
+    if len(parts) == 2:
+        parts.append("0")
+    h, m, s = (int(p) for p in parts)
+    return h, m, s
+
+
+def _format_time(h: int, m: int, s: int) -> str:
+    """Render an (h, m, s) tuple back to ``HH:MM[:SS]`` — drops the
+    seconds component when zero so canonical form stays compact."""
+    if s == 0:
+        return f"{h:02d}:{m:02d}"
+    return f"{h:02d}:{m:02d}:{s:02d}"
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +97,9 @@ def normalize_schedule(raw: Any) -> dict:
       - ``every``  → ``{kind, interval_seconds, [anchor_at]}``
       - ``daily``  → ``{kind, time, [tz]}``
       - ``weekly`` → ``{kind, days, time, [tz]}``
+
+    ``time`` is normalized to ``HH:MM:SS`` only when seconds are
+    non-zero (so a legacy ``HH:MM`` input round-trips unchanged).
 
     Raises :class:`ScheduleError` on any malformed input. The error
     message is LLM-friendly.
@@ -108,8 +132,9 @@ def normalize_schedule(raw: Any) -> dict:
     elif kind == "daily":
         t = raw.get("time")
         if not _TIME_PATTERN.match(t or ""):
-            raise ScheduleError("kind=daily requires `time` in HH:MM (24-hour)")
-        out["time"] = t
+            raise ScheduleError("kind=daily requires `time` in HH:MM or HH:MM:SS (24-hour)")
+        h, m, s = _parse_time(t)
+        out["time"] = _format_time(h, m, s)
         _maybe_tz(out, raw)
     else:  # weekly
         days = raw.get("days")
@@ -124,8 +149,9 @@ def normalize_schedule(raw: Any) -> dict:
         out["days"] = list(days)
         t = raw.get("time")
         if not _TIME_PATTERN.match(t or ""):
-            raise ScheduleError("kind=weekly requires `time` in HH:MM (24-hour)")
-        out["time"] = t
+            raise ScheduleError("kind=weekly requires `time` in HH:MM or HH:MM:SS (24-hour)")
+        h, m, s = _parse_time(t)
+        out["time"] = _format_time(h, m, s)
         _maybe_tz(out, raw)
     return out
 
@@ -164,6 +190,9 @@ def compute_next_run(schedule: dict, now: float | datetime) -> float | None:
       - ``daily``  — next occurrence of ``time`` (in ``tz`` or local).
       - ``weekly`` — next occurrence of the earliest matching ``days``
                      at ``time``.
+
+    Seconds inside ``time`` are honored — ``"09:30:45"`` fires at the
+    :45 second mark, not at :00.
 
     Returns ``None`` when the schedule is unparseable (defensive —
     callers fall back to "do nothing" rather than spinning).
@@ -216,7 +245,7 @@ def _next_daily_or_weekly(schedule: dict, now: datetime, days: list | None) -> f
         tz = None
     local = now.astimezone(tz) if tz is not None else now.astimezone()
 
-    h, m = map(int, schedule["time"].split(":"))
+    h, m, s = _parse_time(schedule["time"])
     target_weekdays = (
         {WEEKDAY_TO_INT[d] for d in days} if days else None
     )
@@ -224,7 +253,7 @@ def _next_daily_or_weekly(schedule: dict, now: datetime, days: list | None) -> f
     # Walk up to 8 days forward (8 covers any weekday gap + today).
     for offset in range(0, 8):
         cand = (local + timedelta(days=offset)).replace(
-            hour=h, minute=m, second=0, microsecond=0,
+            hour=h, minute=m, second=s, microsecond=0,
         )
         if target_weekdays is not None and cand.weekday() not in target_weekdays:
             continue
@@ -260,9 +289,17 @@ def describe_schedule(schedule: Any) -> str:
         return _humanize_interval(n)
     if kind == "daily":
         t = s.get("time")
-        return f"daily at {t}{tz_part}" if t else "daily (no time set)"
+        if not t:
+            return "daily (no time set)"
+        if _TIME_PATTERN.match(t):
+            h, m, sec = _parse_time(t)
+            t = _format_time(h, m, sec)
+        return f"daily at {t}{tz_part}"
     if kind == "weekly":
         t = s.get("time", "?")
+        if _TIME_PATTERN.match(t):
+            h, m, sec = _parse_time(t)
+            t = _format_time(h, m, sec)
         days = s.get("days") or []
         return f"{_humanize_days(days)} at {t}{tz_part}"
     # Legacy fall-through (records not yet migrated)

@@ -403,7 +403,7 @@ export const dict = {
   "automations.form.promptPlaceholder": "What should the agent do each time the timer fires?",
   "automations.form.kind": "Schedule",
   "automations.form.interval": "Interval",
-  "automations.form.time": "Time (HH:MM:SS)",
+  "automations.form.time": "Time (HH:MM or HH:MM:SS)",
   "automations.form.weeklyDays": "Days",
   "automations.form.weeklyDaysRequired": "Pick at least one weekday",
   "automations.form.create": "Create",

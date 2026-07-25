@@ -23,7 +23,8 @@ export interface Event {
 }
 
 /** Discriminated-union schedule spec shared by the tool, HTTP API,
- *  and frontend. Mirrors `src/ziva/scheduled.py` on the backend. */
+ *  and frontend. Mirrors `src/ziva/scheduled.py` on the backend.
+ *  `time` accepts both `HH:MM` and `HH:MM:SS` (seconds are honored). */
 export type Schedule =
   | { kind: "every"; interval_seconds: number; anchor_at?: number }
   | { kind: "daily"; time: string; tz?: string }

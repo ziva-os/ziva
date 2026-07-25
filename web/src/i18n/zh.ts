@@ -402,7 +402,7 @@ export const dict: Partial<Dict> = {
   "automations.form.promptPlaceholder": "每次计时器触发时，Agent 应该做什么？",
   "automations.form.kind": "调度",
   "automations.form.interval": "间隔",
-  "automations.form.time": "时间（HH:MM:SS）",
+  "automations.form.time": "时间（HH:MM 或 HH:MM:SS）",
   "automations.form.weeklyDays": "星期",
   "automations.form.weeklyDaysRequired": "请至少选择一个星期",
   "automations.form.create": "创建",
