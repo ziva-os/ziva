@@ -22,20 +22,27 @@ export interface Event {
   [key: string]: unknown;
 }
 
+/** Discriminated-union schedule spec shared by the tool, HTTP API,
+ *  and frontend. Mirrors `src/ziva/scheduled.py` on the backend. */
+export type Schedule =
+  | { kind: "every"; interval_seconds: number; anchor_at?: number }
+  | { kind: "daily"; time: string; tz?: string }
+  | { kind: "weekly"; days: string[]; time: string; tz?: string };
+
 export interface Automation {
   id: string;
   name: string;
   prompt: string;
-  interval_seconds: number;
+  schedule: Schedule;
   enabled: boolean;
-  last_run?: number;
+  last_run?: number;       // seconds since epoch (Python time.time())
   last_result?: string;
   last_error?: string;
   runs?: Array<{ id: string; ts: number; prompt: string; result: string | null; error: string | null; status: string }>;
-  schedule_time?: string;
   run_count?: number;
-  created_at?: number;
-  updated_at?: number;
+  created_at?: number;     // seconds since epoch
+  updated_at?: number;     // seconds since epoch
+  next_run?: number;       // seconds since epoch
 }
 
 export interface Status {
@@ -255,13 +262,11 @@ export async function readSkillFile(path: string): Promise<SkillFile> {
   return api<SkillFile>("GET", `/skills/file?path=${encodeURIComponent(path)}`);
 }
 
-export async function createAutomation(name: string, prompt: string, intervalSeconds: number, scheduleTime?: string): Promise<{ id: string }> {
-  const payload: Record<string, unknown> = { name, prompt, interval_seconds: intervalSeconds };
-  if (scheduleTime) payload.schedule_time = scheduleTime;
-  return api("POST", "/automations", payload);
+export async function createAutomation(name: string, prompt: string, schedule: Schedule): Promise<{ id: string }> {
+  return api("POST", "/automations", { name, prompt, schedule });
 }
 
-export async function updateAutomation(aid: string, patch: { name?: string; prompt?: string; interval_seconds?: number; schedule_time?: string | null; enabled?: boolean }): Promise<Automation> {
+export async function updateAutomation(aid: string, patch: { name?: string; prompt?: string; schedule?: Schedule; enabled?: boolean }): Promise<Automation> {
   const data = await api<{ automation: Automation }>("PATCH", `/automations/${aid}`, patch);
   return data.automation;
 }

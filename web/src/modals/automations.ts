@@ -13,7 +13,7 @@ import type { AppState, Store } from "../state";
 interface AutomationsDeps {
   store: Store<AppState>;
   composerTextarea: (sid: string) => HTMLTextAreaElement | null;
-  formatRelativeTime: (ts?: number) => string;
+  formatRelativeSeconds: (tsSeconds?: number) => string;
 }
 let _deps: AutomationsDeps;
 export function setAutomationsDeps(deps: AutomationsDeps): void { _deps = deps; }
@@ -153,9 +153,8 @@ async function openAutomationDetail(a: api.Automation) {
 }
 
 function renderAutomationDetailBody(a: api.Automation): string {
-  const intervalLabel = formatInterval(a.interval_seconds);
-  const scheduleLabel = a.schedule_time ? i18n.t("automations.row.scheduleAt", { time: a.schedule_time }) : "";
-  const lastRunLabel = a.last_run ? _deps.formatRelativeTime(Math.floor(a.last_run)) || i18n.t("automations.row.justNow") : i18n.t("automations.row.never");
+  const scheduleLabel = formatSchedule(a.schedule);
+  const lastRunLabel = a.last_run ? _deps.formatRelativeSeconds(a.last_run) || i18n.t("automations.row.justNow") : i18n.t("automations.row.never");
   const promptText = a.prompt || i18n.t("automations.row.noPrompt");
   const runs = a.runs || [];
   const createdLabel = a.created_at ? new Date(a.created_at * 1000).toLocaleString() : "";
@@ -186,7 +185,7 @@ function renderAutomationDetailBody(a: api.Automation): string {
         </div>
       </div>
       <div class="automation-detail-meta">
-        <div class="automation-detail-meta-item"><span class="automation-detail-meta-label">${esc(i18n.t("automations.detail.metaInterval"))}</span><span class="automation-detail-meta-value">⏰ ${esc(intervalLabel)}${esc(scheduleLabel)}</span></div>
+        <div class="automation-detail-meta-item"><span class="automation-detail-meta-label">${esc(i18n.t("automations.detail.metaInterval"))}</span><span class="automation-detail-meta-value">⏰ ${esc(scheduleLabel)}</span></div>
         <div class="automation-detail-meta-item"><span class="automation-detail-meta-label">${esc(i18n.t("automations.detail.metaLastRun"))}</span><span class="automation-detail-meta-value">${esc(lastRunLabel)}</span></div>
         <div class="automation-detail-meta-item"><span class="automation-detail-meta-label">${esc(i18n.t("automations.detail.metaRunCount"))}</span><span class="automation-detail-meta-value">${a.run_count ?? 0}</span></div>
         ${createdLabel ? `<div class="automation-detail-meta-item"><span class="automation-detail-meta-label">${esc(i18n.t("automations.detail.metaCreated"))}</span><span class="automation-detail-meta-value">${esc(createdLabel)}</span></div>` : ""}
@@ -314,6 +313,15 @@ export async function loadAutomationsIntoModal() {
       <label class="automation-label">${esc(i18n.t("automations.form.name"))}<input type="text" class="automation-input" id="automationNameInput" placeholder="${esc(i18n.t("automations.form.namePlaceholder"))}" /></label>
       <label class="automation-label">${esc(i18n.t("automations.form.prompt"))}<textarea class="automation-input automation-textarea" id="automationPromptInput" placeholder="${esc(i18n.t("automations.form.promptPlaceholder"))}"></textarea></label>
       <div class="automation-label-row">
+        <label class="automation-label">${esc(i18n.t("automations.form.kind"))}
+          <select class="automation-input" id="automationKindInput">
+            <option value="every" selected>${esc(i18n.t("automations.kind.every"))}</option>
+            <option value="daily">${esc(i18n.t("automations.kind.daily"))}</option>
+            <option value="weekly">${esc(i18n.t("automations.kind.weekly"))}</option>
+          </select>
+        </label>
+      </div>
+      <div class="automation-form-fields" id="automationFieldsEvery">
         <label class="automation-label">${esc(i18n.t("automations.form.interval"))}
           <select class="automation-input" id="automationIntervalInput">
             <option value="60">${esc(i18n.t("automations.interval.1m"))}</option>
@@ -325,9 +333,21 @@ export async function loadAutomationsIntoModal() {
             <option value="604800">${esc(i18n.t("automations.interval.week"))}</option>
           </select>
         </label>
+      </div>
+      <div class="automation-form-fields" id="automationFieldsDaily" style="display:none">
         <label class="automation-label">${esc(i18n.t("automations.form.time"))}
-          <input type="time" class="automation-input" id="automationTimeInput" step="1" />
+          <input type="time" class="automation-input" id="automationTimeInput" />
         </label>
+      </div>
+      <div class="automation-form-fields" id="automationFieldsWeekly" style="display:none">
+        <label class="automation-label">${esc(i18n.t("automations.form.time"))}
+          <input type="time" class="automation-input" id="automationWeeklyTimeInput" />
+        </label>
+        <div class="automation-label">${esc(i18n.t("automations.form.weeklyDays"))}
+          <div class="automation-weekdays">
+            ${["MO","TU","WE","TH","FR","SA","SU"].map((d) => `<label class="automation-weekday"><input type="checkbox" value="${d}" ${d === "MO" || d === "WE" || d === "FR" ? "checked" : ""}/>${esc(i18n.t(`automations.weekday.${d}` as any))}</label>`).join("")}
+          </div>
+        </div>
       </div>
       <div class="automation-form-actions">
         <button class="automation-submit-btn" id="automationSubmitBtn">${esc(i18n.t("automations.form.create"))}</button>
@@ -395,23 +415,53 @@ export async function loadAutomationsIntoModal() {
     } catch { /* ignore */ }
   };
 
+  // Toggle which sub-fields are visible based on the selected schedule kind.
+  const kindInput = body.querySelector("#automationKindInput") as HTMLSelectElement;
+  const fieldsEvery = body.querySelector("#automationFieldsEvery") as HTMLElement;
+  const fieldsDaily = body.querySelector("#automationFieldsDaily") as HTMLElement;
+  const fieldsWeekly = body.querySelector("#automationFieldsWeekly") as HTMLElement;
+  const syncKindFields = () => {
+    const k = kindInput.value;
+    fieldsEvery.style.display = k === "every" ? "" : "none";
+    fieldsDaily.style.display = k === "daily" ? "" : "none";
+    fieldsWeekly.style.display = k === "weekly" ? "" : "none";
+  };
+  kindInput.onchange = syncKindFields;
+  syncKindFields();
+
   // Wire the form submit
   (body.querySelector("#automationSubmitBtn") as HTMLElement).onclick = async () => {
     const name = (body.querySelector("#automationNameInput") as HTMLInputElement).value.trim();
     const prompt = (body.querySelector("#automationPromptInput") as HTMLTextAreaElement).value.trim();
-    const interval = parseInt((body.querySelector("#automationIntervalInput") as HTMLSelectElement).value, 10);
-    const timeVal = (body.querySelector("#automationTimeInput") as HTMLInputElement).value;
-    const scheduleTime = timeVal || undefined;
     const statusEl = body.querySelector("#automationFormStatus") as HTMLElement;
     if (!prompt) {
       statusEl.textContent = i18n.t("automations.form.promptRequired");
       statusEl.className = "automation-form-status error";
       return;
     }
+    const kind = kindInput.value;
+    let schedule: api.Schedule;
+    if (kind === "every") {
+      const interval = parseInt((body.querySelector("#automationIntervalInput") as HTMLSelectElement).value, 10);
+      schedule = { kind: "every", interval_seconds: interval };
+    } else if (kind === "daily") {
+      const timeVal = normalizeTime((body.querySelector("#automationTimeInput") as HTMLInputElement).value) || "09:00";
+      schedule = { kind: "daily", time: timeVal };
+    } else {
+      const timeVal = normalizeTime((body.querySelector("#automationWeeklyTimeInput") as HTMLInputElement).value) || "09:00";
+      const days = Array.from(body.querySelectorAll<HTMLInputElement>("#automationFieldsWeekly input[type=checkbox]:checked"))
+        .map((c) => c.value);
+      if (days.length === 0) {
+        statusEl.textContent = i18n.t("automations.form.weeklyDaysRequired");
+        statusEl.className = "automation-form-status error";
+        return;
+      }
+      schedule = { kind: "weekly", days, time: timeVal };
+    }
     statusEl.textContent = i18n.t("automations.form.creating");
     statusEl.className = "automation-form-status";
     try {
-      await api.createAutomation(name || i18n.t("automations.untitled"), prompt, interval, scheduleTime);
+      await api.createAutomation(name || i18n.t("automations.untitled"), prompt, schedule);
       statusEl.textContent = i18n.t("automations.form.created");
       statusEl.className = "automation-form-status success";
       // Brief success flash, then re-render the list
@@ -424,9 +474,8 @@ export async function loadAutomationsIntoModal() {
 }
 
 function renderAutomationRow(a: api.Automation): string {
-  const intervalLabel = formatInterval(a.interval_seconds);
-  const scheduleLabel = a.schedule_time ? i18n.t("automations.row.scheduleAt", { time: a.schedule_time }) : "";
-  const lastRunLabel = a.last_run ? _deps.formatRelativeTime(Math.floor(a.last_run)) || i18n.t("automations.row.justNow") : i18n.t("automations.row.never");
+  const scheduleLabel = formatSchedule(a.schedule);
+  const lastRunLabel = a.last_run ? _deps.formatRelativeSeconds(a.last_run) || i18n.t("automations.row.justNow") : i18n.t("automations.row.never");
   const promptText = (a.prompt || "").trim() || i18n.t("automations.row.noPrompt");
   const cleanedResult = stripThinking(a.last_result || "");
   const resultText = cleanedResult || i18n.t("automations.row.noRuns");
@@ -436,7 +485,7 @@ function renderAutomationRow(a: api.Automation): string {
       <div class="automation-row-main">
         <div class="automation-row-name">${esc(a.name)}</div>
         <div class="automation-row-meta">
-          <span class="automation-row-meta-item">⏰ ${esc(intervalLabel)}${esc(scheduleLabel)}</span>
+          <span class="automation-row-meta-item">⏰ ${esc(scheduleLabel)}</span>
           <span class="automation-row-meta-item">${esc(i18n.t("automations.row.lastRun", { when: lastRunLabel }))}</span>
           <span class="automation-row-meta-item automation-row-status ${a.enabled ? "on" : "off"}">${esc(a.enabled ? i18n.t("automations.row.running") : i18n.t("automations.row.stopped"))}</span>
         </div>
@@ -453,9 +502,27 @@ function renderAutomationRow(a: api.Automation): string {
     </div>`;
 }
 
-function formatInterval(seconds: number): string {
+function formatIntervalSeconds(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
   if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
   return `${Math.round(seconds / 86400)}d`;
+}
+
+/** Trim an `<input type="time">` value down to HH:MM (server expects that). */
+function normalizeTime(t: string): string {
+  return t.length >= 5 ? t.slice(0, 5) : t;
+}
+
+/** Human-readable schedule label for the row + detail header. */
+function formatSchedule(s: api.Schedule): string {
+  if (s.kind === "every") return formatIntervalSeconds(s.interval_seconds);
+  if (s.kind === "daily") return s.tz ? `daily at ${s.time} [${s.tz}]` : `daily at ${s.time}`;
+  // weekly
+  const daySet = new Set(s.days);
+  const daysLabel =
+    daySet.size === 5 && ["MO", "TU", "WE", "TH", "FR"].every((d) => daySet.has(d))
+      ? "weekdays"
+      : s.days.join(", ");
+  return s.tz ? `${daysLabel} at ${s.time} [${s.tz}]` : `${daysLabel} at ${s.time}`;
 }

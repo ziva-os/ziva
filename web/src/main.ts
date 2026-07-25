@@ -25,7 +25,7 @@ import { openAutomationsModal, closeAutomationsModal, loadAutomationsIntoModal, 
 import { openIMBridgeModal } from "./modals/im-bridge";
 import { channelIconHtml } from "./icons";
 import * as i18n from "./i18n";
-import { formatRelativeTime } from "./format";
+import { formatRelativeTime, formatRelativeSeconds } from "./format";
 import { refreshStatus, refreshMCPStatus, updateConnStatus, setStatusDeps } from "./status";
 import {   toggleRightPanel, initResizablePanel, updatePlanTabContent, scheduleDiffRefresh, refreshActiveReviewTabs, refreshActivePlanTab, ensurePlanSubscriber } from "./right-panel";
 import {
@@ -142,7 +142,7 @@ function init() {
   // (not at module top) because `store` is a `const` defined below — calling
   // these at module-load would hit the temporal dead zone and crash init.
   setSettingsDeps({ refreshConfig });
-  setAutomationsDeps({ store, composerTextarea, formatRelativeTime });
+  setAutomationsDeps({ store, composerTextarea, formatRelativeSeconds });
   setStatusDeps({ composerApprovalSelect, openProjectPicker, openGitBranchPicker });
   setRuntimeStateDeps({ updateSendStopButton });
   initLightbox();
@@ -4115,7 +4115,7 @@ async function sendComposerMessage(sid: string) {
       const name = (prompt.slice(0, 30) + (prompt.length > 30 ? "..." : "")) || "Chat task";
       ensureCompactToast();
       setCompactToastState("loading", i18n.t("toast.creatingAutomation"), sid);
-      await api.createAutomation(name, prompt, 86400, "09:00:00");
+      await api.createAutomation(name, prompt, { kind: "daily", time: "09:00" });
       setCompactToastState("success", i18n.t("toast.automationCreated", { name }), sid);
       setTimeout(() => hideCompactToast(), 3000);
       return;

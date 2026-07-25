@@ -21,6 +21,12 @@ from aiohttp import web
 
 from ziva.config.loader import _deep_merge
 from ziva.runtime import Runtime
+from ziva.scheduled import (
+    ScheduleError,
+    compute_next_run,
+    describe_schedule,
+    normalize_schedule,
+)
 from ziva.shared_types import CancellationToken, ChatMessage, ChatResult, ToolCallItem
 from ziva.storage.file_storage import FileStorage, _project_hash
 from ziva.transports.im_bridge import IMBridge
@@ -60,7 +66,6 @@ class Automation:
     id: str
     name: str
     prompt: str
-    interval_seconds: int
     enabled: bool = True
     last_run: float | None = None
     last_result: str | None = None
@@ -71,7 +76,8 @@ class Automation:
     # error, status}. Capped to bound storage. Shown as cards in the
     # automation detail view — click a card to see input + output.
     runs: list = field(default_factory=list)
-    schedule_time: str | None = None  # HH:MM:SS format for daily runs
+    # Schedule spec — see src/ziva/scheduled.py.
+    schedule: dict = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     # Deprecated: kept as an optional field only for backward compat
@@ -83,13 +89,19 @@ class Automation:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Automation":
-        # Ignore the legacy session_id from older persisted records —
-        # we always run against a fresh sid now.
+        sched_raw = data.get("schedule")
+        if not isinstance(sched_raw, dict):
+            raise ScheduleError("persisted record is missing `schedule` object")
+        try:
+            schedule = normalize_schedule(sched_raw)
+        except ScheduleError as exc:
+            raise ScheduleError(
+                f"persisted record has invalid schedule: {exc}"
+            ) from exc
         return cls(
             id=str(data.get("id") or uuid.uuid4()),
             name=str(data.get("name") or "unnamed"),
             prompt=str(data.get("prompt") or ""),
-            interval_seconds=max(1, int(data.get("interval_seconds") or 300)),
             enabled=bool(data.get("enabled", True)),
             last_run=data.get("last_run"),
             last_result=data.get("last_result"),
@@ -97,18 +109,16 @@ class Automation:
             next_run=data.get("next_run"),
             run_count=int(data.get("run_count") or 0),
             runs=list(data.get("runs") or []),
-            schedule_time=data.get("schedule_time"),
+            schedule=schedule,
             created_at=float(data.get("created_at") or time.time()),
             updated_at=float(data.get("updated_at") or time.time()),
             session_id=str(data.get("session_id") or ""),
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        # Drop the empty deprecated session_id from the response so
-        # callers don't see a stale "" value lying around. Persisted
-        # disk records still keep it for older builds that may try to
-        # load this file.
         d = asdict(self)
+        # Drop the empty deprecated session_id from the response so
+        # callers don't see a stale "" value lying around.
         if not d.get("session_id"):
             d.pop("session_id", None)
         return d
@@ -315,6 +325,10 @@ class DesktopAPIServer:
     def __init__(self, runtime: Runtime) -> None:
         self.runtime = runtime
         self.runtime.automation_callback = self._reload_automations
+        # Expose a programmatic "run now" hook on the runtime so the
+        # manage_scheduled_tasks tool's `action: "run"` can trigger an
+        # automation without going through the HTTP layer.
+        self.runtime.trigger_automation_now = self.trigger_automation_now
         self.store = SessionStore(runtime=runtime)
         # IM bridge: in-process component that turns inbound IM messages into
         # ordinary sessions (same chat_with_events path as the desktop
@@ -495,9 +509,19 @@ class DesktopAPIServer:
         if self.automations:
             return
         for item in FileStorage.list_automations(self.runtime.project_id):
-            automation = Automation.from_dict(item)
+            try:
+                automation = Automation.from_dict(item)
+            except ScheduleError:
+                # Unparseable records are simply skipped. We never
+                # touch the on-disk file — the user can clean up by
+                # hand if they care.
+                continue
             if not automation.next_run and automation.enabled:
-                automation.next_run = time.time() + automation.interval_seconds
+                next_run = compute_next_run(automation.schedule, time.time())
+                if next_run is None:
+                    next_run = time.time() + 60
+                automation.next_run = next_run
+                self._persist_automation(automation)
             self.automations[automation.id] = automation
 
     def _persist_automation(self, automation: Automation) -> None:
@@ -507,20 +531,13 @@ class DesktopAPIServer:
     def _automation_payload(self, automation: Automation) -> Dict[str, Any]:
         return automation.to_dict()
 
-    def _next_run_timestamp(self, schedule_time: str | None, interval_seconds: int) -> float:
-        """Compute the next run timestamp based on schedule_time or interval."""
-        now = time.time()
-        if not schedule_time:
-            return now + interval_seconds
-        try:
-            hour, minute, second = map(int, schedule_time.split(":", 2))
-            local = time.localtime(now)
-            target = time.mktime((local.tm_year, local.tm_mon, local.tm_mday, hour, minute, second, 0, 0, -1))
-            if target <= now:
-                target += 86400  # schedule for tomorrow
-            return target
-        except (ValueError, TypeError):
-            return now + interval_seconds
+    def _next_run_timestamp(self, schedule: dict) -> float | None:
+        """Compute the next run timestamp from a (canonical) schedule dict.
+
+        Thin wrapper over :func:`ziva.scheduled.compute_next_run` so
+        callers don't need to know about the schedule module.
+        """
+        return compute_next_run(schedule, time.time())
 
     def _schedule_enabled_automations(self) -> None:
         for automation in list(self.automations.values()):
@@ -542,7 +559,8 @@ class DesktopAPIServer:
                 return
             now = time.time()
             if automation.next_run is None:
-                automation.next_run = self._next_run_timestamp(automation.schedule_time, automation.interval_seconds)
+                next_run = self._next_run_timestamp(automation.schedule)
+                automation.next_run = next_run if next_run is not None else now + 60
                 self._persist_automation(automation)
             await asyncio.sleep(max(0, automation.next_run - now))
             automation = self.automations.get(automation_id)
@@ -598,7 +616,8 @@ class DesktopAPIServer:
                 "status": "done",
             })
             automation.runs = automation.runs[:50]
-            automation.next_run = self._next_run_timestamp(automation.schedule_time, automation.interval_seconds) if automation.enabled else None
+            next_run = self._next_run_timestamp(automation.schedule) if automation.enabled else None
+            automation.next_run = next_run if next_run is not None else None
             self._persist_automation(automation)
             await self.runtime._emit(sid, {
                 "type": "automation_run",
@@ -621,7 +640,8 @@ class DesktopAPIServer:
                 "status": "failed",
             })
             automation.runs = automation.runs[:50]
-            automation.next_run = self._next_run_timestamp(automation.schedule_time, automation.interval_seconds) if automation.enabled else None
+            next_run = self._next_run_timestamp(automation.schedule) if automation.enabled else None
+            automation.next_run = next_run if next_run is not None else None
             self._persist_automation(automation)
             await self.runtime._emit(sid, {
                 "type": "automation_run",
@@ -1361,31 +1381,49 @@ class DesktopAPIServer:
         payload = await request.json()
         name = str(payload.get("name") or "unnamed")
         prompt = str(payload.get("prompt") or "")
-        interval = max(1, int(payload.get("interval_seconds") or 300))
+
+        # Schedule is required and must be the discriminated-union shape.
+        schedule_raw = payload.get("schedule")
+        if not isinstance(schedule_raw, dict):
+            return web.json_response(
+                {"error": "invalid_schedule", "detail": "request body must include `schedule` (object)"},
+                status=400,
+            )
+        try:
+            schedule = normalize_schedule(schedule_raw)
+        except ScheduleError as exc:
+            return web.json_response(
+                {"error": "invalid_schedule", "detail": str(exc)}, status=400
+            )
+
+        # Anchor "every" tasks at create time so the first run aligns
+        # to the grid regardless of when the create request lands.
+        if schedule["kind"] == "every" and "anchor_at" not in schedule:
+            schedule["anchor_at"] = int(time.time())
+
         run_immediately = bool(payload.get("run_immediately", False))
-        schedule_time = payload.get("schedule_time")
-        if schedule_time:
-            schedule_time = str(schedule_time).strip() or None
 
         if not prompt:
             return web.json_response({"error": "prompt is required"}, status=400)
 
         aid = str(uuid.uuid4())
         now = time.time()
-        next_run = now if run_immediately else self._next_run_timestamp(schedule_time, interval)
+        if run_immediately:
+            next_run = now
+        else:
+            computed = self._next_run_timestamp(schedule)
+            next_run = computed if computed is not None else now + 60
         # No backing session is created up-front: each run gets its own
         # ephemeral sid inside _run_automation_once to avoid cross-run
         # context pollution. session_id is kept as an optional field
-        # on Automation for backward compatibility with previously
-        # persisted automation records (older builds reserved one
-        # session per automation).
+        # on Automation for backward compat with previously persisted
+        # records (older builds reserved one session per automation).
         automation = Automation(
             id=aid,
             name=name,
             prompt=prompt,
-            interval_seconds=interval,
             session_id="",  # deprecated; see _run_automation_once
-            schedule_time=schedule_time,
+            schedule=schedule,
             next_run=next_run,
         )
         self.automations[aid] = automation
@@ -1409,6 +1447,7 @@ class DesktopAPIServer:
             return web.json_response({"error": "not_found"}, status=404)
         payload = await request.json()
         reschedule = False
+
         if "name" in payload:
             automation.name = str(payload["name"] or "unnamed")
         if "prompt" in payload:
@@ -1416,21 +1455,48 @@ class DesktopAPIServer:
             if not prompt:
                 return web.json_response({"error": "prompt is required"}, status=400)
             automation.prompt = prompt
-        if "interval_seconds" in payload:
-            automation.interval_seconds = max(1, int(payload["interval_seconds"] or 300))
-            automation.next_run = self._next_run_timestamp(automation.schedule_time, automation.interval_seconds)
+
+        # Schedule update must be the discriminated-union shape.
+        if "schedule" in payload:
+            if not isinstance(payload["schedule"], dict):
+                return web.json_response(
+                    {"error": "invalid_schedule", "detail": "`schedule` must be an object"},
+                    status=400,
+                )
+            try:
+                automation.schedule = normalize_schedule(payload["schedule"])
+            except ScheduleError as exc:
+                return web.json_response(
+                    {"error": "invalid_schedule", "detail": str(exc)}, status=400
+                )
             reschedule = True
-        if "schedule_time" in payload:
-            st = payload.get("schedule_time")
-            automation.schedule_time = str(st).strip() if st else None
-            automation.next_run = self._next_run_timestamp(automation.schedule_time, automation.interval_seconds)
-            reschedule = True
+        elif "interval_seconds" in payload or "schedule_time" in payload:
+            return web.json_response(
+                {
+                    "error": "invalid_schedule",
+                    "detail": "send `schedule: {kind, ...}` instead",
+                },
+                status=400,
+            )
+
         if "enabled" in payload:
             enabled = bool(payload["enabled"])
             if automation.enabled != enabled:
                 automation.enabled = enabled
-                automation.next_run = self._next_run_timestamp(automation.schedule_time, automation.interval_seconds) if enabled else None
+                if enabled:
+                    computed = self._next_run_timestamp(automation.schedule)
+                    automation.next_run = (
+                        computed if computed is not None else time.time() + 60
+                    )
+                else:
+                    automation.next_run = None
                 reschedule = True
+
+        if reschedule and automation.enabled:
+            computed = self._next_run_timestamp(automation.schedule)
+            if computed is not None:
+                automation.next_run = computed
+
         self._persist_automation(automation)
         if reschedule:
             self._schedule_automation(automation)
@@ -1463,6 +1529,26 @@ class DesktopAPIServer:
 
         asyncio.create_task(_run_and_emit())
         return web.json_response({"accepted": True, "automation": self._automation_payload(automation)})
+
+    async def trigger_automation_now(self, aid: str, session_id: str | None = None) -> ChatResult | None:
+        """Programmatic equivalent of POST /automations/{aid}/run.
+
+        Called by the `manage_scheduled_tasks` tool's `action: "run"` to
+        fire a task immediately without round-tripping through the HTTP
+        layer. The run is fire-and-forget — returns once the async task
+        is scheduled, not once the underlying chat completes.
+        """
+        self._load_persisted_automations()
+        automation = self.automations.get(aid)
+        if automation is None:
+            raise KeyError(aid)
+
+        async def _run_and_emit():
+            await self._run_automation_once(
+                automation, scheduled=False, session_id=session_id
+            )
+
+        asyncio.create_task(_run_and_emit())
 
     async def delete_automation(self, request: web.Request) -> web.Response:
         self._load_persisted_automations()
