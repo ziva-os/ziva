@@ -2259,13 +2259,32 @@ async function patchRewindButtons(sid: string): Promise<void> {
   } catch { return; }
   const container = document.getElementById("messages");
   if (!container) return;
-  const userEls = Array.from(container.querySelectorAll<HTMLElement>(".msg.user"));
-  const toolEls = Array.from(container.querySelectorAll<HTMLElement>(".tool-card"));
-  // Walk fullMsgs and the DOM in parallel: each visible user/tool message
-  // maps to the next .msg.user / .tool-card element in document order
-  // (renderMessages renders in order, streaming appends at the end).
+
+  // Only top-level message elements matter: messages rendered inside a
+  // compact-fold dropZone are historical context and must never receive
+  // rewind buttons. The `:scope >` selector excludes `.compact-dropped`
+  // descendants while still matching live tail messages.
+  const userEls = Array.from(container.querySelectorAll<HTMLElement>(":scope > .msg.user"));
+  const toolEls = Array.from(container.querySelectorAll<HTMLElement>(":scope > .tool-card"));
+
+  // The visible tail of the chat starts at the last compaction summary.
+  // Anything before it is folded away, so we should not try to map those
+  // historical messages onto the live DOM elements.
+  let startIdx = 0;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if ((msgs[i] as any)._compaction_summary) {
+      startIdx = i;
+      break;
+    }
+  }
+
+  // Walk the visible tail and the DOM in parallel: each visible user/tool
+  // message maps to the next top-level element in document order.
+  // ask_user is rendered as a .question-card, not a .tool-card, so it must
+  // not consume a tool-card slot; otherwise every subsequent tool card gets
+  // an idx shifted forward and rewinds to the wrong message.
   let ui = 0, ti = 0;
-  for (let i = 0; i < msgs.length; i++) {
+  for (let i = startIdx; i < msgs.length; i++) {
     const m = msgs[i];
     if (m.role === "user" && !m._hidden) {
       const el = userEls[ui++];
@@ -2279,7 +2298,7 @@ async function patchRewindButtons(sid: string): Promise<void> {
           el.querySelector(".role-label")?.appendChild(btn);
         }
       }
-    } else if (m.role === "tool" && !m._subagent) {
+    } else if (m.role === "tool" && !m._subagent && m.name !== "ask_user") {
       const el = toolEls[ti++];
       if (el && el.dataset.idx == null) {
         el.dataset.idx = String(i);

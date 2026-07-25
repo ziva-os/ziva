@@ -74,7 +74,10 @@ class ThinkTagParser:
                         reasoning_parts.append(text[:-buf_len])
                     else:
                         reasoning_parts.append(text)
-                    return "".join(reasoning_parts), ""
+                    # main_parts may hold text that preceded the start tag in
+                    # this same feed() call (e.g. feed("hi<think>reason")) —
+                    # returning "" here would silently drop that content.
+                    return "".join(reasoning_parts), "".join(main_parts)
                 reasoning_parts.append(text[:end])
                 text = text[end + len(self._end_tag):]
                 self._in_think = False

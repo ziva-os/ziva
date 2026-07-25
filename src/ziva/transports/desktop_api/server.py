@@ -1270,20 +1270,23 @@ class DesktopAPIServer:
 
     async def get_plan(self, request: web.Request) -> web.Response:
         sid = request.match_info["sid"]
-        session = self.store.get_session(sid)
-        if not session:
+        if not self.store.exists(sid):
             return web.json_response({"error": "session_not_found"}, status=404)
 
-        # Prefer persisted plan from session file (survives restart)
-        plan_steps = session.get("plan") or []
-        # Fallback: scan turn events for latest plan output
+        # Read the persisted plan directly from disk. The in-memory SessionStore
+        # entry is rebuilt from messages only and drops session-level metadata
+        # like `plan`, so relying on it returns stale/empty results.
+        pid = self._pid_for(sid)
+        disk_session = FileStorage.get_session(pid, sid) or {}
+        plan_steps = disk_session.get("plan") or []
+
+        # Fallback: a plan may exist only in the runtime SessionState if it was
+        # just set but the disk write hasn't happened yet (unlikely, but cheap).
         if not plan_steps:
-            for turn in session.get("turns", []):
-                for ev in turn.get("events", []):
-                    if ev.get("type") == "tool_end" and isinstance(ev.get("output"), dict):
-                        output = ev["output"]
-                        if "plan" in output:
-                            plan_steps = output["plan"]
+            rt_session = self.runtime._sessions.get(sid)
+            if rt_session:
+                plan_steps = rt_session.plan or []
+
         return web.json_response({"plan": plan_steps})
 
     async def get_diff(self, request: web.Request) -> web.Response:
