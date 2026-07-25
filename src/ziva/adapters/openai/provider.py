@@ -4,15 +4,51 @@ import json
 import os
 from typing import Any, AsyncIterator, Iterable, Protocol
 
-from ziva.adapters._think_parser import ThinkTagParser
 from ziva.adapters.retry import call_with_retry
 from ziva.shared_types import ChatMessage, ChatResult, StreamDelta, ToolCallItem
+
+
+def _is_minimax_m3(base_url: str | None, model: str) -> bool:
+    """Detect the MiniMax-M3 OpenAI-compatible endpoint.
+
+    MiniMax-M3 exposes reasoning via an opt-in ``reasoning_split=True``
+    field (in ``extra_body``). When enabled, the model returns reasoning
+    in ``reasoning_details`` instead of embedding it in ``content``.
+    """
+    if not base_url:
+        return False
+    return "minimaxi" in base_url.lower() and model.lower().startswith("minimax-m3")
+
+
+def _normalize_reasoning(delta_or_message: Any) -> str | None:
+    """Return a single reasoning string from provider-specific fields.
+
+    Preferred order:
+      1. ``reasoning_content`` (OpenAI o1/o3)
+      2. ``reasoning`` (some OpenAI-compatible providers)
+      3. ``reasoning_details`` (MiniMax-M3 with ``reasoning_split=True``)
+    """
+    reasoning = getattr(delta_or_message, "reasoning_content", None) or getattr(
+        delta_or_message, "reasoning", None
+    )
+    if reasoning:
+        return reasoning
+
+    details = getattr(delta_or_message, "reasoning_details", None)
+    if isinstance(details, list):
+        return "".join(
+            d.get("text", "")
+            for d in details
+            if d.get("type") == "reasoning.text"
+        )
+    return None
 
 
 def _build_api_messages(
     messages: Iterable[ChatMessage],
     system_prompt: str | None = None,
     model: str = "",
+    base_url: str | None = None,
     thinking_enabled: bool = False,
     capabilities: dict | None = None,
 ) -> list[dict]:
@@ -20,13 +56,20 @@ def _build_api_messages(
     if system_prompt:
         api_messages.append({"role": "system", "content": system_prompt})
     supports_thinking = bool(capabilities and capabilities.get("thinking"))
+    minimax_m3 = _is_minimax_m3(base_url, model)
     for m in messages:
         msg: dict[str, Any] = {"role": m.role, "content": m.content}
 
         if m.role == "assistant":
             reasoning = getattr(m, "reasoning_content", None)
             if reasoning:
-                msg["reasoning_content"] = reasoning
+                if minimax_m3:
+                    # MiniMax expects reasoning as a structured array
+                    msg["reasoning_details"] = [
+                        {"type": "reasoning.text", "text": reasoning}
+                    ]
+                else:
+                    msg["reasoning_content"] = reasoning
 
         if m.role == "assistant" and m.tool_calls:
             if "reasoning_content" not in msg and (thinking_enabled or supports_thinking):
@@ -39,6 +82,13 @@ def _build_api_messages(
                 }
                 for tc in m.tool_calls
             ]
+
+        # Normalize any assistant reasoning_content added above into the
+        # MiniMax reasoning_details format when talking to MiniMax-M3.
+        if m.role == "assistant" and minimax_m3 and "reasoning_content" in msg:
+            rc = msg.pop("reasoning_content")
+            if rc:
+                msg["reasoning_details"] = [{"type": "reasoning.text", "text": rc}]
         if m.role == "tool" and m.tool_call_id:
             msg["tool_call_id"] = m.tool_call_id
         if m.role == "tool" and m.name:
@@ -102,12 +152,6 @@ def _usage_from_openai(usage_obj: Any) -> dict | None:
     return result
 
 
-class _ThinkTagParser(ThinkTagParser):
-    """Backwards-compat alias; the implementation now lives in
-    :mod:`ziva.adapters._think_parser` so the Anthropic adapter can share it."""
-    pass
-
-
 class ModelAdapter(Protocol):
     async def chat(
         self,
@@ -168,7 +212,7 @@ class OpenAIChatAdapter:
     ) -> ChatResult:
         thinking_enabled = thinking_config is not None and thinking_config.get("type") == "enabled"
         api_messages = _build_api_messages(
-            messages, system_prompt, model=model,
+            messages, system_prompt, model=model, base_url=self._base_url,
             thinking_enabled=thinking_enabled, capabilities=self._capabilities,
         )
 
@@ -187,10 +231,14 @@ class OpenAIChatAdapter:
             if is_reasoning_model:
                 kwargs["reasoning_effort"] = thinking_config.get("mode", "medium")
 
+        if _is_minimax_m3(self._base_url, model):
+            kwargs.setdefault("extra_body", {})
+            kwargs["extra_body"].setdefault("reasoning_split", True)
+
         resp = await call_with_retry(self._client.chat.completions.create, **kwargs)
         choice = resp.choices[0]
         content = choice.message.content or ""
-        reasoning_content = getattr(choice.message, "reasoning_content", None) or getattr(choice.message, "reasoning", None)
+        reasoning_content = _normalize_reasoning(choice.message)
         usage_dict = _usage_from_openai(getattr(resp, "usage", None))
 
         tool_calls: list[ToolCallItem] = []
@@ -226,7 +274,7 @@ class OpenAIChatAdapter:
     ) -> AsyncIterator[StreamDelta]:
         thinking_enabled = thinking_config is not None and thinking_config.get("type") == "enabled"
         api_messages = _build_api_messages(
-            messages, system_prompt, model=model,
+            messages, system_prompt, model=model, base_url=self._base_url,
             thinking_enabled=thinking_enabled, capabilities=self._capabilities,
         )
 
@@ -239,6 +287,10 @@ class OpenAIChatAdapter:
                 kwargs[key] = val
             else:
                 extra_body[key] = val
+
+        if _is_minimax_m3(self._base_url, model):
+            extra_body.setdefault("reasoning_split", True)
+
         if extra_body:
             kwargs["extra_body"] = extra_body
         if tools:
@@ -257,7 +309,6 @@ class OpenAIChatAdapter:
         response = await call_with_retry(self._client.chat.completions.create, **kwargs)
 
         tool_calls_acc: dict[int, dict] = {}
-        think_parser = _ThinkTagParser()
 
         async for chunk in response:
             # OpenAI sends usage in a final chunk with empty choices
@@ -277,15 +328,8 @@ class OpenAIChatAdapter:
             delta = choice.delta
             finish_reason = choice.finish_reason
 
-            reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+            reasoning = _normalize_reasoning(delta)
             content = delta.content or ""
-
-            # Fall back to <think> tag parsing for providers that embed
-            # reasoning in content instead of the reasoning_content field.
-            if not reasoning and content:
-                parsed_reasoning, content = think_parser.feed(content)
-                if parsed_reasoning:
-                    reasoning = parsed_reasoning
 
             if delta.tool_calls:
                 for tc_delta in delta.tool_calls:
