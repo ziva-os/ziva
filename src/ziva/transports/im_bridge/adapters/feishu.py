@@ -28,7 +28,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from ziva.transports.im_bridge.adapters.base import BaseAdapter, decode_image_ref, _bytesio, _safe_filename
+from ziva.transports.im_bridge.adapters.base import BaseAdapter, decode_image_ref, _bytesio, _safe_filename, classify_media
 from ziva.transports.im_bridge.models import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
@@ -229,8 +229,14 @@ class FeishuAdapter(BaseAdapter):
                 logger.exception("feishu: image send failed for key=%s", image_key)
 
         # 3. Send each non-image file (video / archive / document). Upload to
-        #    get a `file_key`, then send a `file` msg_type referencing it.
-        #    Feishu caps file messages at ~25MB; larger files can't be
+        #    get a `file_key`, then send the right msg_type referencing it:
+        #      - mp4/mov/m4v  → `msg_type="media"`  (Feishu rejects `file`
+        #                        with error 230055 — file_type vs msg_type
+        #                        mismatch — even though no exception is
+        #                        raised by the SDK; we used to silently
+        #                        drop the video.)
+        #      - everything else → `msg_type="file"` (download card).
+        #    Feishu caps file messages at ~30MB; larger files can't be
         #    delivered this way, so fall back to a text note instead of
         #    silently dropping them (otherwise the user gets nothing).
         for file_path in msg.files or []:
@@ -250,22 +256,36 @@ class FeishuAdapter(BaseAdapter):
             if not file_key:
                 await self._send_text(msg.chat_id, f"{fname} 发送失败，请在桌面查看。")
                 continue
+            # Feishu's `media` msg_type is required for video files
+            # (mp4/mov/m4v) — `file` would fail server-side with 230055.
+            # `image_key` is optional for media; omitting it shows the
+            # default video icon. (We could generate a thumbnail via
+            # imageio-ffmpeg, but only on darwin-arm64; not worth a
+            # platform-specific branch for now.)
+            is_video = classify_media(file_path) == "video"
+            msg_type = "media" if is_video else "file"
+            content = json.dumps({"file_key": file_key}, ensure_ascii=False)
             req = (
                 im.CreateMessageRequest.builder()
                 .receive_id_type("chat_id")
                 .request_body(
                     im.CreateMessageRequestBody.builder()
                     .receive_id(msg.chat_id)
-                    .msg_type("file")
-                    .content(json.dumps({"file_key": file_key}, ensure_ascii=False))
+                    .msg_type(msg_type)
+                    .content(content)
                     .build()
                 )
                 .build()
             )
             try:
-                await asyncio.to_thread(self._send_client.im.v1.message.create, req)
+                resp = await asyncio.to_thread(self._send_client.im.v1.message.create, req)
+                if not getattr(resp, "success", lambda: True)():
+                    logger.warning(
+                        "feishu: %s send rejected code=%s msg=%s",
+                        msg_type, getattr(resp, "code", "?"), getattr(resp, "msg", ""),
+                    )
             except Exception:
-                logger.exception("feishu: file send failed for key=%s", file_key)
+                logger.exception("feishu: %s send failed for key=%s", msg_type, file_key)
 
     async def _send_text(self, chat_id: str, text: str) -> None:
         """Send a plain text bubble — used for file-send fallbacks."""
