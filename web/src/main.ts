@@ -3223,14 +3223,25 @@ function syncBackgroundSession(sid: string, ev: api.Event) {
       store.set({ compactingSessions: next });
     }
   } else if (t === "turn_end" || t === "turn_cancelled" || t === "turn_failed") {
-    s.status = t === "turn_failed" ? "failed" : (t === "turn_cancelled" ? "idle" : "done");
-    const next = { ...runningSessions };
-    delete next[sid];
-    store.set({ sessions: [...sessions], runningSessions: next });
-    renderSessions();
-    // Reflect the just-finished turn in the per-pane send/stop button
-    // (matters when the session is visible in a split pane, not just active).
-    setComposerRunning(sid, false);
+    // Mirrors handleSessionEvent's wasRunning guard: a flush from a
+    // previous terminal event may have already started a new turn on
+    // this sid (turn_start ran first and set runningSessions[sid]=true).
+    // If we're seeing a late duplicate terminal event for the OLD turn,
+    // clearing state here would clobber the new turn's running flag and
+    // the sidebar would flicker. The new turn's own terminal event will
+    // fire later and clean up properly.
+    const wasRunning = !!runningSessions[sid];
+    const shouldClobber = !(t === "turn_cancelled" && wasRunning);
+    if (shouldClobber) {
+      s.status = t === "turn_failed" ? "failed" : (t === "turn_cancelled" ? "idle" : "done");
+      const next = { ...runningSessions };
+      delete next[sid];
+      store.set({ sessions: [...sessions], runningSessions: next });
+      renderSessions();
+      // Reflect the just-finished turn in the per-pane send/stop button
+      // (matters when the session is visible in a split pane, not just active).
+      setComposerRunning(sid, false);
+    }
     // If the session is shown in a non-active split pane, the live SSE
     // stream only updates #messages, so the secondary pane's optimistic
     // copy plus the streamed assistant turn are stale. Re-fetch the
@@ -3239,6 +3250,15 @@ function syncBackgroundSession(sid: string, ev: api.Event) {
     if (sid !== curActive && curSplit.includes(sid)) {
       const paneMessages = sessionMessagesEl(sid);
       if (paneMessages) loadHistoryInto(sid, paneMessages);
+    }
+    // Flush the queue for terminal events. Mirrors handleSessionEvent's
+    // behavior — turn_end uses a 200ms delay so the server has cleared
+    // turn_task before the queued createTurn lands, while cancel/fail
+    // flush immediately (cancel_turn clears turn_task synchronously).
+    // Skip when shouldClobber is false: a new turn is already running,
+    // its own terminal event will flush the queue when it ends.
+    if (shouldClobber) {
+      flushComposerQueue(sid, t === "turn_end" ? 200 : 0);
     }
   }
 }
