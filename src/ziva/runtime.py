@@ -893,6 +893,8 @@ class Runtime:
 
         # Run unified streaming loop; events are emitted to event bus automatically
         final_content = ""
+        final_reasoning_content = ""
+        final_reasoning_signature = None
         final_usage = None
         final_finish_reason = "stop"
         cancelled = False
@@ -906,6 +908,8 @@ class Runtime:
         async for event in self._run_model_tool_loop(rendered_messages, sid, ctx, cancellation_token=session.cancel_token, model_cfg=model_cfg, model_adapter=turn_adapter):
             if event.get("type") == "model_response":
                 final_content = event.get("content", "")
+                final_reasoning_content = event.get("reasoning_content") or ""
+                final_reasoning_signature = event.get("reasoning_signature") or None
                 final_usage = event.get("usage")
                 final_finish_reason = event.get("finish_reason", "stop")
             if event.get("type") == "cancelled":
@@ -935,6 +939,8 @@ class Runtime:
                 model=self.config["model"]["name"],
                 usage=final_usage,
                 finish_reason="cancelled",
+                reasoning_content=final_reasoning_content or None,
+                reasoning_signature=final_reasoning_signature,
             )
             await self._emit(sid, {"type": "turn_cancelled"})
             return result
@@ -946,10 +952,12 @@ class Runtime:
             model=self.config["model"]["name"],
             usage=final_usage,
             finish_reason=final_finish_reason,
+            reasoning_content=final_reasoning_content or None,
+            reasoning_signature=final_reasoning_signature,
         )
         await self._store_memory(list(session.history), result, ctx)
         await self._run_hooks("after_turn", {"result": result.__dict__}, ctx)
-        await self._emit(sid, {"type": "turn_end", "result": result.__dict__})
+        await self._emit(sid, {"type": "turn_end", "session_id": sid, "result": result.__dict__})
         return result
 
     async def chat_with_events(self, messages: Iterable[ChatMessage], session_id: str | None = None) -> tuple[str, ChatResult, List[Dict[str, Any]]]:
@@ -1331,6 +1339,8 @@ class Runtime:
                 "type": "model_response",
                 "round": round_idx,
                 "content": full_content,
+                "reasoning_content": full_reasoning_content or None,
+                "reasoning_signature": final_reasoning_signature or None,
                 "usage": final_usage,
                 "finish_reason": final_finish_reason,
             }

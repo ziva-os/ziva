@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, AsyncIterator, Iterable, Protocol
 
 from ziva.adapters.retry import call_with_retry
@@ -18,6 +19,196 @@ def _is_minimax_m3(base_url: str | None, model: str) -> bool:
     if not base_url:
         return False
     return "minimaxi" in base_url.lower() and model.lower().startswith("minimax-m3")
+
+
+def _model_slug(model: str) -> str:
+    """Return the slug-only part of a model id, lowercased.
+
+    Strips provider prefixes like ``openai/``, ``x-ai/``, ``anthropic/`` so
+    matching can anchor at the start of the family name.
+    """
+    m = (model or "").strip().lower()
+    if "/" in m:
+        m = m.rsplit("/", 1)[-1]
+    return m
+
+
+# Reasoning-model families that emit structured reasoning deltas/content.
+# Aligned with Hermes's reasoning timeout allowlist (agent/reasoning_timeouts.py);
+# start-of-slug anchored so derivatives like ``olmo-1`` don't match ``o1``.
+_REASONING_MODEL_SLUGS: tuple[str, ...] = (
+    # OpenAI o-series (Hermes reasoning_timeouts.py does not list gpt-5.x here;
+    # gpt-5 is handled separately by ``_model_forces_max_completion_tokens``).
+    "o1",
+    "o1-mini",
+    "o1-pro",
+    "o1-preview",
+    "o3",
+    "o3-pro",
+    "o3-mini",
+    "o4-mini",
+    # DeepSeek
+    "deepseek-r1",
+    "deepseek-reasoner",
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+    # Qwen
+    "qwq-32b",
+    "qwen3",
+    # Anthropic thinking variants (served via OpenAI-compatible proxies)
+    "claude-opus-4",
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-sonnet-4.5",
+    "claude-sonnet-4.6",
+    # xAI Grok reasoning
+    "grok-4-fast-reasoning",
+    "grok-4.20-reasoning",
+    "grok-4.5",
+    # NVIDIA Nemotron hosted NIMs
+    "nemotron-3-ultra",
+    "nemotron-3-super",
+    "nemotron-3-nano",
+)
+
+_REASONING_MODEL_RE = re.compile(
+    r"^(?:" + "|".join(re.escape(s) for s in _REASONING_MODEL_SLUGS) + r")(?:[-._]|$)"
+)
+
+# OpenAI-native o-series: accept top-level ``reasoning_effort`` and reject
+# ``max_tokens`` in favor of ``max_completion_tokens``. Future ``oN`` models
+# are covered automatically by the ``^o\d+`` pattern.
+_OPENAI_REASONING_MODEL_RE = re.compile(r"^o\d+(?:[-._]|$)")
+
+
+def _is_reasoning_model(model: str) -> bool:
+    """Return True when the model is in Hermes's reasoning-model allowlist.
+
+    Used to decide whether to preserve ``reasoning_content`` on replay.
+    Includes families served through OpenAI-compatible endpoints (DeepSeek,
+    Qwen, Grok, Anthropic-via-proxy, ...) as well as native OpenAI o-series.
+    """
+    return bool(_REASONING_MODEL_RE.match(_model_slug(model)))
+
+
+def _is_openai_reasoning_model(model: str) -> bool:
+    """Return True for OpenAI-native o-series reasoning models.
+
+    These accept top-level ``reasoning_effort``. gpt-5.x is handled by
+    ``_model_forces_max_completion_tokens`` for the token limit, not here,
+    because Hermes does not list it in its reasoning allowlist.
+    """
+    return bool(_OPENAI_REASONING_MODEL_RE.match(_model_slug(model)))
+
+
+# Model families that must use ``max_completion_tokens`` instead of
+# ``max_tokens``. Copied from Hermes ``utils.py:model_forces_max_completion_tokens``.
+# Note: gpt-4o / gpt-4.1 are included here because they are deprecated fields,
+# but they are NOT reasoning models.
+_MODELS_FORCING_MAX_COMPLETION_TOKENS: tuple[str, ...] = (
+    "gpt-4o",
+    "gpt-4.1",
+    "gpt-5",
+)
+
+
+def _model_forces_max_completion_tokens(model: str) -> bool:
+    """Return True when the model family rejects ``max_tokens``.
+
+    Mirrors Hermes's ``model_forces_max_completion_tokens`` (utils.py:534).
+    OpenAI's newer families (gpt-4o, gpt-4.1, gpt-5, o1, o3, o4) require
+    ``max_completion_tokens`` on /v1/chat/completions. Handles vendor prefixes
+    like ``openai/gpt-5.4`` by stripping to the tail.
+    """
+    m = _model_slug(model)
+    return (
+        m.startswith(_MODELS_FORCING_MAX_COMPLETION_TOKENS)
+        or bool(_OPENAI_REASONING_MODEL_RE.match(m))
+    )
+
+
+def _provider_requires_reasoning_echo(base_url: str | None, model: str) -> bool:
+    """Providers that require a non-empty reasoning_content echo on every assistant turn.
+
+    DeepSeek, Kimi/Moonshot, and MiMo enforce that every assistant message in
+    thinking mode carries a non-empty ``reasoning_content`` (even a single
+    space). OpenAI-native reasoning models and most strict OpenAI-compatible
+    providers do not accept this field on input, so we only emit it when the
+    target is known to require it.
+    """
+    if not base_url and not model:
+        return False
+    combined = f"{base_url or ''} {model or ''}".lower()
+    return any(k in combined for k in ("deepseek", "kimi", "moonshot", "mimo"))
+
+
+def _supports_reasoning_content(
+    model: str,
+    thinking_enabled: bool,
+    capabilities: dict | None,
+) -> bool:
+    """True when the outgoing provider/model accepts reasoning_content on input."""
+    if thinking_enabled:
+        return True
+    if _is_reasoning_model(model):
+        return True
+    if capabilities and capabilities.get("thinking"):
+        return True
+    return False
+
+
+# Top-level message keys accepted by the OpenAI Chat Completions schema.
+# Anything else is stripped before the wire to avoid 400/422 from strict
+# providers (Mistral, Fireworks, Cerebras, Groq, ...). See Hermes
+# ChatCompletionsTransport.convert_messages for the same guard.
+_MESSAGE_ALLOWED_KEYS = frozenset({
+    "role",
+    "content",
+    "name",
+    "tool_call_id",
+    "tool_calls",
+    "reasoning_content",
+    "reasoning_details",
+})
+_TOOL_CALL_ALLOWED_KEYS = frozenset({"id", "type", "function"})
+_FUNCTION_ALLOWED_KEYS = frozenset({"name", "arguments"})
+
+
+def _sanitize_openai_messages(messages: list[dict]) -> list[dict]:
+    """Strip internal keys from outgoing OpenAI-format messages.
+
+    Internal bookkeeping (``_``-prefixed keys, ``tool_name``, ``api_content``,
+    Codex Responses IDs, Gemini thought signatures on non-Gemini targets)
+    must not reach the wire. We also tighten each tool_call to the schema
+    subset so strict providers cannot reject extra fields.
+    """
+    sanitized: list[dict] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            sanitized.append(msg)
+            continue
+        clean = {
+            k: v
+            for k, v in msg.items()
+            if k in _MESSAGE_ALLOWED_KEYS and not (isinstance(k, str) and k.startswith("_"))
+        }
+        tool_calls = clean.get("tool_calls")
+        if isinstance(tool_calls, list):
+            clean_tool_calls: list[Any] = []
+            for tc in tool_calls:
+                if isinstance(tc, dict):
+                    tc_clean = {k: v for k, v in tc.items() if k in _TOOL_CALL_ALLOWED_KEYS}
+                    fn = tc_clean.get("function")
+                    if isinstance(fn, dict):
+                        tc_clean["function"] = {
+                            k: v for k, v in fn.items() if k in _FUNCTION_ALLOWED_KEYS
+                        }
+                    clean_tool_calls.append(tc_clean)
+                else:
+                    clean_tool_calls.append(tc)
+            clean["tool_calls"] = clean_tool_calls
+        sanitized.append(clean)
+    return sanitized
 
 
 def _normalize_reasoning(delta_or_message: Any) -> str | None:
@@ -57,12 +248,15 @@ def _build_api_messages(
         api_messages.append({"role": "system", "content": system_prompt})
     supports_thinking = bool(capabilities and capabilities.get("thinking"))
     minimax_m3 = _is_minimax_m3(base_url, model)
+    supports_reasoning = _supports_reasoning_content(model, thinking_enabled, capabilities)
+    requires_reasoning_echo = _provider_requires_reasoning_echo(base_url, model)
+
     for m in messages:
         msg: dict[str, Any] = {"role": m.role, "content": m.content}
 
         if m.role == "assistant":
             reasoning = getattr(m, "reasoning_content", None)
-            if reasoning:
+            if reasoning and (supports_reasoning or minimax_m3):
                 if minimax_m3:
                     # MiniMax expects reasoning as a structured array
                     msg["reasoning_details"] = [
@@ -72,8 +266,6 @@ def _build_api_messages(
                     msg["reasoning_content"] = reasoning
 
         if m.role == "assistant" and m.tool_calls:
-            if "reasoning_content" not in msg and (thinking_enabled or supports_thinking):
-                msg["reasoning_content"] = ""
             msg["tool_calls"] = [
                 {
                     "id": tc.id,
@@ -82,6 +274,17 @@ def _build_api_messages(
                 }
                 for tc in m.tool_calls
             ]
+            # Some providers (DeepSeek/Kimi/MiMo) require a non-empty
+            # reasoning_content echo on every assistant turn in thinking
+            # mode, including tool-call turns. Others (OpenAI o1/o3) only
+            # need a pad when reasoning was actually emitted. Avoid leaking
+            # reasoning to strict providers that reject the field.
+            has_reasoning = "reasoning_content" in msg or "reasoning_details" in msg
+            if not has_reasoning:
+                if requires_reasoning_echo:
+                    msg["reasoning_content"] = " "
+                elif thinking_enabled or supports_thinking:
+                    msg["reasoning_content"] = ""
 
         # Normalize any assistant reasoning_content added above into the
         # MiniMax reasoning_details format when talking to MiniMax-M3.
@@ -94,7 +297,14 @@ def _build_api_messages(
         if m.role == "tool" and m.name:
             msg["name"] = m.name
         api_messages.append(msg)
-    return api_messages
+
+    # Plain assistant turns for echo-requiring providers also need a pad.
+    for msg in api_messages:
+        if msg.get("role") == "assistant" and requires_reasoning_echo:
+            if not ("reasoning_content" in msg or "reasoning_details" in msg):
+                msg["reasoning_content"] = " "
+
+    return _sanitize_openai_messages(api_messages)
 
 
 def _usage_from_openai(usage_obj: Any) -> dict | None:
@@ -221,14 +431,20 @@ class OpenAIChatAdapter:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
-        # o1/o3 reasoning models reject `max_tokens` (they use
-        # max_completion_tokens / reasoning_effort); skip it for them.
-        is_reasoning_model = model.startswith("o1") or model.startswith("o3")
-        if self._default_max_tokens and not is_reasoning_model:
-            kwargs["max_tokens"] = self._default_max_tokens
+        # Newer OpenAI families (gpt-4o, gpt-4.1, gpt-5, o-series) reject
+        # ``max_tokens`` and require ``max_completion_tokens``; reasoning_effort
+        # is only valid for native o-series. See Hermes
+        # ``utils.py:model_forces_max_completion_tokens``.
+        is_openai_reasoning_model = _is_openai_reasoning_model(model)
+        forces_max_completion_tokens = _model_forces_max_completion_tokens(model)
+        if self._default_max_tokens:
+            if forces_max_completion_tokens:
+                kwargs["max_completion_tokens"] = self._default_max_tokens
+            else:
+                kwargs["max_tokens"] = self._default_max_tokens
 
         if thinking_config and thinking_config.get("type") == "enabled":
-            if is_reasoning_model:
+            if is_openai_reasoning_model:
                 kwargs["reasoning_effort"] = thinking_config.get("mode", "medium")
 
         if _is_minimax_m3(self._base_url, model):
@@ -237,13 +453,30 @@ class OpenAIChatAdapter:
 
         resp = await call_with_retry(self._client.chat.completions.create, **kwargs)
         choice = resp.choices[0]
-        content = choice.message.content or ""
-        reasoning_content = _normalize_reasoning(choice.message)
+        msg = choice.message
+        content = msg.content or ""
+        reasoning_content = _normalize_reasoning(msg)
         usage_dict = _usage_from_openai(getattr(resp, "usage", None))
 
+        # OpenAI structured-refusal field. When a model declines, the SDK
+        # populates ``message.refusal`` with the explanation and leaves
+        # ``content`` empty. OpenAI-compatible proxies that front Anthropic /
+        # Bedrock surface a Claude refusal this way — or via
+        # ``finish_reason="content_filter"`` — instead of the native
+        # ``stop_reason="refusal"``. Promote it to content + a
+        # ``content_filter`` finish reason so the runtime doesn't treat it as
+        # an empty response and retry.
+        refusal = getattr(msg, "refusal", None)
+        if refusal is None and hasattr(msg, "model_extra"):
+            refusal = (msg.model_extra or {}).get("refusal")
+        finish_reason = choice.finish_reason or "stop"
+        if isinstance(refusal, str) and refusal.strip() and not content and not msg.tool_calls:
+            content = refusal
+            finish_reason = "content_filter"
+
         tool_calls: list[ToolCallItem] = []
-        if choice.message.tool_calls:
-            for tc in choice.message.tool_calls:
+        if msg.tool_calls:
+            for tc in msg.tool_calls:
                 try:
                     args = json.loads(tc.function.arguments)
                 except (json.JSONDecodeError, TypeError):
@@ -259,7 +492,7 @@ class OpenAIChatAdapter:
             content=content,
             model=resp.model,
             usage=usage_dict,
-            finish_reason=choice.finish_reason or "stop",
+            finish_reason=finish_reason,
             tool_calls=tool_calls,
             reasoning_content=reasoning_content,
         )
@@ -297,13 +530,19 @@ class OpenAIChatAdapter:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
-        # o1/o3 reasoning models reject `max_tokens`; skip it for them.
-        is_reasoning_model = model.startswith("o1") or model.startswith("o3")
-        if self._default_max_tokens and not is_reasoning_model:
-            kwargs["max_tokens"] = self._default_max_tokens
+        # Newer OpenAI families require ``max_completion_tokens``; reasoning_effort
+        # is only valid for native o-series. See Hermes
+        # ``utils.py:model_forces_max_completion_tokens``.
+        is_openai_reasoning_model = _is_openai_reasoning_model(model)
+        forces_max_completion_tokens = _model_forces_max_completion_tokens(model)
+        if self._default_max_tokens:
+            if forces_max_completion_tokens:
+                kwargs["max_completion_tokens"] = self._default_max_tokens
+            else:
+                kwargs["max_tokens"] = self._default_max_tokens
 
         if thinking_config and thinking_config.get("type") == "enabled":
-            if is_reasoning_model:
+            if is_openai_reasoning_model:
                 kwargs["reasoning_effort"] = thinking_config.get("mode", "medium")
 
         response = await call_with_retry(self._client.chat.completions.create, **kwargs)
@@ -330,6 +569,15 @@ class OpenAIChatAdapter:
 
             reasoning = _normalize_reasoning(delta)
             content = delta.content or ""
+
+            # Streamed refusal delta (some OpenAI-compatible proxies emit
+            # ``delta.refusal`` instead of ``delta.content`` for safety blocks).
+            refusal = getattr(delta, "refusal", None)
+            if refusal is None and hasattr(delta, "model_extra"):
+                refusal = (delta.model_extra or {}).get("refusal")
+            if isinstance(refusal, str) and refusal.strip() and not content and not delta.tool_calls:
+                content = refusal
+                finish_reason = "content_filter"
 
             if delta.tool_calls:
                 for tc_delta in delta.tool_calls:

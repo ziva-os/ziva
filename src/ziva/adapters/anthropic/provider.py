@@ -227,9 +227,13 @@ class AnthropicChatAdapter:
 
         content = ""
         reasoning_content = ""
+        reasoning_signature = None
         for b in resp.content:
             if getattr(b, "type", None) == "thinking":
                 reasoning_content += getattr(b, "thinking", "")
+                sig = getattr(b, "signature", None)
+                if sig and reasoning_signature is None:
+                    reasoning_signature = sig
             elif getattr(b, "type", None) == "text":
                 content += getattr(b, "text", "")
 
@@ -249,8 +253,8 @@ class AnthropicChatAdapter:
             usage=_usage_from_anthropic(getattr(resp, "usage", None)),
             finish_reason=resp.stop_reason or "stop",
             tool_calls=tool_calls,
-            reasoning_content=reasoning_content,
-            reasoning_signature=getattr(resp, "signature", None),
+            reasoning_content=reasoning_content or None,
+            reasoning_signature=reasoning_signature,
         )
 
     async def chat_stream(
@@ -301,16 +305,17 @@ class AnthropicChatAdapter:
 
             async for event in stream:
                 if event.type == "content_block_start":
-                    btype = getattr(event.content_block, "type", None)
+                    content_block = getattr(event, "content_block", None)
+                    btype = getattr(content_block, "type", None)
                     if btype == "tool_use":
                         tool_calls_acc[event.index] = {
-                            "id": getattr(event.content_block, "id", ""),
-                            "name": getattr(event.content_block, "name", ""),
+                            "id": getattr(content_block, "id", ""),
+                            "name": getattr(content_block, "name", ""),
                             "arguments": "",
                         }
                     elif btype == "thinking":
-                        sig = getattr(event.content_block, "signature", None)
-                        initial_thinking = getattr(event.content_block, "thinking", "") or ""
+                        sig = getattr(content_block, "signature", None)
+                        initial_thinking = getattr(content_block, "thinking", "") or ""
                         yield StreamDelta(
                             content="",
                             reasoning_content=initial_thinking,
@@ -318,20 +323,22 @@ class AnthropicChatAdapter:
                         )
 
                 elif event.type == "content_block_delta":
-                    dtype = getattr(event.delta, "type", None)
-                    if dtype == "text_delta" and hasattr(event.delta, "text"):
-                        yield StreamDelta(content=event.delta.text)
-                    elif dtype == "thinking_delta" and hasattr(event.delta, "thinking"):
-                        yield StreamDelta(content="", reasoning_content=event.delta.thinking)
-                    elif dtype == "input_json_delta" and hasattr(event.delta, "partial_json"):
+                    delta = getattr(event, "delta", None)
+                    dtype = getattr(delta, "type", None)
+                    if dtype == "text_delta" and hasattr(delta, "text"):
+                        yield StreamDelta(content=delta.text)
+                    elif dtype == "thinking_delta" and hasattr(delta, "thinking"):
+                        yield StreamDelta(content="", reasoning_content=delta.thinking)
+                    elif dtype == "input_json_delta" and hasattr(delta, "partial_json"):
                         idx = getattr(event, "index", -1)
                         if idx in tool_calls_acc:
-                            tool_calls_acc[idx]["arguments"] += event.delta.partial_json
+                            tool_calls_acc[idx]["arguments"] += delta.partial_json
 
                 elif event.type == "content_block_stop":
-                    btype = getattr(event.content_block, "type", None)
+                    content_block = getattr(event, "content_block", None)
+                    btype = getattr(content_block, "type", None)
                     if btype == "thinking":
-                        sig = getattr(event.content_block, "signature", None)
+                        sig = getattr(content_block, "signature", None)
                         if sig:
                             yield StreamDelta(content="", reasoning_signature=sig)
 
