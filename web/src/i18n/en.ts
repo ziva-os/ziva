@@ -35,7 +35,7 @@ export const dict = {
   "status.gitBranch": "Switch Git branch",
 
   // ---- composer ----
-  "composer.placeholder": "Boundless. You say, I do.",
+  "composer.placeholder": "Boundless in reach. Prompted, perfected.",
   "composer.attachTitle": "Attach file",
   "composer.queued": "Queued",
   "composer.cancelQueue": "Cancel queue",

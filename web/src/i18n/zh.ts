@@ -34,7 +34,7 @@ export const dict: Partial<Dict> = {
   "status.gitBranch": "切换 Git 分支",
 
   // ---- composer ----
-  "composer.placeholder": "无界无限，你说我做",
+  "composer.placeholder": "无远弗届，所言即所达",
   "composer.attachTitle": "添加文件",
   "composer.queued": "排队中",
   "composer.cancelQueue": "取消排队",
