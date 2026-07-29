@@ -83,6 +83,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
   browserNavigate: (id: string, url: string) => ipcRenderer.invoke("browser-navigate", id, url),
   browserNav: (id: string, kind: "back" | "forward" | "reload") => ipcRenderer.invoke("browser-nav", id, kind),
   browserCloseTab: (id: string) => ipcRenderer.invoke("browser-close-tab", id),
+  // Reload the desktop (Electron + python backend) so newly added plugins
+  // or skill changes take effect. Triggered by the renderer's `/restart`
+  // slash command — same UX as the IM bridge's `/restart`.
+  restartZiva: () => ipcRenderer.invoke("restart-ziva"),
   onBrowserNewTab: (cb: (payload: string | { url: string; force?: boolean }) => void) => {
     _browserNewTabHandler = cb;
     while (_pendingNewTab.length) cb(_pendingNewTab.shift());

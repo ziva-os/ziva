@@ -82,6 +82,7 @@ export const dict = {
   "slash.compact.desc": "Compact context window",
   "slash.prune.desc": "Prune tool outputs",
   "slash.automation.desc": "Create a scheduled automation",
+  "slash.restart.desc": "Restart Ziva (reloads plugins and skills)",
 
   // ---- rewind ----
   "msg.rewindUserEdit": "Rewind here (delete this and later messages; original text returns to the input)",

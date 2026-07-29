@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import re
@@ -23,7 +24,7 @@ import shutil
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from ziva.runtime import Runtime
 from ziva.shared_types import CancellationToken, ChatMessage
@@ -67,6 +68,10 @@ class IMBridge:
         # we match the user's replies to the questions in the order they were
         # asked. One chat maps to one session, so the queue is per-conversation.
         self._pending_chat_index: Dict[str, list[str]] = {}
+        # /restart coordination: True while a graceful execvp is in progress.
+        # Concurrent /restart commands are rejected with a "Restart already in
+        # progress" reply so the pending-payload file is written exactly once.
+        self._restart_in_flight: bool = False
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -88,6 +93,13 @@ class IMBridge:
                     # Disable the channel so a bad config doesn't retry forever.
                     cfg.enabled = False
                     self.config.save()
+
+        # After all adapters have had a chance to connect, check whether
+        # the previous process asked us to send restart notifications. The
+        # old process writes ~/.ziva/.restart_pending.json right before
+        # execvp; we read it here and ack each target that is still wired up.
+        # See docs/im-restart.md §10 for the schema and rationale.
+        await self._consume_restart_pending()
 
     async def stop(self) -> None:
         for name, adapter in list(self._adapters.items()):
@@ -426,7 +438,263 @@ class IMBridge:
                 logger.exception("im_bridge: /compact failed")
                 return f"[ziva error] 压缩失败: {exc}"
 
+        # --- /restart: replace the current process with a fresh ziva instance.
+        # The handler writes the notify target into the shared restart payload
+        # and then triggers execvp. The "✅ Restarted in Xs" follow-up is sent
+        # by the new process once it boots — see docs/im-restart.md §10.
+        if cmd == "/restart":
+            return await self._handle_restart(msg)
+
         return None  # not a recognized command — let the LLM handle it.
+
+    # -- /restart -------------------------------------------------------------
+
+    async def _handle_restart(self, msg: IncomingMessage) -> str:
+        """Slash-command handler for ``/restart``.
+
+        Aligns with the Ziva desktop's restart path: when the Electron
+        desktop is running, sends "restart" to its unix socket so the
+        whole app does ``app.relaunch() + app.quit()`` — same as the
+        desktop chat's ``/restart`` and ``ziva desktop restart``. Falls
+        back to ``runtime._graceful_execvp()`` (the old behaviour) only
+        when the desktop socket is missing, e.g. a bare ``ziva desktop
+        serve`` started outside Electron.
+
+        1. Rejects concurrent /restart commands (one restart per restart).
+        2. Persists the "who to notify on completion" target into the
+           restart payload file. The new process reads it on boot and
+           sends a "✅ Restarted in Xs" message back to the same chat —
+           see ``docs/im-restart.md`` §10.
+        3. Either signals Electron to relaunch (preferred, stable) or
+           execvp's the current python process (fallback for non-Electron
+           usage).
+
+        The reply text is returned synchronously so the IM adapter can
+        send it before the process exits; in practice it usually arrives
+        just before the new process boots.
+        """
+        if self._restart_in_flight:
+            return "Restart already in progress."
+
+        # Lock first so a second concurrent /restart from a different sender
+        # is rejected even if it races us while we're awaiting the relaunch.
+        self._restart_in_flight = True
+
+        # Single notify target: the chat that asked. (If multiple channels
+        # are configured and the user wants notifications on more than one,
+        # they can send /restart again after the new process boots and the
+        # manual session UI will surface it.)
+        notify_targets: List[Dict[str, str]] = [
+            {"channel": msg.channel, "chat_id": msg.chat_id}
+        ]
+        requested_at = int(time.time())
+
+        # Build the payload the new process will read. Versioned so future
+        # schema changes can ignore unknown payloads gracefully.
+        payload = {
+            "version": 1,
+            "requested_at_unix": requested_at,
+            "notify": notify_targets,
+        }
+
+        try:
+            await self._do_restart(payload)
+        except Exception as exc:
+            # Roll back the in-flight flag so a follow-up /restart can retry.
+            self._restart_in_flight = False
+            logger.exception("im_bridge: /restart failed")
+            return f"[ziva error] restart failed: {exc}"
+
+        # If _do_restart returned instead of relaunching, the new process is
+        # alive somewhere else and we're still here — give a useful reply.
+        return "Restart scheduled; new process will send confirmation."
+
+    async def _do_restart(self, payload: Dict[str, Any]) -> None:
+        """Trigger a restart of the Ziva backend.
+
+        Prefers the Electron desktop's restart socket (whole-app
+        ``app.relaunch() + app.quit()``) when present — same path the
+        desktop chat ``/restart`` and ``ziva desktop restart`` CLI use,
+        so all four entry points converge on one mechanism. Falls back
+        to ``runtime._graceful_execvp()`` when running bare (no
+        Electron), so the daemon survives the restart in-place.
+
+        Always writes the pending-payload file first so the new process
+        can ack the chat with "Restarted in Xs" via
+        ``_consume_restart_pending``.
+        """
+        sock_path = self._RESTART_SOCKET_PATH
+
+        # 1. Persist the notify payload regardless of which restart path we
+        #    take — the new process reads it on boot.
+        await self._persist_restart_payload(payload)
+
+        # 2. Pick the restart path. Electron socket preferred; bare
+        #    `ziva desktop serve` falls back to in-process execvp.
+        if sock_path.exists():
+            logger.warning("im_bridge: /restart → Electron socket (whole-app relaunch)")
+            await self._send_restart_to_socket(sock_path)
+        else:
+            logger.warning("im_bridge: /restart → runtime._graceful_execvp (no Electron)")
+            await self.runtime._graceful_execvp(
+                reason="im_restart",
+                pending_payload=payload,
+            )
+
+    async def _persist_restart_payload(self, payload: Dict[str, Any]) -> None:
+        """Write ``payload`` to ``~/.ziva/.restart_pending.json``.
+
+        New process reads this on boot (``_consume_restart_pending``) and
+        sends "✅ Restarted in Xs" back to the requesting chat. Same file
+        format regardless of whether the restart came from IM, the
+        desktop chat, or the CLI.
+        """
+        path = self._RESTART_PENDING_PATH
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload), encoding="utf-8")
+        except OSError as exc:
+            # Persist failure is not fatal — the restart itself can still
+            # proceed; the user just won't get the "✅ Restarted in Xs" ack.
+            logger.warning("im_bridge: failed to persist restart payload (%s)", exc)
+
+    async def _send_restart_to_socket(self, sock_path: Path) -> None:
+        """Send ``restart\\n`` to the Electron main process's restart
+        listener. The main process then does ``app.relaunch() +
+        app.quit()`` — see ``electron/main.ts::startRestartListener``.
+        Blocking I/O so we hop to a thread.
+        """
+        import socket as _socket
+
+        def _send() -> None:
+            with _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM) as s:
+                s.settimeout(3.0)
+                s.connect(str(sock_path))
+                s.sendall(b"restart\n")
+
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _send)
+
+    # Restart payload layout — see docs/im-restart.md §10.3 for the rationale.
+    # Kept as a module-level constant so tests can reference the same path.
+    _RESTART_PENDING_PATH = Path.home() / ".ziva" / ".restart_pending.json"
+    _RESTART_PENDING_STALE_SECONDS = 300  # 5 min — anything older is stale
+    # Unix socket the Electron main process listens on for CLI / IM restart
+    # signals. Tests override this to tmp_path so they don't accidentally
+    # hit a real Electron instance.
+    _RESTART_SOCKET_PATH = Path.home() / ".ziva" / "restart.sock"
+
+    async def _consume_restart_pending(self) -> None:
+        """Send "✅ Restarted in Xs" to chat(s) that requested a restart.
+
+        Reads ``~/.ziva/.restart_pending.json`` (written by the previous
+        process right before ``execvp``). Stale or malformed payloads are
+        silently discarded so a corrupted file never blocks startup.
+        """
+        path = self._RESTART_PENDING_PATH
+        if not path.exists():
+            return
+        logger.info("im_bridge: found restart pending payload at %s", path)
+
+        # Parse + mtime check before doing any work. If the payload is
+        # bad we delete it so it doesn't poison the next startup.
+        try:
+            stat = path.stat()
+        except OSError:
+            return
+
+        age = time.time() - stat.st_mtime
+        if age > self._RESTART_PENDING_STALE_SECONDS:
+            logger.warning(
+                "im_bridge: ignoring stale restart_pending file (%.0fs old)", age
+            )
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return
+
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("im_bridge: malformed restart_pending file (%s); deleting", exc)
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return
+
+        if not isinstance(payload, dict) or payload.get("version") != 1:
+            logger.warning(
+                "im_bridge: unknown restart_pending version %r; deleting",
+                payload.get("version") if isinstance(payload, dict) else None,
+            )
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return
+
+        requested_at = int(payload.get("requested_at_unix") or 0)
+        duration = max(0, int(time.time()) - requested_at)
+        if duration >= 120:
+            text = f"✅ Restarted in {duration // 60}m{duration % 60}s"
+        else:
+            text = f"✅ Restarted in {duration}s"
+
+        sent_any = False
+        attempted = False
+        for target in payload.get("notify", []) or []:
+            channel = target.get("channel", "")
+            chat_id = target.get("chat_id", "")
+            if not channel or not chat_id:
+                continue
+            adapter = self._adapters.get(channel)
+            if not adapter:
+                # Channel is gone from config — no point retrying next boot.
+                logger.warning(
+                    "im_bridge: restart notify skipped — channel %r not active", channel
+                )
+                continue
+            attempted = True
+            # Retry briefly so a not-yet-connected adapter (most IM adapters
+            # return from start() before the upstream handshake completes)
+            # has a chance to come up before we give up.
+            last_exc: Exception | None = None
+            for attempt in range(4):
+                try:
+                    await adapter.send_message(OutgoingMessage(chat_id=chat_id, text=text))
+                    sent_any = True
+                    logger.info(
+                        "im_bridge: restart ack sent to %s/%s after %d attempt(s)",
+                        channel, chat_id, attempt + 1,
+                    )
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt < 3:
+                        await asyncio.sleep(0.5)
+            if not sent_any and last_exc is not None:
+                logger.warning(
+                    "im_bridge: failed to send restart ack to %s/%s after 4 attempts: %s",
+                    channel, chat_id, last_exc,
+                )
+
+        # Decision matrix:
+        #   attempted=False (no matching channels)  → delete (config-removed, won't retry)
+        #   attempted=True,  sent_any=True          → delete (delivered)
+        #   attempted=True,  sent_any=False         → KEEP (transient — retry next boot)
+        if not attempted or sent_any:
+            try:
+                path.unlink()
+            except OSError:
+                logger.warning("im_bridge: failed to delete restart_pending after handling")
+        else:
+            logger.warning(
+                "im_bridge: restart_pending kept for retry on next startup "
+                "(adapter %r exists but all sends failed)",
+                [t.get("channel") for t in payload.get("notify", []) or []],
+            )
 
     def _is_allowed_sender(self, msg: IncomingMessage) -> bool:
         allowed = self.config.allowed_senders

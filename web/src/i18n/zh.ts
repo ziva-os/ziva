@@ -81,6 +81,7 @@ export const dict: Partial<Dict> = {
   "slash.compact.desc": "压缩上下文窗口",
   "slash.prune.desc": "清理工具输出",
   "slash.automation.desc": "创建定时自动化",
+  "slash.restart.desc": "重启 Ziva（重新加载插件和 skill）",
 
   // ---- rewind ----
   "msg.rewindUserEdit": "回退到这里（删除此条及之后，原文回到输入框）",

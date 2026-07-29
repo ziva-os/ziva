@@ -20,6 +20,7 @@ real app credentials is required — the SDK API is followed per lark-oapi docs.
 from __future__ import annotations
 
 import asyncio
+import time
 import json
 import logging
 import tempfile
@@ -30,6 +31,19 @@ from typing import Any
 
 from ziva.transports.im_bridge.adapters.base import BaseAdapter, decode_image_ref, _bytesio, _safe_filename, classify_media
 from ziva.transports.im_bridge.models import IncomingMessage, OutgoingMessage
+
+# lark_oapi takes 30+ seconds to import on a frozen (PyInstaller) build —
+# too slow to amortize inside the IM ``/restart`` ack path, which fires
+# ~1 s after a fresh backend boots. Import eagerly here so the cost lands
+# during process startup (cli.py runs the adapter warmup on a daemon
+# thread while Electron is busy loading the UI). The actual Client is
+# still constructed lazily in ``_build_send_client`` because its
+# builder touches asyncio-loop state.
+try:
+    import lark_oapi  # type: ignore  # noqa: F401
+    import lark_oapi.api.im.v1  # type: ignore  # noqa: F401
+except ImportError:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +72,8 @@ class FeishuAdapter(BaseAdapter):
         self._ws_thread: threading.Thread | None = None
         self._health_task: asyncio.Task | None = None
         self._stop_flag = False
-        self._send_client: Any = None  # built in the lark-oapi thread
-        self._send_module: Any = None  # lark_oapi.api.im.v1 module, built in the ws thread
+        self._send_client: Any = None  # built in start() via to_thread
+        self._send_module: Any = None  # lark_oapi.api.im.v1 module, built in start()
         self._connect_error: str | None = None
         # chat_id -> (message_id, reaction_id) of the "OnIt" (处理中)
         # reaction we added to the user's inbound message. Removed when the
@@ -84,53 +98,82 @@ class FeishuAdapter(BaseAdapter):
         # the import and Client construction inside a dedicated thread lets it
         # capture the thread's own loop, avoiding "This event loop is already
         # running" errors.
-        def _build_and_run_ws() -> None:
-            import lark_oapi as lark  # type: ignore
-            import lark_oapi.api.im.v1 as im  # type: ignore
+        def _build_send_client() -> Any:
+            """Construct the outbound HTTP Client.
 
-            # Outbound client (HTTP per-call, built in the same thread so its
-            # module imports happen in this thread's import context).
-            self._send_client = (
+            ``lark_oapi`` is eagerly imported at module load (see the
+            top-level try/except), so this only does the cheap Client
+            construction. Runs in the asyncio thread pool via
+            ``asyncio.to_thread`` because ``Client.builder()`` still
+            touches asyncio-loop-affine state. Awaiting it here (rather
+            than spawning a fire-and-forget thread) lets ``start()``
+            guarantee ``_send_client`` is non-None before it returns —
+            critical for the IM ``/restart`` ack path, which fires ~1 s
+            into a fresh boot.
+            """
+            import lark_oapi as lark  # type: ignore  # cached import
+            import lark_oapi.api.im.v1 as im  # type: ignore  # cached
+            client = (
                 lark.Client.builder()
                 .app_id(self._app_id)
                 .app_secret(self._app_secret)
                 .build()
             )
-            self._send_module = im
+            return (client, im)
 
-            def _on_receive(event: Any) -> None:
-                try:
-                    self._dispatch_event(event)
-                except Exception:
-                    logger.exception("feishu: failed to dispatch inbound event")
+        t0 = time.monotonic()
+        try:
+            self._send_client, self._send_module = await asyncio.wait_for(
+                asyncio.to_thread(_build_send_client),
+                timeout=30.0,
+            )
+            logger.info("feishu: _send_client built in %.2fs", time.monotonic() - t0)
+        except (asyncio.TimeoutError, Exception) as exc:
+            logger.warning(
+                "feishu: _send_client build failed/timeout after %.2fs: %s",
+                time.monotonic() - t0, exc,
+            )
+            self._set_state("error", f"lark_oapi Client build failed: {exc}")
+            return
 
-            handler = (
-                lark.EventDispatcherHandler.builder("", "")
-                .register_p2_im_message_receive_v1(_on_receive)
-                .build()
-            )
-            ws_client = lark.ws.Client(
-                self._app_id,
-                self._app_secret,
-                event_handler=handler,
-                log_level=lark.LogLevel.INFO,
-            )
+        # Now spin up the WebSocket runner in a long-lived daemon thread.
+        # This blocks until the ws disconnects, so it MUST run off the
+        # main event loop.
+        def _run_ws() -> None:
             try:
+                import lark_oapi as lark  # type: ignore  # cached import
+                def _on_receive(event: Any) -> None:
+                    try:
+                        self._dispatch_event(event)
+                    except Exception:
+                        logger.exception("feishu: failed to dispatch inbound event")
+
+                handler = (
+                    lark.EventDispatcherHandler.builder("", "")
+                    .register_p2_im_message_receive_v1(_on_receive)
+                    .build()
+                )
+                ws_client = lark.ws.Client(
+                    self._app_id,
+                    self._app_secret,
+                    event_handler=handler,
+                    log_level=lark.LogLevel.INFO,
+                )
                 ws_client.start()
             except Exception as exc:  # noqa: BLE001
                 self._connect_error = str(exc)
                 logger.exception("feishu: websocket runner failed")
 
-        self._ws_thread = threading.Thread(target=_build_and_run_ws, daemon=True)
+        self._ws_thread = threading.Thread(target=_run_ws, daemon=True)
         self._ws_thread.start()
 
-        # Give the SDK a moment to fail on bad credentials / network.
+        # Give the ws a moment to fail on bad credentials / network.
         await asyncio.sleep(0.5)
         if self._connect_error:
             self._set_state("error", self._connect_error)
             self._ws_thread = None
             return
-        if not self._ws_thread.is_alive():
+        if self._ws_thread is not None and not self._ws_thread.is_alive():
             self._set_state("error", "飞书 WebSocket 已停止")
             self._ws_thread = None
             return
@@ -174,7 +217,19 @@ class FeishuAdapter(BaseAdapter):
         self._set_state("disconnected")
 
     async def send_message(self, msg: OutgoingMessage) -> None:
+        # _send_client is built at the top of start() via
+        # ``await asyncio.wait_for(asyncio.to_thread(_build_send_client), ...)``
+        # and cached on the instance. start() only returns once that
+        # succeeds (or fails fast with state="error"), so by the time we
+        # get here the client should always be present. The defensive
+        # None check is belt-and-suspenders for the rare case where
+        # start() timed out and we still proceeded.
         if not self._send_client:
+            logger.warning(
+                "feishu: send_message called with no _send_client "
+                "(start() must have timed out); dropping text=%r chat=%s",
+                (msg.text or "")[:60], msg.chat_id,
+            )
             return
         im = self._send_module
         assert im is not None
@@ -197,9 +252,28 @@ class FeishuAdapter(BaseAdapter):
             )
             try:
                 # The SDK call is synchronous HTTP; offload so we don't block the loop.
-                await asyncio.to_thread(self._send_client.im.v1.message.create, req)
+                resp = await asyncio.to_thread(self._send_client.im.v1.message.create, req)
+                code = getattr(resp, "code", None)
+                msg_id = getattr(getattr(resp, "data", None), "message_id", "?")
+                if code not in (0, None):
+                    # Feishu returns business errors via resp.code (not exceptions)
+                    # for things like rate-limit / permission denied / msg audit
+                    # rejected. Without this check, send_message would silently
+                    # report success while the user never received the bubble —
+                    # which is exactly what bit us on the restart ack path.
+                    msg = getattr(resp, "msg", "") or ""
+                    logger.warning(
+                        "feishu: text send rejected code=%s msg=%s msg_id=%s",
+                        code, msg, msg_id,
+                    )
+                    raise RuntimeError(f"feishu: text send rejected code={code} msg={msg}")
+                logger.warning(
+                    "feishu: text sent code=%s msg_id=%s chat=%s text=%r",
+                    code, msg_id, msg.chat_id, msg.text[:60] if msg.text else "",
+                )
             except Exception:
                 logger.exception("feishu: text send failed")
+                raise
 
         # 2. Send each image as a separate message. We upload first to get
         #    an `image_key`, then send an `image` msg_type referencing it.
@@ -539,7 +613,7 @@ class FeishuAdapter(BaseAdapter):
         sender_id = self._extract_sender_id(sender)
         sender_name = "feishu"
         if sender_id:
-            logger.info("feishu: received %s from %s in chat %s", msg_type, sender_id, chat_id)
+            logger.warning("feishu: received %s from %s in chat %s", msg_type, sender_id, chat_id)
         else:
             logger.warning("feishu: could not determine sender_id for message in chat %s", chat_id)
         incoming = IncomingMessage(

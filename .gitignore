@@ -66,3 +66,31 @@ weibo_snapshot.txt
 
 # Generated test output
 /gen/
+
+# Ad-hoc planning / progress notes (kept locally, not source)
+/progress.md
+/findings.md
+/task_plan.md
+/weibo_elite_trending_report.md
+/docs/refactoring-plan.md
+
+# Bundled archives / media dumps (not source)
+/docs.tgz
+/docs_20260724_012121.tgz
+/ziva-os-launch.tgz
+/ziva-os-hero.mp4
+/ziva-os-hero-v2.mp4
+/ziva-os-keynote.pptx
+/ziva-os-launch/
+
+# Design notes for one-off features (im-restart spec, etc.)
+/docs/im-restart.md
+
+# Ad-hoc report dumps from skills (weibo / news / etc.)
+/reports/
+
+# Ad-hoc test scripts that never landed in test_im_restart.py
+# (test_skill_categorization / test_skill_change_detection)
+/tests/unit/test_skill_categorization.py
+/tests/unit/test_skill_change_detection.py
+/tests/unit/test_im_restart.py

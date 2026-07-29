@@ -47,6 +47,30 @@ def build_parser() -> argparse.ArgumentParser:
     desktop_serve.add_argument("--host", default="127.0.0.1")
     desktop_serve.add_argument("--port", type=int, default=4097)
 
+    desktop_restart = desktop_sub.add_parser(
+        "restart",
+        help="Tell the running Ziva desktop to relaunch (menu: Ziva → Restart Ziva)",
+    )
+    desktop_restart.add_argument(
+        "--socket",
+        default=None,
+        help="Override restart socket path (default: ~/.ziva/restart.sock)",
+    )
+    desktop_restart.add_argument("--host", default="127.0.0.1", help="Backend host to wait on")
+    desktop_restart.add_argument("--port", type=int, default=4097, help="Backend port to wait on")
+    desktop_restart.add_argument(
+        "--wait-down-timeout",
+        type=float,
+        default=10.0,
+        help="Seconds to wait for the old backend to die (default: 10)",
+    )
+    desktop_restart.add_argument(
+        "--wait-up-timeout",
+        type=float,
+        default=30.0,
+        help="Seconds to wait for the new backend to come up (default: 30)",
+    )
+
     repl = sub.add_parser("repl", help="Interactive multi-turn session")
     repl.add_argument("--workspace", default=".")
     repl.add_argument("--model", help="Override model name")
@@ -455,6 +479,110 @@ def _suppress_anyio_cancel_scope():
     loop.set_exception_handler(_handler)
 
 
+def _port_open(host: str, port: int, timeout: float = 0.2) -> bool:
+    """True if a TCP connect to host:port succeeds within `timeout`."""
+    import socket as _socket
+    with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
+        s.settimeout(timeout)
+        try:
+            s.connect((host, port))
+            return True
+        except OSError:
+            return False
+
+
+def _backend_healthy(host: str, port: int, timeout: float = 1.0) -> bool:
+    """True if the desktop backend's /status endpoint returns 200."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://{host}:{port}/status", timeout=timeout) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def cmd_desktop_restart(args) -> int:
+    """Synchronous handler for `ziva desktop restart`.
+
+    Talks to the running Ziva desktop over its unix socket. UX mirrors the
+    IM-bridge ``/restart`` slash command (see
+    ``src/ziva/transports/im_bridge/bridge.py::_handle_restart``):
+
+    * On dispatch: print "Restart scheduled; new process will send
+      confirmation." — same line the IM bridge returns.
+    * After the new backend is reachable on :4097: print "✅ Restarted in Xs"
+      — same line the IM bridge's new process sends back to the chat.
+
+    Returns 0 on success, 2 when no desktop is listening, 3 when the new
+    backend fails to come back within ``--wait-up-timeout``.
+    """
+    import socket as _socket
+    import time
+
+    sock_path = (
+        Path(args.socket).expanduser()
+        if args.socket
+        else Path.home() / ".ziva" / "restart.sock"
+    )
+    host = args.host
+    port = args.port
+    console = Console()
+
+    # No socket → no Ziva desktop running.
+    if not sock_path.exists():
+        console.print(
+            f"[red]No Ziva desktop is listening on {sock_path}.[/red]\n"
+            f"  Open the Ziva desktop app first (the socket is created when "
+            f"Electron starts), or use the menu: [bold]Ziva → Restart Ziva[/bold]."
+        )
+        return 2
+
+    requested_at = time.time()
+    try:
+        with _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM) as s:
+            s.settimeout(5.0)
+            s.connect(str(sock_path))
+            s.sendall(b"restart\n")
+    except OSError as exc:
+        console.print(f"[red]Failed to send restart: {exc}[/red]")
+        return 2
+
+    # Mirrors the IM-bridge handler's return text. See
+    # bridge.py:504 — _handle_restart returns the same string when it can't
+    # execvp synchronously.
+    console.print("Restart scheduled; new process will send confirmation.")
+
+    # Wait for the old backend to release :4097. A short bounded wait is
+    # enough: the Electron before-quit handler (main.ts) blocks on
+    # waitForBackendGone so :4097 frees promptly.
+    t0 = time.time()
+    while time.time() - t0 < args.wait_down_timeout:
+        if not _port_open(host, port):
+            break
+        time.sleep(0.1)
+    else:
+        console.print(
+            f"[yellow]backend still up after {args.wait_down_timeout}s; "
+            f"continuing anyway[/yellow]"
+        )
+
+    # Wait for the new backend to come back healthy. When it does, print the
+    # same "✅ Restarted in Xs" line the IM-bridge new process sends to chat.
+    t0 = time.time()
+    while time.time() - t0 < args.wait_up_timeout:
+        if _backend_healthy(host, port):
+            duration = max(0, int(time.time() - requested_at))
+            console.print(f"[green]✅ Restarted in {duration}s[/green]")
+            return 0
+        time.sleep(0.2)
+
+    console.print(
+        f"[red]new backend did not come back up in {args.wait_up_timeout}s[/red]"
+    )
+    console.print("  Check [bold]~/.ziva/backend.log[/bold] for the new instance's stderr.")
+    return 3
+
+
 async def run_async(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -485,6 +613,10 @@ async def run_async(argv: list[str] | None = None) -> int:
         server = ACPServer(runtime)
         return await serve_stdio(server)
 
+    if args.command == "desktop" and args.desktop_command == "restart":
+        # Pure-sync handler; run_async just awaits the (trivially-fast) return.
+        return cmd_desktop_restart(args)
+
     if args.command == "desktop" and args.desktop_command == "serve":
         _suppress_anyio_cancel_scope()
         runtime = _runtime_for_workspace(args.workspace)
@@ -498,6 +630,34 @@ async def run_async(argv: list[str] | None = None) -> int:
         # likely already loaded — instead of the first mic click paying
         # the full warmup cost. Failures are logged but never crash.
         start_stt_warmup(runtime)
+        # Pre-import the IM-bridge adapters so the 30+ s lark_oapi cold
+        # import (PyInstaller frozen-import tax) lands during process
+        # startup, not inside ``feishu.start()``. Without this the IM
+        # ``/restart`` ack path races the import and silently drops the
+        # message. We run this concurrently with STT warmup so the two
+        # ~10–30 s tasks overlap (each does its own blocking work in a
+        # worker thread — STT loads whisper weights, warmup imports
+        # lark_oapi + telegram's Bot). After both finish, bridge.start()
+        # can call ``feishu.start()`` knowing ``_send_client`` will build
+        # in < 1 ms instead of timing out at 30 s.
+        async def _warmup_im_adapters_async() -> None:
+            try:
+                await asyncio.to_thread(_do_warmup)
+            except Exception:
+                logger.exception("im-bridge adapter warmup failed (non-fatal)")
+
+        def _do_warmup() -> None:
+            from ziva.transports.im_bridge.adapters import feishu as _feishu
+            from ziva.transports.im_bridge.adapters import telegram as _telegram
+            # Force the import; lazy internals (lark_oapi, telegram's
+            # Bot) trigger now. _feishu.FeishuAdapter / _telegram.* evaluate
+            # attribute access, which is enough to materialize module-level
+            # imports (the top-level ``try: import lark_oapi`` block in
+            # feishu.py is what actually costs ~30 s on a frozen binary).
+            _feishu.FeishuAdapter  # noqa: B018
+            _telegram.TelegramAdapter  # noqa: B018
+
+        await _warmup_im_adapters_async()
         server = DesktopAPIServer(runtime)
         import signal
         stop_event = asyncio.Event()

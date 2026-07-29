@@ -1,7 +1,9 @@
-import { app, BrowserWindow, ipcMain, webContents, session, shell, WebContentsView, clipboard } from "electron";
+import { app, BrowserWindow, ipcMain, webContents, session, shell, WebContentsView, clipboard, Menu, MenuItemConstructorOptions } from "electron";
 import * as path from "path";
 import { spawn, execFileSync, ChildProcess } from "child_process";
 import * as http from "http";
+import * as net from "net";
+import * as fs from "fs";
 import { CdpBridge } from "./cdp-bridge";
 
 let mainWindow: BrowserWindow | null = null;
@@ -9,6 +11,116 @@ let pythonProcess: ChildProcess | null = null;
 let cdpBridge: CdpBridge | null = null;
 const PORT = 4097;
 const CDP_PORT = Number(process.env.ZIVA_CDP_PORT || 9222);
+
+// ---- Restart plumbing ----
+// Three entry points all converge on restartApp():
+//   1. macOS top-bar menu item "Restart Ziva" (added below in buildAppMenu)
+//   2. The `restart-ziva` IPC handler — called by the renderer's `/restart`
+//      slash command via the electronAPI bridge
+//   3. The unix socket listener at ~/.ziva/restart.sock — used by the
+//      `ziva desktop restart` CLI so the agent itself can trigger a reload
+//      after dropping a new plugin into ~/.ziva/plugins/
+
+function restartApp() {
+  app.relaunch();
+  app.quit();
+}
+
+function buildAppMenu() {
+  const isMac = process.platform === "darwin";
+  const template: MenuItemConstructorOptions[] = [
+    ...(isMac
+      ? [
+          {
+            label: app.name,
+            submenu: [
+              { role: "about" as const },
+              { type: "separator" as const },
+              { role: "services" as const },
+              { type: "separator" as const },
+              { role: "hide" as const },
+              { role: "hideOthers" as const },
+              { role: "unhide" as const },
+              { type: "separator" as const },
+              {
+                label: "Restart Ziva",
+                accelerator: "CmdOrCtrl+R",
+                click: () => restartApp(),
+              },
+              { type: "separator" as const },
+              { role: "quit" as const },
+            ],
+          },
+        ]
+      : []),
+    {
+      label: "File",
+      submenu: [isMac ? { role: "close" } : { role: "quit" }],
+    },
+    { role: "editMenu" },
+    { role: "viewMenu" },
+    { role: "windowMenu" },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+let restartServer: net.Server | null = null;
+let restartSocketPath: string | null = null;
+
+function startRestartListener() {
+  const zivaDir = path.join(app.getPath("home"), ".ziva");
+  try {
+    fs.mkdirSync(zivaDir, { recursive: true });
+  } catch { /* best effort */ }
+  restartSocketPath = path.join(zivaDir, "restart.sock");
+  try {
+    fs.unlinkSync(restartSocketPath);
+  } catch { /* absent is fine */ }
+
+  restartServer = net.createServer((conn) => {
+    let buf = "";
+    conn.on("data", (chunk) => {
+      buf += chunk.toString();
+      if (!buf.includes("\n")) return;
+      const cmd = buf.trim().toLowerCase();
+      // Respond synchronously so the CLI gets an ack before the relaunch
+      // tears down this process; otherwise the CLI's read may race the
+      // socket close.
+      try {
+        if (cmd === "restart" || cmd.startsWith("restart ")) {
+          conn.end("ack: restarting\n");
+        } else {
+          conn.end("error: unknown command\n");
+          return;
+        }
+      } catch { /* ignore */ }
+      // Defer the relaunch so the ack is flushed first.
+      setImmediate(() => restartApp());
+    });
+    conn.on("error", () => { /* client went away; ignore */ });
+  });
+
+  restartServer.on("error", (err) => {
+    console.error("[restart-socket] listen error:", err);
+  });
+  restartServer.listen(restartSocketPath, () => {
+    try {
+      fs.chmodSync(restartSocketPath!, 0o600);
+    } catch { /* ignore on platforms without chmod */ }
+    console.log(`[restart-socket] listening on ${restartSocketPath}`);
+  });
+}
+
+function stopRestartListener() {
+  if (restartServer) {
+    try { restartServer.close(); } catch { /* ignore */ }
+    restartServer = null;
+  }
+  if (restartSocketPath) {
+    try { fs.unlinkSync(restartSocketPath); } catch { /* ignore */ }
+    restartSocketPath = null;
+  }
+}
 
 // ---- Embedded Chromium browser (WebContentsView) ----
 // Each web tab is a real native Chromium view (WebContentsView), managed by the
@@ -742,6 +854,11 @@ app.whenReady().then(async () => {
       }
     }
   });
+
+  // Install the macOS top-bar menu and the CLI restart socket. Both are
+  // app-level, so they belong here (not tied to a window).
+  if (process.platform === "darwin") buildAppMenu();
+  startRestartListener();
 });
 
 app.on("window-all-closed", () => {
@@ -759,6 +876,7 @@ app.on("before-quit", (event) => {
   event.preventDefault();
   isQuitting = true;
   (async () => {
+    stopRestartListener();
     for (const id of Array.from(browserViews.keys())) destroyBrowserTab(id);
     killBackendTree();
     await waitForBackendGone(2000);
@@ -770,11 +888,10 @@ app.on("before-quit", (event) => {
   })();
 });
 
-// Full restart: relaunch the app and quit. before-quit (above) kills the whole
-// backend tree and waits for :4097 to free, so the relaunched instance spawns
-// a fresh backend instead of reusing the dying one. Renderer invokes this
-// (e.g. a "Restart" menu item) via ipcRenderer.invoke("restart-app").
-ipcMain.handle("restart-app", () => {
-  app.relaunch();
-  app.quit();
+// Renderer-facing restart — invoked from the chat's `/restart` slash
+// command via `electronAPI.restartZiva`. Converges on restartApp()
+// (the macOS menu item and the CLI socket listener both call it too),
+// so the kill-backend-tree + relaunch dance lives in exactly one place.
+ipcMain.handle("restart-ziva", () => {
+  restartApp();
 });

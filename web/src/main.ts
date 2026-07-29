@@ -19,7 +19,7 @@ import { openLinkInBrowser, initMessageLinkInterceptor } from "./links";
 import { initBrowserShell, openInBrowserTab } from "./browser-shell";
 import { closeAllFullpageOverlays } from "./modals";
 import { copyText } from "./electron-bridge";
-import { openSkillsBrowser, closeSkillViewer } from "./modals/skills";
+import { openSkillsBrowser, closeSkillViewer, invalidateSkillsCache, refreshSkillsModalInPlace } from "./modals/skills";
 import { openSettingsModal, setSettingsDeps } from "./modals/settings";
 import { openAutomationsModal, closeAutomationsModal, loadAutomationsIntoModal, setAutomationsDeps, refreshAutomationDetailIfOpen } from "./modals/automations";
 import { openIMBridgeModal } from "./modals/im-bridge";
@@ -325,6 +325,7 @@ const SLASH_COMMANDS = [
   { name: "/compact", description: i18n.t("slash.compact.desc") },
   { name: "/prune", description: i18n.t("slash.prune.desc") },
   { name: "/automation", description: i18n.t("slash.automation.desc") },
+  { name: "/restart", description: i18n.t("slash.restart.desc") },
 ];
 
 let slashMenuIndex = -1;
@@ -3147,6 +3148,14 @@ function scrollSessionBottom(sid: string) {
 // render live; for background sessions we only sync the sidebar + per-
 // session running flag — the chat DOM is rebuilt from history on switch.
 function routeSSEEvent(ev: api.Event) {
+  const t0 = ev.type as string;
+  // Global (non-session) events — handle before any session-id routing,
+  // since they don't carry a real session_id (the backend uses a
+  // "_global" sentinel we deliberately ignore here).
+  if (t0 === "skill_index_changed") {
+    handleSkillIndexChanged();
+    return;
+  }
   const sid = (ev as any).session_id as string | undefined;
   if (!sid) return;
   // User pressed stop — drop in-flight tail events until the server
@@ -3156,7 +3165,6 @@ function routeSSEEvent(ev: api.Event) {
   // turn_cancelled arrival, which the user perceives as "slow".
   // We still let terminal events through so the cancellation
   // teardown (clear stream / pendingTools / runningSessions) fires.
-  const t0 = ev.type as string;
   if (isSidCancelling(sid) && t0 !== "turn_cancelled" && t0 !== "turn_failed" && t0 !== "turn_end") {
     return;
   }
@@ -3309,6 +3317,20 @@ async function replayRunningTurn(sid: string) {
 // One global subscription covers every session. Events for the active
 // sid render live; events for any other sid drive sidebar status only.
 sse.subscribe(routeSSEEvent);
+
+// Handle the global `skill_index_changed` event emitted by the backend
+// whenever the on-disk SKILL.md tree changes (new/removed/edited skill).
+// The frontend caches the skill list in module-level memory
+// (see modals/skills.ts); without this listener the cache is populated
+// once per page load and never refreshed, so newly installed skills
+// stay invisible until a hard reload.
+function handleSkillIndexChanged(): void {
+  invalidateSkillsCache();
+  // If the Skills modal is already mounted, re-fetch and re-render in
+  // place. If not, the next open() will hit the network anyway because
+  // invalidateSkillsCache() nulled the cache.
+  void refreshSkillsModalInPlace();
+}
 
 // When SSE reconnects after a disconnect, reconcile running sessions
 // in case we missed turn_end / turn_failed events.
@@ -4157,6 +4179,24 @@ async function sendComposerMessage(sid: string) {
       await api.createAutomation(name, prompt, { kind: "daily", time: "09:00" });
       setCompactToastState("success", i18n.t("toast.automationCreated", { name }), sid);
       setTimeout(() => hideCompactToast(), 3000);
+      return;
+    }
+    if (trimmedCmd === "/restart") {
+      // Tell the running Ziva desktop to relaunch — same UX as the IM
+      // bridge's /restart slash command and the macOS top-bar menu item.
+      // Goes through the `restart-ziva` IPC (see electron/preload.ts),
+      // which the main process resolves via restartApp() →
+      // app.relaunch() + app.quit().
+      if (!window.electronAPI?.restartZiva) {
+        appendError("Restart is only available in the desktop app.");
+        return;
+      }
+      try {
+        await window.electronAPI.restartZiva();
+        appendSystem(CHECK_ICON_SVG, "Restart scheduled; new process will send confirmation.");
+      } catch (err: any) {
+        appendError(`Restart failed: ${err?.message || err}`);
+      }
       return;
     }
 
