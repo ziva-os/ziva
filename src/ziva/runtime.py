@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -171,16 +172,46 @@ def _current_date_for_timezone(timezone: str) -> str:
 # skills in the browsing UI. The mapping is purely keyword-based and
 # intentionally coarse: a few top-level buckets are easier to scan
 # than a long flat list, and the search box handles fine-grained
-# filtering. The first matching rule wins; "Other" is the fallback.
+# filtering.
+#
+# Matching is **score-based**: every keyword hit contributes its length
+# as a score, and the rule with the longest single keyword hit wins.
+# This avoids the "first short generic substring wins" trap that the
+# previous first-match-wins design had — e.g. `stitch-loop` losing to
+# `stitch` because the 6-char `stitch` was listed before the 10-char
+# `stitch-loop`. Within a rule, keywords are ordered most-specific-first
+# so ties resolve in a sensible order.
+#
+# "其他" is the fallback when no keyword hits at all.
 _SKILL_CATEGORY_RULES: List[tuple] = [
-    ("规划/工作流", ("plan", "task_plan", "findings", "progress", "brainstorm", "workflow", "manus", "session-catchup", "会话")),
-    ("浏览器/网页", ("browser", "web page", "navigate", "snapshot", "devtools", "dom", "click", "fill form", "browser automation")),
-    ("视频/动画", ("video", "视频", "动画", "漫画", "短剧", "drama", "seedance", "即梦", "stitch", "manga")),
-    ("金融/投资", ("stock", "crypto", "finance", "financial", "portfolio", "yahoo", "trading")),
-    ("数据/搜索", ("search", "search the web", "data source", "datasource", "数据", "网络搜索")),
-    ("MCP/集成", ("mcp", "model context protocol", "plugin", "clawdhub", "tool integration")),
-    ("开发/工程", ("code", "coding", "build", "website", "frontend", "backend", "debug", "test", "engineer", "stitch-loop")),
-    ("设计/UI", ("design", "ui", "ux", "interface", "visual", "styling", "theme")),
+    # 文档/Office — multi-word phrases first so longer hits win
+    ("文档/Office", ("internal comm", "spreadsheet file", "pdf files", "docx files", "xlsx files",
+                     "pptx files", "spreadsheet", "presentation", "communication", "documents in",
+                     "office", "docx", "pptx", "xlsx", "pdf")),
+    # MCP/集成 — whole-name keywords before generic "mcp"
+    ("MCP/集成", ("model context protocol", "clawdhub", "tool integration",
+                  "agent skills", "install skill", "mcp server", "mcp", "plugin")),
+    # 开发/工程 — `stitch-loop` whole-name before generic `build`/`code`
+    ("开发/工程", ("stitch-loop", "frontend", "backend", "scaffold", "website",
+                   "engineer", "debug", "test", "coding", "build", "code")),
+    # 视频/动画 — multi-word phrases first
+    ("视频/动画", ("manga-drama", "manga-style-video", "video-wrapper", "seedance",
+                   "video", "manga", "drama", "stitch", "动画", "短剧", "漫画", "视频", "即梦")),
+    # 浏览器/网页
+    ("浏览器/网页", ("browser automation", "web page", "devtools", "navigate",
+                     "snapshot", "browser", "fill form", "click", "dom")),
+    # 规划/工作流
+    ("规划/工作流", ("task_plan", "session-catchup", "findings", "progress",
+                     "brainstorm", "workflow", "manus", "会话", "plan")),
+    # 数据/搜索
+    ("数据/搜索", ("search the web", "data source", "datasource",
+                   "网络搜索", "search", "数据")),
+    # GIF/动图
+    ("GIF/动图", ("animated", "slack", "gif")),
+    # 金融/投资
+    ("金融/投资", ("portfolio", "crypto", "financial", "finance", "trading", "yahoo", "stock")),
+    # 设计/UI
+    ("设计/UI", ("interface", "styling", "visual", "theme", "design", "ux", "ui")),
 ]
 
 
@@ -190,17 +221,23 @@ def _categorize_skill(name: str, description: str) -> str:
     The runtime scans SKILL.md frontmatter to build a compact index, and
     callers (the desktop UI's Skills page) need a single `category`
     string per entry so they can group skills into collapsible sections
-    and offer category filters. The match is purely substring-based —
-    it's intentionally lenient, because the cost of a wrong bucket
-    (a skill landing in "Other") is much lower than the cost of an
-    unindexed skill that the user has to hunt for.
+    and offer category filters.
+
+    Match is score-based (longest keyword hit wins); see
+    ``_SKILL_CATEGORY_RULES`` for the rationale. The cost of a wrong
+    bucket (a skill landing in the wrong section) is much lower than
+    the cost of an uncategorized skill that the user has to hunt for,
+    so the rules are intentionally lenient.
     """
     haystack = f"{name} {description}".lower()
+    best_category = "其他"
+    best_score = 0
     for category, keywords in _SKILL_CATEGORY_RULES:
         for kw in keywords:
-            if kw in haystack:
-                return category
-    return "其他"
+            if kw in haystack and len(kw) > best_score:
+                best_category = category
+                best_score = len(kw)
+    return best_category
 
 
 def _resolve_image_paths(
@@ -417,6 +454,13 @@ class Runtime:
     # singleton (get_permission_manager) so CLI/desktop behaviour is unchanged;
     # library users can pass a fresh PermissionManager to avoid global state.
     permission_manager: Optional[PermissionManager] = field(default=None)
+    # Signature of the last skill index we pushed to the frontend. Compared
+    # on each ``build_skill_index()`` call so we only emit a
+    # ``skill_index_changed`` SSE event when the on-disk SKILL.md tree
+    # actually changed — the frontend caches the index in module-level
+    # memory otherwise (see web/src/modals/skills.ts) and would never see
+    # new skills until a hard reload.
+    _last_skill_index_sig: str | None = field(default=None)
 
     def __post_init__(self) -> None:
         if self._agent_concurrency is None:
@@ -544,40 +588,187 @@ class Runtime:
         installed skills appear without a restart, and machines without these
         particular skills just see an empty list — no stale baked-in index
         persisted to the config file.
+
+        Walks ``extra_paths`` with ``followlinks=True`` so symlinked skill
+        directories (e.g. ``~/.ziva/skills/<name>`` → ``~/.claude/skills/<name>``)
+        are still picked up; ``Path.rglob`` does not follow symlinks by
+        default, which silently skipped those entries.
         """
+        import yaml  # local import: this method is on a slow path
+
+        def _inside(child: str, root: str) -> bool:
+            try:
+                Path(child).relative_to(root)
+                return True
+            except ValueError:
+                return False
+
+        # Resolved roots that opt a directory in as a skill source.
+        # A symlinked skill directory (e.g. ``~/.ziva/skills/<x>`` →
+        # ``~/.claude/skills/<x>``) is allowed when its real target
+        # lives anywhere under the user's ``$HOME`` — the common
+        # pattern is symlinking Claude's official skill tree into a
+        # Ziva-readable location to avoid duplicating megabytes of
+        # templates. The filter only blocks symlinks that escape
+        # HOME entirely (e.g. ``/etc/passwd``) which would otherwise
+        # be silently adopted as a skill.
+        home = str(Path.home().resolve())
+        allowed_real_roots: list[str] = [
+            str(Path(sp).expanduser().resolve())
+            for sp in self.config.get("skill", {}).get("extra_paths", [])
+            if Path(sp).expanduser().resolve().exists()
+        ]
+
+        def _is_safe_symlink_target(real: str) -> bool:
+            # Accept when the symlink target is itself under one of
+            # the configured extra_paths, OR when it lives anywhere
+            # under the user's HOME (the common Claude-shared-tree
+            # pattern). Reject targets that escape HOME — those
+            # would let an attacker turn arbitrary directories into
+            # Ziva-readable skills.
+            if any(_inside(real, r) for r in allowed_real_roots):
+                return True
+            return _inside(real, home)
+
         index: list[dict] = []
+        seen_dirs: set[str] = set()
         for sp in self.config.get("skill", {}).get("extra_paths", []):
             p = Path(sp).expanduser().resolve()
             if not p.exists():
                 continue
-            for skill_file in p.rglob("SKILL.md"):
-                try:
-                    raw = skill_file.read_text(encoding="utf-8").strip()
-                except OSError:
+            for dirpath, dirnames, filenames in os.walk(p, followlinks=True):
+                # Bound depth at 2 (skill_dir / SKILL.md). Going deeper than
+                # that just scans references/, templates/, etc. which are not
+                # top-level skills.
+                rel = os.path.relpath(dirpath, str(p))
+                depth = 0 if rel == "." else rel.count(os.sep) + 1
+                if depth > 1:
+                    dirnames[:] = []
                     continue
-                if not raw:
+                # Avoid double-counting when two extra_paths symlink to the
+                # same physical directory.
+                real = os.path.realpath(dirpath)
+                if real in seen_dirs:
+                    dirnames[:] = []
                     continue
-                name = skill_file.parent.name
-                desc = ""
-                if raw.startswith("---"):
-                    end = raw.find("---", 3)
-                    if end > 0:
-                        fm = raw[3:end]
-                        for line in fm.splitlines():
-                            if line.startswith("description:"):
-                                desc = line.split(":", 1)[1].strip().strip('"').strip("'")
-                                break
-                        if not desc:
-                            for line in fm.splitlines():
-                                if line.startswith("name:"):
-                                    name = line.split(":", 1)[1].strip().strip('"').strip("'")
-                index.append({
-                    "name": name,
-                    "description": desc[:200] if desc else "",
-                    "path": str(skill_file),
-                    "category": _categorize_skill(name, desc),
-                })
+                # Drop symlinked skill dirs whose target escapes
+                # HOME. See ``_is_safe_symlink_target`` for the
+                # rationale: a symlink to a sibling tree under HOME
+                # (e.g. ``~/.claude/skills``) is the common
+                # Claude-shared-tree pattern and stays allowed; a
+                # symlink to ``/etc/...`` or anywhere outside HOME
+                # would otherwise be silently adopted.
+                if os.path.realpath(dirpath) != dirpath and not _is_safe_symlink_target(real):
+                    dirnames[:] = []
+                    continue
+                seen_dirs.add(real)
+                for fn in filenames:
+                    if fn != "SKILL.md":
+                        continue
+                    skill_file = Path(dirpath) / fn
+                    try:
+                        raw = skill_file.read_text(encoding="utf-8").strip()
+                    except (OSError, UnicodeDecodeError):
+                        continue
+                    if not raw:
+                        continue
+                    name, desc = skill_file.parent.name, ""
+                    meta: dict = {}
+                    fm_category: str | None = None
+                    if raw.startswith("---"):
+                        end = raw.find("\n---", 3)
+                        if end > 0:
+                            try:
+                                fm = yaml.safe_load(raw[3:end]) or {}
+                            except yaml.YAMLError:
+                                fm = {}
+                            if isinstance(fm, dict):
+                                if isinstance(fm.get("name"), str):
+                                    name = fm["name"].strip()
+                                d = fm.get("description")
+                                if isinstance(d, str):
+                                    desc = d.strip()
+                                elif isinstance(d, (int, float, bool)):
+                                    desc = str(d)
+                                # Explicit category wins over the
+                                # keyword-based _categorize_skill heuristic
+                                # below — if the author wrote one in the
+                                # frontmatter, respect it.
+                                if isinstance(fm.get("category"), str):
+                                    fm_category = fm["category"].strip()
+                                # Pass the raw frontmatter through
+                                # verbatim so the viewer can surface
+                                # every field (name, description,
+                                # category, version, tags, hooks, …)
+                                # above the markdown body — mirroring
+                                # the on-disk frontmatter layout. The
+                                # card preview still shows name +
+                                # description via the top-level keys,
+                                # so duplicating them in ``meta`` is
+                                # the point: the meta block is the
+                                # place to see the full description
+                                # without the 3-line clamp the card
+                                # applies for scanability.
+                                meta = dict(fm)
+                    index.append({
+                        "name": name,
+                        # No truncation here — the card preview
+                        # clamps to 3 lines via CSS
+                        # (``-webkit-line-clamp: 3`` on
+                        # ``.skill-card-desc``) and the viewer
+                        # renders the full description in the meta
+                        # block above the body. Truncating server-
+                        # side would force a re-fetch to see the
+                        # rest of a long description.
+                        "description": desc,
+                        "path": str(skill_file),
+                        "category": fm_category or _categorize_skill(name, desc),
+                        "meta": meta,
+                    })
+        # Detect changes vs. the last emission and notify the frontend via
+        # SSE so the Skills modal can invalidate its module-level cache
+        # (see web/src/modals/skills.ts). The signature is intentionally
+        # coarse — name + description + path — so trivial whitespace tweaks
+        # don't churn the UI, but adding/removing/editing a SKILL.md
+        # does. Meta fields are included via ``json.dumps`` (sorted
+        # keys) so changing just ``version:`` still fires the event —
+        # otherwise the sidebar would keep showing stale frontmatter
+        # until a hard reload.
+        sig = "|".join(
+            f"{s['name']}\0{s.get('description', '')}\0{s['path']}\0"
+            f"{json.dumps(s.get('meta') or {}, sort_keys=True, ensure_ascii=False)}"
+            for s in index
+        )
+        if sig != self._last_skill_index_sig:
+            self._last_skill_index_sig = sig
+            # Fire-and-forget; both call sites (turn prompt and /skills
+            # HTTP handler) are async, but guard against sync callers
+            # (tests, CLI startup) where get_running_loop() raises.
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is not None:
+                loop.create_task(self._publish_skill_index_changed(len(index)))
         return index
+
+    async def _publish_skill_index_changed(self, count: int) -> None:
+        """Push a ``skill_index_changed`` SSE event so the UI can drop its
+        cached skill list. Goes through the same EventBus as per-session
+        events; the ``/events`` SSE endpoint forwards everything to a
+        single global queue, so the frontend sees it via its existing
+        SSEPool.
+
+        The sentinel ``session_id="_global"`` keeps this event out of any
+        per-session history bucket — it should not appear in a session's
+        history replay. The frontend recognises the type field on the
+        payload and routes it before any session-id-based dispatch.
+        """
+        await self.event_bus.publish("_global", {
+            "type": "skill_index_changed",
+            "count": count,
+            "ts": int(time.time() * 1000),
+        })
 
     def _read_last_usage(self, session_id: str) -> Dict[str, int] | None:
         """Read the most recent API-reported prompt_tokens from session metadata on disk.
@@ -666,6 +857,96 @@ class Runtime:
             "total_tokens": new_prompt_tokens,
         }
         self.update_session_usage(session_id, new_usage)
+
+    # -- graceful restart ------------------------------------------------------
+
+    def _running_turn_count(self) -> int:
+        """Count how many sessions currently have an in-flight turn task.
+
+        Used by IM ``/restart`` to decide whether the request can be honored
+        immediately or must wait for the running turn to drain. The check
+        mirrors the canonical ``session.turn_task is not None and not
+        session.turn_task.done()`` pattern used in ``desktop_api.server`` and
+        ``im_bridge.bridge``.
+
+        Returns 0 when no sessions are loaded (e.g. CLI idle) or all turns
+        have finished.
+        """
+        n = 0
+        for sid, session in list(self._sessions.items()):
+            task = getattr(session, "turn_task", None)
+            if task is not None and not task.done():
+                n += 1
+        return n
+
+    async def _graceful_execvp(
+        self,
+        *,
+        reason: str = "manual",
+        wait_timeout: float = 10.0,
+        pending_payload: list[dict] | None = None,
+        pending_payload_path: Path | None = None,
+    ) -> None:
+        """Replace the current process with a fresh ziva instance.
+
+        Used by IM ``/restart`` (and other remote-triggered restarts) so that
+        the new process picks up config / skill / code changes without losing
+        the PID, IM connections in flight, or the operator's confidence in
+        what the daemon is doing.
+
+        The function does not return under normal flow — ``os.execvp``
+        replaces the current process image. On the rare path where it does
+        return (write failure, signal interrupt), the caller can decide
+        whether to raise or log.
+
+        Args:
+            reason: short label for logs/audit (``"manual"`` for IM ``/restart``,
+                ``"config_change"`` for future config-watcher, etc.).
+            wait_timeout: seconds to wait for in-flight turns to finish
+                before giving up. ``/restart`` waits this long then proceeds
+                anyway — aborting is worse than losing ~1 turn.
+            pending_payload: optional list of dicts to persist as JSON so the
+                new process can pick up where we left off (e.g. IM restart
+                notifications — see ``docs/im-restart.md`` §10).
+            pending_payload_path: where to write ``pending_payload``. Defaults
+                to ``~/.ziva/.restart_pending.json``.
+        """
+        # 1. Wait briefly for in-flight turns so the user doesn't lose work.
+        #    Skip if no event loop is running (e.g. from a sync shutdown).
+        deadline = time.monotonic() + max(0.0, wait_timeout)
+        try:
+            while time.monotonic() < deadline:
+                if self._running_turn_count() == 0:
+                    break
+                await asyncio.sleep(0.1)
+        except RuntimeError:
+            # No running loop (CLI shutdown path) — proceed without waiting.
+            pass
+
+        # 2. Persist any pending payload the new process should know about.
+        if pending_payload is not None:
+            path = pending_payload_path or (Path.home() / ".ziva" / ".restart_pending.json")
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(pending_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception:
+                logger.exception("runtime: failed to write restart pending payload to %s", path)
+
+        # 3. Replace current process. argv[0] is preserved; argv[1:] is the
+        #    same as what launched us. This keeps the supervisor's PID table
+        #    stable so the parent doesn't think we crashed.
+        logger.warning(
+            "runtime: graceful execvp (reason=%s, in_flight_turns=%d)",
+            reason,
+            self._running_turn_count(),
+        )
+        try:
+            os.execvp(sys.executable, [sys.executable, *sys.argv])
+        except Exception:
+            logger.exception("runtime: execvp failed; process will exit instead")
+            # Surface the failure to the caller — without execvp happening,
+            # we cannot pretend the restart succeeded.
+            raise
 
     @classmethod
     def create(

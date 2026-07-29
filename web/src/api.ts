@@ -245,6 +245,11 @@ export interface Skill {
   description: string;
   path: string;
   category: string;
+  // Raw YAML frontmatter minus `name`/`description` (those are promoted
+  // to top-level fields). Surfaced verbatim in the Skills sidebar so
+  // users can see version / tags / homepage / metadata / user-invocable
+  // / allowed-tools / hooks / etc. without opening each SKILL.md.
+  meta?: Record<string, unknown>;
 }
 
 export interface SkillFile {

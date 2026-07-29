@@ -19,7 +19,37 @@ let skillsBrowserState: { query: string; category: string | null } = { query: ""
 // stack is cleared whenever the user opens a different skill from
 // the list (so back from the first page of a skill returns to the
 // list, not to a previously viewed skill).
-let skillNavStack: { name: string; path: string }[] = [];
+let skillNavStack: { name: string; path: string; meta?: Record<string, unknown> }[] = [];
+
+/**
+ * Drop the cached skill list so the next open / in-place refresh will
+ * re-fetch from /skills. Called from main.ts when a
+ * `skill_index_changed` SSE event arrives — otherwise the cache is
+ * populated once per page load and never refreshed.
+ */
+export function invalidateSkillsCache(): void {
+  skillsCache = null;
+  skillsBrowserState = { query: "", category: null };
+}
+
+/**
+ * If the Skills modal is currently mounted, drop the cache and re-fetch
+ * + re-render in place. No-op when the modal isn't open (the cache is
+ * already dropped by `invalidateSkillsCache`).
+ */
+export async function refreshSkillsModalInPlace(): Promise<void> {
+  if (!document.getElementById("skillsModalBackdrop")) return;
+  try {
+    skillsCache = await api.listSkills();
+    renderSkillsBrowser();
+  } catch {
+    // Refresh failure is non-fatal — the modal still shows the old data
+    // and the next open will retry. Surface the error to the console so
+    // it's visible during development without disrupting the UI.
+    // eslint-disable-next-line no-console
+    console.warn("Failed to refresh skills list in place");
+  }
+}
 
 export async function openSkillsBrowser() {
   closeAllFullpageOverlays();
@@ -130,13 +160,16 @@ function renderSkillsBrowserBody() {
     html += `<div class="skills-group-header">${esc(c)} <span class="skills-group-count">${items.length}</span></div>`;
     html += `<div class="skills-grid">`;
     for (const s of items) {
+      // Cards stay minimal — name + description only. The owning
+      // skill's full frontmatter (category, version, tags, hooks, …)
+      // shows up in the viewer's meta block above the body, not on
+      // the card. The top-level ``category`` field is still in the
+      // Skill payload so the category tabs / search can group and
+      // filter — it's just not rendered inline here.
       html += `
         <div class="skill-card" data-skill-path="${esc(s.path)}" data-skill-name="${esc(s.name)}">
           <div class="skill-card-name">${esc(s.name)}</div>
           <div class="skill-card-desc">${esc(s.description || i18n.t("skills.noDescription"))}</div>
-          <div class="skill-card-footer">
-            <span class="skill-card-cat">${esc(s.category || i18n.t("skills.uncategorized"))}</span>
-          </div>
         </div>`;
     }
     html += `</div></div>`;
@@ -146,10 +179,13 @@ function renderSkillsBrowserBody() {
     el.onclick = () => {
       const path = el.dataset.skillPath!;
       const name = el.dataset.skillName!;
+      // Look up the skill in the cache so the viewer can show its
+      // frontmatter meta (version / tags / hooks / …) above the body.
+      const meta = skillsCache?.find((s) => s.path === path)?.meta;
       // Clear any prior skill's history so back from the first page
       // goes to the list, not to a previously viewed skill.
       skillNavStack = [];
-      openSkillViewer(name, path, /*pushToStack*/ true);
+      openSkillViewer(name, path, /*pushToStack*/ true, meta);
     };
   });
 }
@@ -157,10 +193,18 @@ function renderSkillsBrowserBody() {
 // Open the skill viewer modal on a specific file. `pushToStack` controls
 // whether this navigation becomes a new history entry: true when the
 // user clicked forward (skill card, reference link), false when
-// restoring from the back stack.
-function openSkillViewer(displayName: string, filePath: string, pushToStack: boolean = true) {
+// restoring from the back stack. `meta` is the frontmatter (minus
+// name/description) for the owning skill, so the viewer can render it
+// as a definition-list block above the markdown body — same visual
+// position the raw frontmatter occupies in the on-disk SKILL.md.
+function openSkillViewer(
+  displayName: string,
+  filePath: string,
+  pushToStack: boolean = true,
+  meta?: Record<string, unknown>,
+) {
   if (pushToStack) {
-    skillNavStack.push({ name: displayName, path: filePath });
+    skillNavStack.push({ name: displayName, path: filePath, meta });
   }
   closeSkillViewer();
   const backdrop = document.createElement("div");
@@ -189,13 +233,13 @@ function openSkillViewer(displayName: string, filePath: string, pushToStack: boo
     skillNavStack.pop();
     const prev = skillNavStack[skillNavStack.length - 1];
     if (prev) {
-      openSkillViewer(prev.name, prev.path, /*pushToStack*/ false);
+      openSkillViewer(prev.name, prev.path, /*pushToStack*/ false, prev.meta);
     } else {
       openSkillsBrowser();
     }
   };
 
-  loadSkillFileIntoModal(displayName, filePath);
+  loadSkillFileIntoModal(displayName, filePath, meta);
 }
 
 export function closeSkillViewer() {
@@ -206,8 +250,15 @@ export function closeSkillViewer() {
 // Relative `.md`/`.markdown`/text links in the rendered HTML are
 // re-wired to a click handler that re-enters this function with the
 // resolved absolute path, so users can navigate within a skill's
-// reference tree without leaving the chat surface.
-async function loadSkillFileIntoModal(displayName: string, filePath: string) {
+// reference tree without leaving the chat surface. `meta` is the
+// owning skill's YAML frontmatter (sans name/description), rendered
+// as a definition list above the body so users see the same metadata
+// the raw SKILL.md carries.
+async function loadSkillFileIntoModal(
+  displayName: string,
+  filePath: string,
+  meta?: Record<string, unknown>,
+) {
   const body = document.getElementById("skillsModalBody");
   const title = document.getElementById("skillsModalTitle");
   if (!body || !title) return;
@@ -215,13 +266,15 @@ async function loadSkillFileIntoModal(displayName: string, filePath: string) {
   if (title) title.textContent = displayName;
   try {
     const data = await api.readSkillFile(filePath);
-    // Strip the YAML frontmatter for display — the sidebar list already
-    // shows the description, and the raw frontmatter adds noise.
+    // Strip the on-disk YAML frontmatter — we render our own meta
+    // block above the body so it's always-present and consistent
+    // even if the file is missing/partial.
     const content = stripFrontmatter(data.content);
-    body.innerHTML = `<div class="md">${renderMarkdown(content)}</div>`;
+    const metaBlock = renderMetaBlock(meta);
+    body.innerHTML = `${metaBlock}<div class="md">${renderMarkdown(content)}</div>`;
     addCopyButtons(body);
     highlightCode(body);
-    interceptSkillLinks(body, data.path);
+    interceptSkillLinks(body, data.path, meta);
     // Scroll the modal to the top whenever a new file is loaded
     body.scrollTop = 0;
   } catch (e) {
@@ -234,9 +287,28 @@ async function loadSkillFileIntoModal(displayName: string, filePath: string) {
 // pointing to a file under the same skill directory into a click
 // handler that loads that file inline. External / absolute links
 // remain normal `<a>` elements (still openable in a new tab, etc.).
-function interceptSkillLinks(container: HTMLElement, currentFilePath: string) {
+// `currentMeta` is the owning skill's frontmatter; relative links
+// stay inside the same skill so they inherit it, while absolute
+// paths under another skill re-look-up their meta in the cache.
+function interceptSkillLinks(
+  container: HTMLElement,
+  currentFilePath: string,
+  currentMeta?: Record<string, unknown>,
+) {
   const links = container.querySelectorAll<HTMLAnchorElement>("a[href]");
   const baseDir = currentFilePath.replace(/[^/]+$/, "");
+  // Best-effort: find which skill owns `currentFilePath` so an
+  // absolute link to a sibling skill can borrow *its* meta. This
+  // runs once per render — cheap. ``s.path`` always ends in
+  // ``/SKILL.md`` (see Runtime.build_skill_index), so the
+  // ``replace`` strips the filename off to match sub-paths like
+  // ``references/foo.md`` inside the skill.
+  const owningSkillFor = (p: string): Record<string, unknown> | undefined => {
+    if (!skillsCache) return undefined;
+    return skillsCache.find(
+      (s) => p === s.path || p.startsWith(s.path.replace(/\/SKILL\.md$/, "/"))
+    )?.meta;
+  };
   for (const a of links) {
     const href = a.getAttribute("href") || "";
     // Skip external links, anchors, mailto, etc.
@@ -249,7 +321,7 @@ function interceptSkillLinks(container: HTMLElement, currentFilePath: string) {
         a.onclick = (e) => {
           e.preventDefault();
           const name = href.split("/").pop() || href;
-          openSkillViewer(name, href, /*pushToStack*/ true);
+          openSkillViewer(name, href, /*pushToStack*/ true, owningSkillFor(href) ?? currentMeta);
         };
       }
       continue;
@@ -266,7 +338,11 @@ function interceptSkillLinks(container: HTMLElement, currentFilePath: string) {
     a.onclick = (e) => {
       e.preventDefault();
       const name = rel.split("/").pop() || rel;
-      openSkillViewer(name, resolved, /*pushToStack*/ true);
+      // Relative link — still inside the owning skill, keep currentMeta.
+      // If `resolved` happens to land on a different skill (rare,
+      // possible via ../), re-resolve.
+      const meta = owningSkillFor(resolved) ?? currentMeta;
+      openSkillViewer(name, resolved, /*pushToStack*/ true, meta);
     };
   }
 }
@@ -289,4 +365,71 @@ function stripFrontmatter(content: string): string {
   let rest = content.slice(end + 4);
   if (rest.startsWith("\n")) rest = rest.slice(1);
   return rest;
+}
+
+// Render a SKILL.md frontmatter dict as a definition-list block to
+// sit above the markdown body in the viewer. Mirrors the visual
+// position the raw frontmatter occupies in the on-disk SKILL.md so
+// users see the same metadata the file carries. Strings render inline
+// (or as a paragraph for long ones like ``description``), arrays
+// render as a `<code>` JSON-ish list, and nested objects render as a
+// `<pre>` block — preserves readability for `hooks: { … }` and
+// `metadata: { … }` without exploding the page layout.
+function renderMetaBlock(meta: Record<string, unknown> | undefined): string {
+  if (!meta || typeof meta !== "object") return "";
+  const rows: string[] = [];
+  for (const [k, v] of Object.entries(meta)) {
+    if (v === null || v === undefined) continue;
+    let ddHtml: string;
+    if (typeof v === "string") {
+      // Long-form fields like ``description`` are typically 200-400
+      // chars of running prose. Render as a plain paragraph so it
+      // wraps naturally; otherwise they overflow the dl column and
+      // break the grid alignment. Other short strings still get
+      // inline-markdown treatment (links / code / emphasis).
+      if (v.length > 120 || k === "description") {
+        ddHtml = `<p class="skill-meta-text">${esc(v)}</p>`;
+      } else {
+        ddHtml = renderInline(v);
+      }
+    } else if (typeof v === "number" || typeof v === "boolean") {
+      ddHtml = `<code>${esc(String(v))}</code>`;
+    } else if (Array.isArray(v)) {
+      if (v.length === 0) continue;
+      // Render as one item per line in a <pre> so long lists (e.g.
+      // allowed-tools, hooks.PreToolUse) stay readable.
+      const items = v.map((x) => {
+        const text = typeof x === "string" ? x : JSON.stringify(x);
+        return esc(text);
+      });
+      ddHtml = `<pre class="skill-meta-pre">${items.join("\n")}</pre>`;
+    } else if (typeof v === "object") {
+      // Render nested objects as pretty-printed JSON so the
+      // structure stays visible (e.g. hooks, metadata).
+      let pretty: string;
+      try {
+        pretty = JSON.stringify(v, null, 2);
+      } catch {
+        pretty = String(v);
+      }
+      ddHtml = `<pre class="skill-meta-pre">${esc(pretty)}</pre>`;
+    } else {
+      ddHtml = esc(String(v));
+    }
+    rows.push(`<dt>${esc(k)}</dt><dd>${ddHtml}</dd>`);
+  }
+  if (rows.length === 0) return "";
+  return `<div class="skill-viewer-meta"><dl class="skill-viewer-meta-list">${rows.join("")}</dl></div>`;
+}
+
+// Lightweight inline markdown renderer for short meta values
+// (strings, list items). Falls back to escaped text when there's no
+// recognizable markdown — mirrors how Obsidian / VS Code preview
+// renders frontmatter string values.
+function renderInline(text: string): string {
+  // If the string contains no markdown sigils, just escape it.
+  if (!/[`*_~[\]()]/.test(text)) return esc(text);
+  // Otherwise reuse the full markdown renderer — it's safe on short
+  // fragments and handles links / code / emphasis correctly.
+  return renderMarkdown(text);
 }
