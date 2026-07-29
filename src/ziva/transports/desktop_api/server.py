@@ -2180,14 +2180,32 @@ class DesktopAPIServer:
         `references/snapshot-refs.md`) by re-rooting them at the skill's
         directory. To prevent that endpoint from being abused as a generic
         file reader, the requested path is rejected unless it lives under
-        one of the configured `extra_skill_paths` directories.
+        one of the configured ``extra_paths`` directories — or, for the
+        common "Claude's official skill tree via symlink" pattern, the
+        target lives anywhere under ``$HOME`` after symlink resolution.
+        Matches the symlink policy in ``Runtime.build_skill_index`` so a
+        skill that's listed in the index can always be opened.
         """
         raw = request.query.get("path", "")
         if not raw:
             return web.json_response({"error": "path_required"}, status=400)
-        target = Path(raw).expanduser().resolve()
+        raw_path = Path(raw).expanduser().absolute()
+        target = raw_path.resolve()
         allowed_roots = self._skill_root_paths()
-        if not any(self._is_within(target, root) for root in allowed_roots):
+        home = Path.home().resolve()
+        # Both halves must hold:
+        #   * raw_path (the link path the caller submitted) must live
+        #     under a configured ``extra_paths`` root — limits entry
+        #     points to the same dirs the skill index scanned, so a
+        #     stray URL like ``?path=~/.ssh/id_rsa`` cannot read private
+        #     files even though they are under ``$HOME``.
+        #   * target (after symlink resolution) must stay under
+        #     ``$HOME`` — a symlink in ``~/.ziva/skills/<x>`` pointing
+        #     outside ``$HOME`` (e.g. at ``/etc/passwd``) is still
+        #     rejected. Mirrors ``Runtime.build_skill_index``'s
+        #     symlink filter.
+        if not (any(self._is_within(raw_path, r) for r in allowed_roots)
+                and self._is_within(target, home)):
             return web.json_response(
                 {"error": "path_outside_skill_roots", "path": str(target)},
                 status=403,
