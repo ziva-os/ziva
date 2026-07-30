@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-07-30
+
+### Fixed
+- **chrome-devtools-mcp tools on the embedded browser** — `close_page`,
+  `select_page(bringToFront)` and `new_page(isolatedContext)` no longer
+  fail with "Method not handled at browser level". The CDP bridge now
+  handles `Target.closeTarget` / `activateTarget` / `createBrowserContext`
+  / `disposeBrowserContext`, and a page closed via the MCP tool is also
+  dropped from the tabstrip (previously left as a stale tab).
+- **Phantom "Tool execution cancelled by user"** after a sub-agent
+  returned — the frozen backend raised `ModuleNotFoundError:
+  ziva.adapters._think_parser` (a lazy import PyInstaller's static
+  analysis missed), which killed the parent turn mid-stream; the
+  orphaned tool_calls were then sanitized next turn as a cancellation.
+  Force-included the module in `ziva-backend.spec`.
+
 ## [1.1.1] - 2026-07-29
 
 ### Added
