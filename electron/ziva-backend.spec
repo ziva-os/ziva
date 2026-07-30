@@ -66,6 +66,17 @@ a = Analysis(
         'ziva.adapters.mcp.client',
         'ziva.adapters.mcp.server',
         'ziva.adapters.retry',
+        # _think_parser is only referenced via lazy import inside plugin tool
+        # bodies (spawn_agent/get_agent_result). PyInstaller's static analyzer
+        # can't follow those references, so without this entry the frozen
+        # backend raises `ModuleNotFoundError: No module named
+        # 'ziva.adapters._think_parser'` the first time a foreground sub-agent
+        # finishes or get_agent_result returns a result. That exception kills
+        # the parent turn mid-stream — orphan tool_calls then get sanitized
+        # next turn as "Tool execution cancelled by user.", which surfaces in
+        # the UI as a phantom cancellation. Force-include it alongside the
+        # other lazy adapters.
+        'ziva.adapters._think_parser',
         'ziva.capabilities.events',
         'ziva.capabilities.registries',
         'ziva.capabilities.interfaces',

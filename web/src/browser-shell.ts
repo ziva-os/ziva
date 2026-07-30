@@ -110,6 +110,13 @@ export function initBrowserShell(): void {
   ea?.onBrowserTabCreated?.((e: { id: string; url?: string; targetId?: string }) => {
     addMainProcessTab(e);
   });
+  // Main closed a tab itself (CDP close_page) — remove the matching shell tab.
+  // closeTab is idempotent here: its browserCloseTab IPC no-ops on a view the
+  // main process already destroyed (destroyBrowserTab returns early).
+  ea?.onBrowserTabClosed?.((e: { id: string }) => {
+    const t = tabs.find(x => (x as any).mainId === e.id);
+    if (t) closeTab(t.id);
+  });
   ea?.onBrowserNav?.((e: { id: string; url: string }) => {
     const t = tabs.find(x => (x as any).mainId === e.id);
     if (t) { t.url = e.url; t.title = prettyHost(e.url); if (t.id === activeTabId) renderOmnibox(); renderTabstrip(); }

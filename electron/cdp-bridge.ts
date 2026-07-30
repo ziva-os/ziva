@@ -91,6 +91,13 @@ export class CdpBridge {
   private requestedPort: number;
   private actualPort: number = 0;
   public onEnsurePage?: (url?: string) => Promise<string | void> | string | void;
+  // Close / activate a page by targetId. Wired by main.ts to destroyBrowserTab
+  // / showBrowserTab so chrome-devtools-mcp's close_page and
+  // select_page(bringToFront) actually take effect. Without these,
+  // Target.closeTarget / Target.activateTarget fall through to
+  // "Method not handled at browser level".
+  public onClosePage?: (targetId: string) => boolean;
+  public onActivatePage?: (targetId: string) => boolean;
 
   constructor(opts: CdpBridgeOptions = {}) {
     this.host = opts.host ?? "127.0.0.1";
@@ -674,6 +681,59 @@ export class CdpBridge {
         }
       }
       if (msg.id !== undefined) this.respond(ws, msg.id, {});
+      return;
+    }
+
+    // Close a page. chrome-devtools-mcp's close_page sends this; without a
+    // handler it fails with "Method not handled at browser level:
+    // Target.closeTarget". Delegate to main.ts (destroyBrowserTab), which also
+    // fires removePage → Target.targetDestroyed so Puppeteer drops the page
+    // from browser.pages(). Puppeteer's page.close() ignores the response and
+    // waits for the targetDestroyed event, so we only need to ack.
+    if (msg.method === "Target.closeTarget") {
+      const targetId = msg.params?.targetId;
+      let ok = false;
+      if (typeof targetId === "string") {
+        if (this.onClosePage) {
+          ok = !!this.onClosePage(targetId);
+        } else {
+          // Fallback when no main-side wiring: destroy the webContents
+          // directly. removePage then runs via the 'destroyed' hook in addPage.
+          const page = this.pages.find((p) => p.id === targetId);
+          if (page) {
+            try { (page.webContents as any).destroy?.(); ok = true; } catch {}
+          }
+        }
+      }
+      if (ok) {
+        this.respond(ws, msg.id, {});
+      } else {
+        this.respondError(ws, msg.id, -32000, `closeTarget: no such target ${targetId}`);
+      }
+      return;
+    }
+
+    // Bring a page to the front. chrome-devtools-mcp's select_page sends this
+    // when called with bringToFront: true. Delegate to main.ts (showBrowserTab).
+    if (msg.method === "Target.activateTarget") {
+      const targetId = msg.params?.targetId;
+      if (typeof targetId === "string" && this.onActivatePage) {
+        this.onActivatePage(targetId);
+      }
+      this.respond(ws, msg.id, {});
+      return;
+    }
+
+    // Electron has no browser-context isolation (no incognito). Return a
+    // nominal context id so chrome-devtools-mcp's new_page(isolatedContext)
+    // doesn't error. NOTE: cookies/storage are NOT actually isolated across
+    // these contexts — each tab still shares the single BROWSER_PARTITION.
+    if (msg.method === "Target.createBrowserContext") {
+      this.respond(ws, msg.id, { browserContextId: `ctx-${this.nextSessionId++}` });
+      return;
+    }
+    if (msg.method === "Target.disposeBrowserContext") {
+      this.respond(ws, msg.id, {});
       return;
     }
 

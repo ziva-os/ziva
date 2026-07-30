@@ -6,10 +6,12 @@ import { contextBridge, ipcRenderer, webUtils } from "electron";
 // so the renderer's tab strip + omnibox stay in sync with the real Chromium view.
 let _browserNewTabHandler: any = null;
 let _browserTabCreatedHandler: any = null;
+let _browserTabClosedHandler: any = null;
 let _browserNavHandler: any = null;
 let _browserTitleHandler: any = null;
 const _pendingNewTab: any[] = [];
 const _pendingTabCreated: any[] = [];
+const _pendingTabClosed: any[] = [];
 const _pendingNav: any[] = [];
 const _pendingTitle: any[] = [];
 ipcRenderer.on("ziva:browser-new-tab", (_e, payload: any) => {
@@ -19,6 +21,10 @@ ipcRenderer.on("ziva:browser-new-tab", (_e, payload: any) => {
 ipcRenderer.on("ziva:browser-tab-created", (_e, e: any) => {
   if (_browserTabCreatedHandler) _browserTabCreatedHandler(e);
   else _pendingTabCreated.push(e);
+});
+ipcRenderer.on("ziva:browser-tab-closed", (_e, e: any) => {
+  if (_browserTabClosedHandler) _browserTabClosedHandler(e);
+  else _pendingTabClosed.push(e);
 });
 ipcRenderer.on("ziva:browser-nav", (_e, e: any) => {
   if (_browserNavHandler) _browserNavHandler(e);
@@ -94,6 +100,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
   onBrowserTabCreated: (cb: (e: { id: string; url?: string; targetId?: string }) => void) => {
     _browserTabCreatedHandler = cb;
     while (_pendingTabCreated.length) cb(_pendingTabCreated.shift());
+  },
+  // Fired when the main process closes a tab itself (e.g. chrome-devtools-mcp's
+  // close_page → Target.closeTarget). The renderer must drop the shell entry so
+  // the tabstrip doesn't leave a stale tab pointing at a destroyed view.
+  onBrowserTabClosed: (cb: (e: { id: string }) => void) => {
+    _browserTabClosedHandler = cb;
+    while (_pendingTabClosed.length) cb(_pendingTabClosed.shift());
   },
   onBrowserNav: (cb: (e: { id: string; url: string }) => void) => {
     _browserNavHandler = cb;

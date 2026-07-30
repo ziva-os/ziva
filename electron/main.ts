@@ -830,6 +830,32 @@ app.whenReady().then(async () => {
     mainWindow.webContents.send("ziva:browser-tab-created", { id, url, targetId });
     return targetId;
   };
+  // Close / activate a tab by CDP targetId — backs Target.closeTarget /
+  // Target.activateTarget so chrome-devtools-mcp's close_page and
+  // select_page(bringToFront) work. Each WebContentsView carries the targetId
+  // assigned by the bridge (see createBrowserTab), so map back to the tab id.
+  cdpBridge.onClosePage = (targetId: string): boolean => {
+    for (const [id, view] of browserViews) {
+      if ((view as any)._cdpTargetId === targetId) {
+        // destroyBrowserTab removes the view, destroys webContents, and calls
+        // cdpBridge.removePage(targetId) → broadcasts Target.targetDestroyed,
+        // which is what Puppeteer's page.close() waits on.
+        destroyBrowserTab(id);
+        mainWindow?.webContents.send("ziva:browser-tab-closed", { id });
+        return true;
+      }
+    }
+    return false;
+  };
+  cdpBridge.onActivatePage = (targetId: string): boolean => {
+    for (const [id, view] of browserViews) {
+      if ((view as any)._cdpTargetId === targetId) {
+        showBrowserTab(id);
+        return true;
+      }
+    }
+    return false;
+  };
   cdpBridge.start().then(() => {
     const port = cdpBridge!.port;
     console.log(
