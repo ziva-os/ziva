@@ -5,3 +5,5 @@ entry: impl.py:SendFileTool
 permissions:
   fs: [read]
 enabled_by_default: true
+config:
+  transports: [im]   # only exposed in IM sessions (feishu/telegram/wechat)

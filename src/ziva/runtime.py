@@ -1852,6 +1852,13 @@ class Runtime:
         """Build OpenAI-format tools list from registered tools, filtered by context."""
         is_subagent = ctx and ctx.metadata.get("_subagent")
         allowed_tools = ctx.metadata.get("_allowed_tools") if ctx else None
+        # Transport of the current session. Tools can declare `config.transports`
+        # in their manifest (e.g. [im]) to restrict exposure — send_file is
+        # IM-only, so desktop sessions won't see it and the model can't mis-call it.
+        current_transport: str | None = None
+        if ctx:
+            _sess = self._get_session(ctx.session_id)
+            current_transport = "im" if getattr(_sess, "im_channel", None) else "desktop"
         tools = []
         for tool_rec in self.registry.list_kind("tool"):
             spec = tool_rec.instance.spec()
@@ -1859,6 +1866,11 @@ class Runtime:
             # Sub-agents cannot see parent-only tools in their tool list
             _parent_only = {"spawn_agent", "get_agent_result", "cancel_agent"}
             if is_subagent and name in _parent_only:
+                continue
+            # Transport-restricted tools (manifest config.transports). Unrestricted
+            # tools (no `transports`) are always shown.
+            transports = (tool_rec.manifest.get("config") or {}).get("transports")
+            if transports and current_transport and current_transport not in transports:
                 continue
             # If whitelist specified, only include those tools
             if allowed_tools is not None and name not in allowed_tools:
