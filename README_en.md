@@ -9,7 +9,7 @@ Ziva is a highly customizable LLM Agent runtime and desktop application. It prov
 - **Model-Tool Loop**: Multi-turn execution, automatic context compaction, dynamic tool schemas, MCP client support.
 - **Desktop App**: Electron + embedded Chromium browser with side-by-side panes and CDP automation.
 - **IM Bridge**: Bring Feishu (Lark) or Telegram messages into the same Agent session, with image input support.
-- **Extension System**: Dynamically load prompts, tools, skills, hooks, and memory backends via `manifest.yaml`.
+- **Extension System**: Dynamically load prompts, tools, hooks, and memory backends via `manifest.yaml`.
 - **Voice Input**: Local GPU-accelerated transcription via `mlx-whisper` on Apple Silicon (about 461 MB model, downloaded automatically on first use).
 
 ## Project Structure
@@ -55,10 +55,10 @@ pip install -e ".[all]"
 
 ### 1. Download the Speech Recognition Model (Optional)
 
-The desktop app supports voice input. The `whisper-small-mlx` model (about 461 MB) is downloaded automatically from Hugging Face on first use. If you want to download it ahead of time or specify a model manually:
+The desktop app supports voice input. The `mlx-community/whisper-small-mlx` model (about 461 MB) is downloaded automatically from Hugging Face on first use. If you want to download it ahead of time or specify a model manually:
 
 ```bash
-# Default model: whisper-small-mlx
+# Default model: mlx-community/whisper-small-mlx
 # Auto-downloaded to ~/.ziva/models/
 ```
 
@@ -66,7 +66,7 @@ You can also specify the model in `.ziva/config.yaml`:
 
 ```yaml
 stt:
-  model: whisper-small-mlx
+  model: mlx-community/whisper-small-mlx
 ```
 
 > Note: You do not need to pre-download the model before packaging. The desktop app will handle it automatically on the first `/api/stt` call. If your network is restricted, you can download it manually and place it under `~/.ziva/models/mlx-community/whisper-small-mlx/`.

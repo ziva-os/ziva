@@ -2553,15 +2553,13 @@ class DesktopAPIServer:
                 models_dir = Path.home() / ".ziva" / "models"
                 models_dir.mkdir(parents=True, exist_ok=True)
                 stt_model = self.runtime.config.get("stt", {}).get(
-                    "model", "whisper-small-mlx"
+                    "model", "mlx-community/whisper-small-mlx"
                 )
-                # Check local models_dir first, fall back to HF repo
-                local_path = None
-                for candidate in [models_dir / stt_model, models_dir / "mlx-community" / stt_model]:
-                    if candidate.exists() and (candidate / "weights.npz").exists():
-                        local_path = candidate
-                        break
-                model_ref = str(local_path) if local_path else f"mlx-community/{stt_model}"
+                # stt_model is a full HF repo id (e.g. "mlx-community/whisper-small-mlx").
+                # Check local models_dir first, fall back to the repo id verbatim.
+                candidate = models_dir / stt_model
+                local_path = candidate if (candidate.exists() and (candidate / "weights.npz").exists()) else None
+                model_ref = str(local_path) if local_path else stt_model
                 loop = asyncio.get_event_loop()
                 result = await loop.run_in_executor(
                     None,

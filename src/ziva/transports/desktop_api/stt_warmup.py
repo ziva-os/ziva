@@ -109,13 +109,11 @@ def _warmup_stt(runtime: "Runtime") -> None:
         # Resolve the same model path speech_to_text would use.
         models_dir = Path.home() / ".ziva" / "models"
         stt_model = runtime.config.get("stt", {}).get(
-            "model", "whisper-small-mlx"
+            "model", "mlx-community/whisper-small-mlx"
         )
-        local_path = None
-        for candidate in [models_dir / stt_model, models_dir / "mlx-community" / stt_model]:
-            if candidate.exists() and (candidate / "weights.npz").exists():
-                local_path = candidate
-                break
+        # stt_model is a full HF repo id (e.g. "mlx-community/whisper-small-mlx").
+        candidate = models_dir / stt_model
+        local_path = candidate if (candidate.exists() and (candidate / "weights.npz").exists()) else None
         if local_path is None:
             # Model not downloaded yet — let the first real request
             # trigger the download + warmup. That's the only way to

@@ -9,7 +9,7 @@ Ziva 是一个可高度定制的 LLM Agent 运行时与桌面应用。它提供�
 - **模型-工具循环**：多轮执行、上下文自动压缩、动态工具 schema、MCP 客户端支持。
 - **桌面应用**：Electron + Chromium 内嵌浏览器，支持侧边分屏与 CDP 自动化。
 - **IM 桥接**：将飞书（Lark）或 Telegram 消息接入同一个 Agent 会话，支持图片输入。
-- **扩展系统**：通过 `manifest.yaml` 动态加载 prompt、tool、skill、hook、memory 后端。
+- **扩展系统**：通过 `manifest.yaml` 动态加载 prompt、tool、hook、memory 后端。
 - **语音输入**：Apple Silicon 上通过 `mlx-whisper` 本地 GPU 加速转写（约 461 MB 模型，首次使用自动下载）。
 
 ## 项目结构
@@ -55,10 +55,10 @@ pip install -e ".[all]"
 
 ### 1. 下载语音识别模型（可选）
 
-桌面版支持语音输入。首次使用时会自动从 Hugging Face 下载 `whisper-small-mlx`（约 461 MB）。如果你希望提前下载或手动指定模型，可以：
+桌面版支持语音输入。首次使用时会自动从 Hugging Face 下载 `mlx-community/whisper-small-mlx`（约 461 MB）。如果你希望提前下载或手动指定模型，可以：
 
 ```bash
-# 默认模型：whisper-small-mlx
+# 默认模型：mlx-community/whisper-small-mlx
 # 自动下载到 ~/.ziva/models/
 ```
 
@@ -66,7 +66,7 @@ pip install -e ".[all]"
 
 ```yaml
 stt:
-  model: whisper-small-mlx
+  model: mlx-community/whisper-small-mlx
 ```
 
 > 提示：打包时不需要预下载模型，桌面端首次调用 `/api/stt` 时会自动处理。若网络受限，可手动下载后放到 `~/.ziva/models/mlx-community/whisper-small-mlx/`。
