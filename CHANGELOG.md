@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-07-31
+
+### Fixed
+- **`send_file` no longer shown in non-IM sessions** — it was exposed in
+  desktop sessions too, and the model often ignored the description's
+  "only use on IM" hint. Now declarative: a tool's manifest can list
+  `config.transports`, and `_build_tools_param` hides it when the session's
+  transport (im vs desktop, from `session.im_channel`) doesn't match.
+  `send_file` declares `transports:[im]`.
+- **STT model config unified to a full HF repo id** —
+  loader/server/stt_warmup/README all use `mlx-community/whisper-small-mlx`
+  verbatim. server.py and stt_warmup.py no longer prepend `mlx-community/`,
+  which double-prefixed when the config already carried the org (HF repo
+  not found). Local pre-download at `~/.ziva/models/<repo-id>/` still works.
+- **README**: dropped `skill` from the manifest-loaded list — skills load
+  from the filesystem via `build_skill_index` + `skill.extra_paths`, not
+  `manifest.yaml`.
+
 ## [1.1.2] - 2026-07-30
 
 ### Fixed
