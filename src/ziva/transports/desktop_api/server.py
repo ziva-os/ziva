@@ -789,10 +789,14 @@ class DesktopAPIServer:
         else:
             from ziva.session.compaction import _llm_context
             msgs = _llm_context(all_msgs)
+        # model_name may carry a legacy "provider|model" composite from an
+        # older client; the frontend heals that on read (see loadHistoryInto).
         return web.json_response({
             "messages": msgs,
             "last_usage": meta.get("last_usage"),
             "model_name": meta.get("model_name") or (meta.get("model_cfg", {}).get("name") if isinstance(meta.get("model_cfg"), dict) else None),
+            "provider_name": meta.get("provider_name"),
+            "thinking_mode": meta.get("thinking_mode"),
         })
 
     async def get_turns(self, request: web.Request) -> web.Response:

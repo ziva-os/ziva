@@ -347,11 +347,20 @@ class IMBridge:
             available = [f"{pn}:{mn}" for pn, mn in entries]
             sid = self.config.route_for(msg.route_key)
             current_mn = model_cfg.get("name", "unknown")
-            current_pn: str | None = None
+            current_pn: str | None = model_cfg.get("provider_name")
             if sid:
                 _sess_meta = FileStorage.get_session(self.runtime.project_id, sid) or {}
                 current_mn = _sess_meta.get("model_name") or current_mn
-                current_pn = _sess_meta.get("provider_name")
+                current_pn = _sess_meta.get("provider_name") or current_pn
+            # Resolve the owning provider when none is recorded so the current
+            # marker lines up with the "provider:model" entries above (e.g.
+            # the global default MiniMax-M3 shows as "MiniMax:MiniMax-M3").
+            if not current_pn:
+                _mn = (current_mn or "").lower()
+                for p in providers:
+                    if any((m.get("name") or "").lower() == _mn for m in p.get("models", [])):
+                        current_pn = p.get("name")
+                        break
             current = f"{current_pn}:{current_mn}" if current_pn else current_mn
             if not available:
                 available = [current]

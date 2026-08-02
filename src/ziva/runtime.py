@@ -535,7 +535,15 @@ class Runtime:
                 meta = self.storage.get_session(pid, session_id) or {}
                 saved = meta.get("model_name")
                 if isinstance(saved, str) and saved:
-                    sess.model_name = saved
+                    # Heal "provider|model" values written by an older client
+                    # that persisted the composite dropdown value as model_name.
+                    if "|" in saved:
+                        pn, _, mn = saved.partition("|")
+                        sess.model_name = mn or saved
+                        if pn and not sess.provider_name:
+                            sess.provider_name = pn
+                    else:
+                        sess.model_name = saved
                 saved_provider = meta.get("provider_name")
                 if isinstance(saved_provider, str) and saved_provider:
                     sess.provider_name = saved_provider

@@ -123,6 +123,15 @@ function showEmptyState(show: boolean) {
   }
 }
 
+// Make a messages target visible before appending a card (e.g. the /model or
+// /effort picker). An empty single-pane session sets #messages to
+// display:none and overlays the welcome screen, so without this the card
+// would be appended but invisible; split panes just hold a placeholder div.
+function revealMessagesTarget(target: HTMLElement) {
+  clearPaneEmptyPlaceholder(target);
+  if (target.id === "messages") showEmptyState(false);
+}
+
 function setPaneEmptyPlaceholder(target: HTMLElement) {
   target.innerHTML = `<div class="pane-empty-state"><svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><div>${i18n.t("msg.empty")}</div></div>`;
 }
@@ -1693,7 +1702,17 @@ async function switchSession(sid: string, opts: { skipGitRefresh?: boolean } = {
     const sel = composerModelSelect(oldSid);
     if (sel && sel.value) {
       try {
-        await api.updateSession(oldSid, { model_name: sel.value });
+        // sel.value is the composite "provider|model" (grouped dropdown) or a
+        // bare model name (flat). Parse it back so we persist a clean
+        // model_name + provider_name — writing the raw composite as model_name
+        // corrupts the session (switch-back then matches no model and the
+        // dropdown falls through to the first option).
+        const raw = sel.value;
+        const sep = raw.indexOf("|");
+        const payload: Record<string, string> = sep > 0
+          ? { provider_name: raw.slice(0, sep), model_name: raw.slice(sep + 1) }
+          : { model_name: raw };
+        await api.updateSession(oldSid, payload);
       } catch (err: any) {
         console.error("updateSession(model_name) failed on session switch:", err);
       }
@@ -1904,23 +1923,43 @@ async function loadHistoryInto(sid: string, target: HTMLElement): Promise<boolea
     // Sync the active composer's model dropdown to the loaded session.
     const modelSel = composerModelSelect(sid);
     if (fullData.model_name) {
-      // Mirror the server-side model_name into the store, not just the
-      // <select>'s .value. hydrateComposer re-renders the dropdown from
-      // `session.model_name || config.model`; if the store stays stale
-      // (undefined) while the select's value is set, the next render falls
-      // through to config.model or the DOM-default first option — so the
-      // dropdown shows one model while the backend runs the session's
-      // actual binding.
+      // Heal a legacy "provider|model" composite that an older client
+      // persisted as model_name, then mirror the clean values into the store.
+      let modelName: string = fullData.model_name;
+      let providerName: string | null = fullData.provider_name ?? null;
+      const pipe = modelName.indexOf("|");
+      if (pipe > 0) {
+        providerName = providerName || modelName.slice(0, pipe);
+        modelName = modelName.slice(pipe + 1);
+      }
+      // Mirror the server-side model_name (+ provider_name, thinking_mode)
+      // into the store, not just the <select>'s .value. hydrateComposer
+      // re-renders the dropdown from `session.model_name || config.model`; if
+      // the store stays stale while the select's value is set, the next
+      // render falls through to config.model or the DOM-default first option
+      // — so the dropdown shows one model while the backend runs the
+      // session's actual binding.
       const { sessions } = store.get();
       const si = sessions.findIndex(x => x.id === sid);
-      if (si !== -1 && (sessions[si] as any).model_name !== fullData.model_name) {
-        const next = [...sessions];
-        (next[si] as any).model_name = fullData.model_name;
-        store.set({ sessions: next });
+      if (si !== -1) {
+        const cur = sessions[si] as any;
+        if (cur.model_name !== modelName
+            || (providerName != null && cur.provider_name !== providerName)
+            || (fullData.thinking_mode != null && cur.thinking_mode !== fullData.thinking_mode)) {
+          const next = [...sessions];
+          (next[si] as any).model_name = modelName;
+          if (providerName != null) (next[si] as any).provider_name = providerName;
+          if (fullData.thinking_mode != null) (next[si] as any).thinking_mode = fullData.thinking_mode;
+          store.set({ sessions: next });
+        }
       }
-      if (modelSel && Array.from(modelSel.options).some((o) => o.value === fullData.model_name)) {
-        if (modelSel.value !== fullData.model_name) {
-          modelSel.value = fullData.model_name;
+      // Option values are the composite "provider|model"; set the matching
+      // one so the dropdown lands on the right row for same-named models
+      // across providers.
+      const want = providerName ? `${providerName}|${modelName}` : modelName;
+      if (modelSel && Array.from(modelSel.options).some((o) => o.value === want)) {
+        if (modelSel.value !== want) {
+          modelSel.value = want;
         }
       }
     }
@@ -3119,6 +3158,7 @@ function appendModelPicker(
   foot.innerHTML = i18n.t("modelPicker.hint");
   card.appendChild(foot);
 
+  revealMessagesTarget(target);
   target.appendChild(card);
   card.scrollIntoView({ behavior: "smooth", block: "end" });
   invalidateLiveStreamEl();
@@ -3153,6 +3193,7 @@ function appendEffortPicker(
     empty.className = "model-picker-foot";
     empty.textContent = i18n.t("effortPicker.none");
     card.appendChild(empty);
+    revealMessagesTarget(target);
     target.appendChild(card);
     card.scrollIntoView({ behavior: "smooth", block: "end" });
     invalidateLiveStreamEl();
@@ -3210,6 +3251,7 @@ function appendEffortPicker(
   foot.innerHTML = i18n.t("effortPicker.hint");
   card.appendChild(foot);
 
+  revealMessagesTarget(target);
   target.appendChild(card);
   card.scrollIntoView({ behavior: "smooth", block: "end" });
   invalidateLiveStreamEl();
@@ -4758,7 +4800,13 @@ function hydrateComposer(sid: string) {
     const mEntry = (models as any[]).find((m) => m.name === curModel && (!curProvider || m.provider === curProvider))
                   || (models as any[]).find((m) => m.name === curModel);
     const levels: string[] = Array.isArray(mEntry?.effort_levels) ? mEntry.effort_levels : [];
-    const wanted = (s as any)?.thinking_mode || (config as any).model?.thinking_mode || "disabled";
+    const storedMode = (s as any)?.thinking_mode as string | undefined;
+    // A new session has no thinking_mode yet — default to the model's highest
+    // supported level (not "off"), so the composer reflects the model's
+    // capability. The store's config.model is just the model *name* (a
+    // string), so there's no global thinking_mode to fall back to here; the
+    // backend's own global default covers sessions created outside the UI.
+    const wanted = storedMode || (levels.length ? levels[levels.length - 1] : "disabled");
     effortSel.replaceChildren();
     effortSel.style.display = levels.length ? "" : "none";
     if (levels.length) {
@@ -4778,8 +4826,9 @@ function hydrateComposer(sid: string) {
         if (lv === pick) o.selected = true;
         effortSel.appendChild(o);
       });
-      // Persist a downgrade so session/UI/backend stay in sync.
-      if (pick !== wanted && s) {
+      // Persist so UI and backend agree: both the new-session default
+      // (storedMode was unset → pick = model max) and any downgrade.
+      if (s && pick !== "disabled" && storedMode !== pick) {
         (s as any).thinking_mode = pick;
         api.updateSession(sid, { thinking_mode: pick }).catch(() => {});
       }
