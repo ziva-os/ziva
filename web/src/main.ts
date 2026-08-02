@@ -322,6 +322,7 @@ function init() {
 const SLASH_COMMANDS = [
   { name: "/new", description: i18n.t("slash.new.desc") },
   { name: "/model", description: i18n.t("slash.model.desc") },
+  { name: "/effort", description: "Show or set reasoning effort" },
   { name: "/compact", description: i18n.t("slash.compact.desc") },
   { name: "/prune", description: i18n.t("slash.prune.desc") },
   { name: "/automation", description: i18n.t("slash.automation.desc") },
@@ -4186,12 +4187,34 @@ async function sendComposerMessage(sid: string) {
           const s = sessions.find(x => x.id === sid);
           if (s) (s as any).model_name = arg;
           // Refresh the per-pane model dropdown so the UI matches.
-          const sel = composerModelSelect(sid);
-          if (sel) sel.value = arg;
+          // Rebuild the dropdown — option values are "provider|model" now, so
+          // assigning a bare model name leaves the select empty.
+          hydrateComposer(sid);
           appendSystem(CHECK_ICON_SVG, i18n.t("system.switchedModel"), arg);
         } catch (err: any) {
           appendError(i18n.t("toast.modelSwitchFailed", { err: err?.message || err }));
           console.error("updateSession(model_name) failed:", err);
+        }
+      }
+      return;
+    }
+    if (trimmedCmd === "/effort" || trimmedCmd.startsWith("/effort ")) {
+      const arg = trimmedCmd === "/effort" ? "" : trimmedCmd.slice("/effort ".length).trim();
+      const { config, sessions } = store.get();
+      const s = sessions.find(x => x.id === sid);
+      const cur = (s as any)?.thinking_mode || (config as any).model?.thinking_mode || "disabled";
+      if (!arg) {
+        appendSystem(CHECK_ICON_SVG, `Effort: ${cur}`, "low/medium/high/xhigh/max");
+      } else {
+        const allowed = ["disabled", "low", "medium", "high", "xhigh", "max"];
+        if (!allowed.includes(arg)) { appendError(`Unknown effort '${arg}'. Options: ${allowed.join("/")}`); return; }
+        try {
+          await api.updateSession(sid, { thinking_mode: arg });
+          if (s) (s as any).thinking_mode = arg;
+          hydrateComposer(sid);
+          appendSystem(CHECK_ICON_SVG, `Effort → ${arg}`);
+        } catch (err: any) {
+          appendError(i18n.t("toast.modelSwitchFailed", { err: err?.message || err }));
         }
       }
       return;

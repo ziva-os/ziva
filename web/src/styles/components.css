@@ -1265,7 +1265,7 @@ webview.browser-frame {
    name is visible instead of being clipped to "MiniMax-...". */
 .pane-composer select.pane-model {
   max-width: 160px;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
 }
 .pane-composer .char-count {
   font-size: 10px;

@@ -336,46 +336,78 @@ class IMBridge:
             except Exception:
                 cfg = {}
             model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
-            current = model_cfg.get("name", "unknown")
-            available: list[str] = []
-            for p in (cfg.get("providers", []) if isinstance(cfg, dict) else []):
+            providers = cfg.get("providers", []) if isinstance(cfg, dict) else []
+            # provider:model entries so same-named models across providers are
+            # distinguishable (e.g. glm:glm-5.2 vs opencode:glm-5.2).
+            entries: list[tuple[str, str]] = []
+            for p in providers:
                 for m in p.get("models", []):
                     if m.get("name"):
-                        available.append(m["name"])
-            if not available:
-                available = [current]
+                        entries.append((p.get("name", ""), m["name"]))
+            available = [f"{pn}:{mn}" for pn, mn in entries]
             sid = self.config.route_for(msg.route_key)
-            # `current` must reflect the SESSION's model (set by a prior
-            # /model switch), not the global config default — otherwise the
-            # list always marks the default and never the switched model.
+            current_mn = model_cfg.get("name", "unknown")
+            current_pn: str | None = None
             if sid:
                 _sess_meta = FileStorage.get_session(self.runtime.project_id, sid) or {}
-                current = _sess_meta.get("model_name") or current
+                current_mn = _sess_meta.get("model_name") or current_mn
+                current_pn = _sess_meta.get("provider_name")
+            current = f"{current_pn}:{current_mn}" if current_pn else current_mn
+            if not available:
+                available = [current]
             if not arg:
-                lines = [f"● {m}" if m == current else f"○ {m}" for m in available]
-                return f"可用模型（当前: {current}）：\n" + "\n".join(lines) + "\n\n用法: /model <名称>"
-            if arg not in available:
+                lines = [f"● {e}" if e == current else f"○ {e}" for e in available]
+                return f"可用模型（当前: {current}）：\n" + "\n".join(lines) + "\n\n用法: /model <provider:model>"
+            # Accept "provider:model" (exact) or bare "model" (first-wins).
+            want_pn, want_mn = (arg.split(":", 1) + [""])[:2] if ":" in arg else (None, arg)
+            match = next(((pn, mn) for pn, mn in entries
+                          if (not want_pn or pn == want_pn) and mn.lower() == want_mn.lower()), None)
+            if not match:
                 return f"未知模型: {arg}\n可用: {', '.join(available)}"
             if not sid:
                 return "请先发送一条消息再切换模型。"
             try:
-                FileStorage.update_session(self.runtime.project_id, sid, {"model_name": arg})
+                FileStorage.update_session(self.runtime.project_id, sid,
+                                           {"model_name": match[1], "provider_name": match[0]})
             except Exception as exc:
                 logger.exception("im_bridge: /model failed")
                 return f"[ziva error] 切换模型失败: {exc}"
-            # Mirror the change onto the live runtime SessionState so the
-            # next chat turn uses the new model immediately.  Writing to disk
-            # is not enough: once a session is loaded into memory, the
-            # runtime keeps using session.model_name for every turn's system
-            # context and adapter selection.
             sess = self.runtime._get_session(sid)
-            sess.model_name = arg
-            # Broadcast a sync event so the desktop UI updates its dropdown
-            # (and split-pane / background copies) without requiring a page
-            # refresh or session switch.
+            sess.model_name = match[1]
+            sess.provider_name = match[0]
             with contextlib.suppress(Exception):
-                await self.runtime._emit(sid, {"type": "model_changed", "model_name": arg})
-            return f"已将模型切换为 {arg}。"
+                await self.runtime._emit(sid, {"type": "model_changed",
+                                               "model_name": match[1], "provider_name": match[0]})
+            return f"已将模型切换为 {match[0]}:{match[1]}。"
+
+        if cmd == "/effort":
+            _EFFORTS = ("disabled", "low", "medium", "high", "xhigh", "max")
+            try:
+                cfg = self.runtime.config
+            except Exception:
+                cfg = {}
+            model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
+            sid = self.config.route_for(msg.route_key)
+            current = model_cfg.get("thinking_mode", "disabled")
+            if sid:
+                _sess_meta = FileStorage.get_session(self.runtime.project_id, sid) or {}
+                current = _sess_meta.get("thinking_mode") or current
+            if not arg:
+                return f"当前 effort: {current}\n选项: {', '.join(_EFFORTS)}"
+            if arg not in _EFFORTS:
+                return f"未知 effort: {arg}\n选项: {', '.join(_EFFORTS)}"
+            if not sid:
+                return "请先发送一条消息再切换 effort。"
+            try:
+                FileStorage.update_session(self.runtime.project_id, sid, {"thinking_mode": arg})
+            except Exception as exc:
+                logger.exception("im_bridge: /effort failed")
+                return f"[ziva error] 切换 effort 失败: {exc}"
+            sess = self.runtime._get_session(sid)
+            sess.thinking_mode = arg
+            with contextlib.suppress(Exception):
+                await self.runtime._emit(sid, {"type": "model_changed", "thinking_mode": arg})
+            return f"已将 effort 切换为 {arg}。"
 
         # --- /compact: trim the IM session's history ------------------------
         if cmd == "/compact" or cmd == "/prune":
