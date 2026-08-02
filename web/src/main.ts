@@ -114,22 +114,38 @@ const MAX_QUEUE_RETRIES = 3;
 function showEmptyState(show: boolean) {
   const center = document.querySelector(".ziva-center");
   if (center) center.classList.toggle("has-messages", !show);
+  // Clear any inline display overrides first — revealMessagesTarget sets
+  // them to surface the /model picker without flipping has-messages — so the
+  // has-messages CSS + the rules below drive visibility cleanly.
+  const msgs = $("messages");
+  const empty = $("emptyState");
+  if (msgs) msgs.style.display = "";
+  if (empty) empty.style.display = "";
   // In split mode we keep #messages visible and show a per-pane placeholder.
   const inSplit = !!center?.classList.contains("multi");
-  if (!inSplit) {
-    $("messages").style.display = show ? "none" : "block";
-  } else {
-    $("messages").style.display = "";
+  if (!inSplit && msgs) {
+    msgs.style.display = show ? "none" : "block";
   }
+  // (#emptyState visibility is owned by the has-messages / multi CSS rules,
+  //  so once its inline override is cleared above it follows has-messages.)
 }
 
 // Make a messages target visible before appending a card (e.g. the /model or
 // /effort picker). An empty single-pane session sets #messages to
 // display:none and overlays the welcome screen, so without this the card
 // would be appended but invisible; split panes just hold a placeholder div.
+// NOTE: do NOT use showEmptyState(false) here — toggling has-messages also
+// hides the status bar (workspace/branch selector), so the user would lose
+// workspace selection after picking a model. Override the empty-state CSS
+// directly via inline styles instead; showEmptyState clears them on the next
+// empty-state re-evaluation.
 function revealMessagesTarget(target: HTMLElement) {
   clearPaneEmptyPlaceholder(target);
-  if (target.id === "messages") showEmptyState(false);
+  if (target.id === "messages") {
+    target.style.display = "block";
+    const empty = $("emptyState");
+    if (empty) empty.style.display = "none";
+  }
 }
 
 function setPaneEmptyPlaceholder(target: HTMLElement) {
