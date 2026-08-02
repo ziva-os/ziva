@@ -1259,7 +1259,13 @@ webview.browser-frame {
   min-width: 0;
   text-overflow: ellipsis;
   flex-shrink: 1;
+  /* The whole control opens a list on click, so the native dropdown arrow is
+     redundant — drop it for a cleaner chip-like look. */
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
 }
+.pane-composer select::-ms-expand { display: none; }
 /* Model names (e.g. "MiniMax-M3") are longer than the approval labels
    ("Fast", "Full Auto"), so give the model select extra room so the full
    name is visible instead of being clipped to "MiniMax-...". */
