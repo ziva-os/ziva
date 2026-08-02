@@ -10,15 +10,17 @@ from ziva.shared_types import ChatMessage, ChatResult, StreamDelta, ToolCallItem
 
 
 def _is_minimax_m3(base_url: str | None, model: str) -> bool:
-    """Detect the MiniMax-M3 OpenAI-compatible endpoint.
+    """Detect a MiniMax-M* reasoning model on the OpenAI-compatible endpoint.
 
-    MiniMax-M3 exposes reasoning via an opt-in ``reasoning_split=True``
-    field (in ``extra_body``). When enabled, the model returns reasoning
-    in ``reasoning_details`` instead of embedding it in ``content``.
+    MiniMax-M3 / M2.7 expose reasoning via an opt-in ``reasoning_split=True``
+    field (in ``extra_body``). When enabled, the model returns reasoning in
+    ``reasoning_details`` (and ``reasoning_content``) instead of embedding it
+    in ``content``. Matches any minimaxi endpoint + ``minimax-m*`` model —
+    M3 and M2.7 are both confirmed (live-probed) to support split.
     """
     if not base_url:
         return False
-    return "minimaxi" in base_url.lower() and model.lower().startswith("minimax-m3")
+    return "minimaxi" in base_url.lower() and model.lower().startswith("minimax-m")
 
 
 def _model_slug(model: str) -> str:
