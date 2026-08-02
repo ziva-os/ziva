@@ -2180,6 +2180,22 @@ class Runtime:
                     return caps
         return {}
 
+    def _effort_levels_for_model(self, model_name: str) -> list[str]:
+        """Supported thinking_mode levels for `model_name` (excl. disabled).
+
+        From ``capabilities.effort_levels`` if declared; otherwise default to
+        ``["low","medium","high"]`` when the model supports thinking, or ``[]``
+        when ``capabilities.thinking`` is explicitly false (the UI then hides
+        the effort dropdown entirely).
+        """
+        caps = self._capabilities_for_model_name(model_name)
+        if caps.get("thinking") is False:
+            return []
+        levels = caps.get("effort_levels")
+        if isinstance(levels, list) and levels:
+            return [str(x) for x in levels]
+        return ["low", "medium", "high"]
+
     def _model_supports_image(self, model_name: str) -> bool:
         """True if `model_name` can consume `image_url` blocks.
 

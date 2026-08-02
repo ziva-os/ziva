@@ -509,6 +509,9 @@ function bindComposerEvents() {
         try {
           await api.updateSession(sid, { model_name: model, ...(provider_name ? { provider_name } : {}) });
           if (s) { (s as any).model_name = model; (s as any).provider_name = provider_name ?? null; }
+          // Rebuild the effort dropdown for the new model (its effort_levels
+          // + downgrade the current level if unsupported).
+          hydrateComposer(sid);
         } catch (err: any) {
           if (s && prevModel !== undefined) { (s as any).model_name = prevModel; (s as any).provider_name = prevProvider ?? null; }
           sel.value = prevProvider ? `${prevProvider}|${prevModel}` : (prevModel ?? sel.value);
@@ -4565,8 +4568,40 @@ function hydrateComposer(sid: string) {
   }
   const effortSel = document.querySelector(`.pane-effort[data-sid="${sid}"]`) as HTMLSelectElement | null;
   if (effortSel) {
-    const cur = (s as any)?.thinking_mode || (config as any).model?.thinking_mode || "disabled";
-    effortSel.value = ["disabled", "low", "medium", "high"].includes(cur) ? cur : "disabled";
+    // Rebuild from the selected model's effort_levels so the dropdown tracks
+    // the model: hidden for non-thinking models; downgrades the current level
+    // if the new model doesn't support it (max→xhigh→high→...).
+    const curModel = (s as any)?.model_name || (config as any).model?.name || "";
+    const curProvider = (s as any)?.provider_name || "";
+    const mEntry = (models as any[]).find((m) => m.name === curModel && (!curProvider || m.provider === curProvider))
+                  || (models as any[]).find((m) => m.name === curModel);
+    const levels: string[] = Array.isArray(mEntry?.effort_levels) ? mEntry.effort_levels : [];
+    const wanted = (s as any)?.thinking_mode || (config as any).model?.thinking_mode || "disabled";
+    effortSel.replaceChildren();
+    effortSel.style.display = levels.length ? "" : "none";
+    if (levels.length) {
+      const ORDER = ["low", "medium", "high", "xhigh", "max"];
+      // Keep `wanted` if the model supports it; else step down to the highest
+      // supported level at or below it; else disabled.
+      let pick = levels.includes(wanted) ? wanted : "disabled";
+      if (pick === "disabled" && wanted !== "disabled") {
+        for (let i = ORDER.indexOf(wanted); i >= 0; i--) {
+          if (levels.includes(ORDER[i])) { pick = ORDER[i]; break; }
+        }
+      }
+      ["disabled", ...levels].forEach((lv) => {
+        const o = document.createElement("option");
+        o.value = lv;
+        o.textContent = lv === "disabled" ? "off" : lv;
+        if (lv === pick) o.selected = true;
+        effortSel.appendChild(o);
+      });
+      // Persist a downgrade so session/UI/backend stay in sync.
+      if (pick !== wanted && s) {
+        (s as any).thinking_mode = pick;
+        api.updateSession(sid, { thinking_mode: pick }).catch(() => {});
+      }
+    }
   }
   if (approvalSel) {
     approvalSel.value = (s as any)?.approval_policy || "full-auto";

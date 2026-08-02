@@ -280,7 +280,7 @@ export async function openSettingsModal() {
       api_type: p.api_type || "openai_compatible",
       api_key: p.api_key || "",
       base_url: p.base_url || "",
-      models: (p.models || []).map((m2: any) => ({ name: m2.name || "", capabilities: { vision: m2.capabilities?.vision ?? true } })),
+      models: (p.models || []).map((m2: any) => ({ name: m2.name || "", capabilities: { vision: m2.capabilities?.vision ?? true, ...(Array.isArray(m2.capabilities?.effort_levels) ? { effort_levels: m2.capabilities.effort_levels } : {}) } })),
     }));
     for (let pi = 0; pi < normProviders.length; pi++) {
       const p = normProviders[pi];
@@ -293,6 +293,7 @@ export async function openSettingsModal() {
             <input class="settings-input s-model-name" value="${esc(model.name)}" placeholder="${i18n.t("settings.modelName")}" style="flex:1" />
             <label class="settings-model-check" title="${i18n.t("settings.visionTitle")}"><input type="checkbox" class="s-model-image" ${supportsImage ? "checked" : ""} /> ${i18n.t("settings.vision")}</label>
             <label class="settings-model-check" title="${i18n.t("settings.defaultModelTitle")}"><input type="radio" name="modelDefault" class="s-model-default" ${model.name === defaultModelName ? "checked" : ""} /> ${i18n.t("settings.default")}</label>
+            <input class="settings-input s-model-effort" value="${esc((model.capabilities?.effort_levels || []).join(","))}" placeholder="effort: low,medium,high" title="effort_levels (comma-separated; empty = default low/medium/high)" style="flex:1;min-width:140px" />
             <button class="settings-hook-remove s-model-remove" title="${i18n.t("common.remove")}">×</button>
           </div>`;
       }
@@ -599,6 +600,7 @@ export async function openSettingsModal() {
             <input class="settings-input s-model-name" value="" placeholder="${i18n.t("settings.modelName")}" style="flex:1" />
             <label class="settings-model-check"><input type="checkbox" class="s-model-image" /> ${i18n.t("settings.image")}</label>
             <label class="settings-model-check"><input type="radio" name="modelDefault" class="s-model-default" /> ${i18n.t("settings.default")}</label>
+            <input class="settings-input s-model-effort" value="" placeholder="effort: low,medium,high" title="effort_levels (comma-separated; empty = default low/medium/high)" style="flex:1;min-width:140px" />
             <button class="settings-hook-remove s-model-remove" title="${i18n.t("common.remove")}">×</button>`;
           (row.querySelector(".s-model-remove") as HTMLElement).onclick = () => row.remove();
           (row.querySelector(".s-model-default") as HTMLElement).onchange = () => {
@@ -695,12 +697,16 @@ export async function openSettingsModal() {
           const apiType = (card.querySelector("[data-field='api_type']") as HTMLSelectElement)?.value || "openai_compatible";
           const apiKey = (card.querySelector("[data-field='api_key']") as HTMLInputElement)?.value || "";
           const baseUrl = (card.querySelector("[data-field='base_url']") as HTMLInputElement)?.value || "";
-          const models: Array<{ name: string; capabilities: { vision: boolean } }> = [];
+          const models: Array<any> = [];
           card.querySelectorAll(".settings-model-row").forEach(row => {
             const name = (row.querySelector(".s-model-name") as HTMLInputElement)?.value.trim() || "";
             if (!name) return;
             const vision = (row.querySelector(".s-model-image") as HTMLInputElement)?.checked ?? true;
-            models.push({ name, capabilities: { vision } });
+            const caps: any = { vision };
+            const effortRaw = ((row.querySelector(".s-model-effort") as HTMLInputElement)?.value || "").trim();
+            const effortLevels = effortRaw ? effortRaw.split(",").map((x: string) => x.trim()).filter(Boolean) : [];
+            if (effortLevels.length) caps.effort_levels = effortLevels;
+            models.push({ name, capabilities: caps });
             if ((row.querySelector(".s-model-default") as HTMLInputElement)?.checked) defaultName = name;
           });
           if (models.length > 0) {

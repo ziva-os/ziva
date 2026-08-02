@@ -1958,6 +1958,7 @@ class DesktopAPIServer:
                     # both glm and opencode). Copy so we don't mutate config.
                     entry = dict(m)
                     entry["provider"] = p.get("name")
+                    entry["effort_levels"] = self.runtime._effort_levels_for_model(m["name"])
                     models_list.append(entry)
         if not available:
             available = [model_cfg.get("name", "unknown")]
