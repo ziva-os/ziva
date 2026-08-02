@@ -4725,26 +4725,24 @@ function insertSlashCommandFor(sid: string, cmd: string) {
 // draft text + images, char count, running state). Idempotent + cheap.
 // Size a <select> to its currently-selected text instead of the widest
 // option. Native selects size to the longest <option>, so a short model
-// name next to a long one renders far wider than its own label. We measure
-// the selected label with a hidden probe that shares the select's font and
-// add room for the dropdown arrow + padding.
+// name next to a long one renders far wider than its own label. We clone
+// the select with only the selected option and measure its offsetWidth —
+// that captures the native dropdown arrow + padding exactly, so there's no
+// guessed-in extra gap on the right.
 function fitSelectWidth(sel: HTMLSelectElement | null) {
   if (!sel) return;
   const opt = sel.selectedOptions[0] || sel.options[0];
   if (!opt) { sel.style.width = ""; return; }
-  const probe = document.createElement("span");
-  probe.style.position = "absolute";
-  probe.style.visibility = "hidden";
-  probe.style.whiteSpace = "pre";
-  const cs = getComputedStyle(sel);
-  probe.style.font = cs.font;
-  probe.style.letterSpacing = cs.letterSpacing;
-  probe.textContent = opt.textContent || opt.value || "";
-  document.body.appendChild(probe);
-  const w = probe.getBoundingClientRect().width;
+  const probe = sel.cloneNode(false) as HTMLSelectElement;
+  const o = document.createElement("option");
+  o.textContent = opt.textContent || opt.value || "";
+  probe.appendChild(o);
+  // cloneNode copies the inline style (including a prior width), so reset.
+  probe.style.cssText = "position:absolute;visibility:hidden;width:auto;";
+  (sel.parentElement || document.body).appendChild(probe);
+  const w = probe.offsetWidth;
   probe.remove();
-  // Arrow + left/right padding + border (~28px at the composer's 11px font).
-  sel.style.width = Math.ceil(w + 28) + "px";
+  sel.style.width = w + "px";
 }
 
 function hydrateComposer(sid: string) {
