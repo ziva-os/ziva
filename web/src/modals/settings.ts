@@ -342,10 +342,9 @@ export async function openSettingsModal() {
                     <option value="low" ${(cfg.model?.thinking_mode || "disabled") === "low" ? "selected" : ""}>${i18n.t("settings.thinking.low")}</option>
                     <option value="medium" ${(cfg.model?.thinking_mode || "disabled") === "medium" ? "selected" : ""}>${i18n.t("settings.thinking.medium")}</option>
                     <option value="high" ${(cfg.model?.thinking_mode || "disabled") === "high" ? "selected" : ""}>${i18n.t("settings.thinking.high")}</option>
+                    <option value="xhigh" ${(cfg.model?.thinking_mode || "disabled") === "xhigh" ? "selected" : ""}>xhigh</option>
+                    <option value="max" ${(cfg.model?.thinking_mode || "disabled") === "max" ? "selected" : ""}>max</option>
                   </select>
-                </div>
-                <div class="settings-row"><label class="settings-label">${i18n.t("settings.budgetTokens")}</label>
-                  <input class="settings-input" id="s_thinking_budget" type="number" value="${cfg.model?.thinking_budget_tokens || 4000}" />
                 </div>
               </div>
               <div class="settings-section-title" style="margin-top:16px;margin-bottom:8px;">${i18n.t("settings.providers")}</div>
@@ -713,8 +712,7 @@ export async function openSettingsModal() {
         }
         updated.providers = newProviders;
         const tm = (backdrop.querySelector("#s_thinking_mode") as HTMLSelectElement)?.value || "disabled";
-        const tbt = parseInt((backdrop.querySelector("#s_thinking_budget") as HTMLInputElement)?.value || "4000", 10);
-        updated.model = { name: defaultName || "", thinking_mode: tm, thinking_budget_tokens: tbt };
+        updated.model = { name: defaultName || "", thinking_mode: tm };
 
         // Approval
         updated.approval = { ...updated.approval, policy: (backdrop.querySelector("#s_approval_policy") as HTMLSelectElement).value };

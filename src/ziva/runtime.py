@@ -1582,7 +1582,6 @@ class Runtime:
             if thinking_capable:
                 thinking_config = {
                     "type": "enabled",
-                    "budget_tokens": int(model_cfg.get("thinking_budget_tokens", 4000)),
                     # When the user opted in via thinking_mode, use that
                     # value as the mode. When the capability authorized
                     # thinking but the user disabled it (`disabled`),

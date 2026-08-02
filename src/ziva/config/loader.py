@@ -11,7 +11,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "name": "claude-sonnet-4-5",
         "max_tokens": 16384,
         "thinking_mode": "disabled",
-        "thinking_budget_tokens": 4000,
     },
     "providers": [{"name": "Anthropic", "api_type": "anthropic", "api_key": "", "base_url": "https://api.anthropic.com", "models": [{"name": "claude-sonnet-4-5", "capabilities": {"vision": True}}]}],
     "prompt": {"profile": "default", "variables": {}},
@@ -118,18 +117,8 @@ def validate_config(config: Dict[str, Any]) -> None:
         raise ValueError("model.name must be a non-empty string")
     if "max_tokens" in model and (not isinstance(model["max_tokens"], int) or model["max_tokens"] <= 0):
         raise ValueError("model.max_tokens must be a positive integer")
-    if model.get("thinking_mode", "disabled") not in ("disabled", "low", "medium", "high"):
-        raise ValueError("model.thinking_mode must be one of: disabled, low, medium, high")
-    if "thinking_budget_tokens" in model and (not isinstance(model["thinking_budget_tokens"], int) or model["thinking_budget_tokens"] <= 0):
-        raise ValueError("model.thinking_budget_tokens must be a positive integer")
-    if model.get("thinking_mode", "disabled") != "disabled":
-        budget = int(model.get("thinking_budget_tokens", 4000))
-        max_t = int(model.get("max_tokens", 16384))
-        if budget >= max_t:
-            raise ValueError(
-                f"model.thinking_budget_tokens ({budget}) must be < model.max_tokens ({max_t}) "
-                f"(Anthropic requires budget_tokens < max_tokens when thinking is enabled)"
-            )
+    if model.get("thinking_mode", "disabled") not in ("disabled", "low", "medium", "high", "xhigh", "max"):
+        raise ValueError("model.thinking_mode must be one of: disabled, low, medium, high, xhigh, max")
 
     providers = config.get("providers")
     if providers is not None:

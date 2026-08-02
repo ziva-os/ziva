@@ -387,7 +387,7 @@ async def _repl_loop(runtime: Runtime, approval_policy: str, session_id: str | N
             console.print(f"  Model → [cyan]{match[0]}:{match[1]}[/cyan]")
             continue
         elif line == "/effort" or line.startswith("/effort "):
-            _EFFORTS = ("disabled", "low", "medium", "high")
+            _EFFORTS = ("disabled", "low", "medium", "high", "xhigh", "max")
             arg = line.split(" ", 1)[1].strip() if line.startswith("/effort ") else ""
             if not arg:
                 cur = runtime.config.get("model", {}).get("thinking_mode", "disabled")

@@ -985,6 +985,8 @@ function composerTemplate(sid: string): string {
           <option value="low">low</option>
           <option value="medium">med</option>
           <option value="high">high</option>
+          <option value="xhigh">xhigh</option>
+          <option value="max">max</option>
         </select>
       </div>
       <div class="toolbar-right">

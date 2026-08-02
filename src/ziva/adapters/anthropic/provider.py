@@ -221,15 +221,14 @@ class AnthropicChatAdapter:
         if anthropic_tools:
             kwargs["tools"] = anthropic_tools
         if thinking_config:
-            # budget_tokens: explicit config value wins; otherwise derive from
-            # mode (low/medium/high) so the per-session effort toggle controls
-            # extended-thinking depth on Anthropic-compatible endpoints
-            # (Kimi/glm) the same way reasoning_effort controls OpenAI ones.
-            _budget = thinking_config.get("budget_tokens")
-            if not _budget:
-                _mode = thinking_config.get("mode", "medium")
-                _budget = {"low": 2048, "medium": 4096, "high": 8192}.get(_mode, 4096)
-            kwargs["thinking"] = {"type": "enabled", "budget_tokens": int(_budget)}
+            # Adaptive thinking steered by effort (low/medium/high/xhigh/max) —
+            # the model decides when/how much to think, same mode the OpenAI
+            # side sends as reasoning_effort. Live-probed: Kimi/glm anthropic
+            # endpoints accept all five effort levels via adaptive+output_config,
+            # so no budget_tokens mapping is needed.
+            _mode = thinking_config.get("mode", "medium")
+            kwargs["thinking"] = {"type": "adaptive"}
+            kwargs["output_config"] = {"effort": _mode}
 
         resp = await call_with_retry(self._client.messages.create, **kwargs)
 
@@ -290,15 +289,14 @@ class AnthropicChatAdapter:
         if anthropic_tools:
             kwargs["tools"] = anthropic_tools
         if thinking_config:
-            # budget_tokens: explicit config value wins; otherwise derive from
-            # mode (low/medium/high) so the per-session effort toggle controls
-            # extended-thinking depth on Anthropic-compatible endpoints
-            # (Kimi/glm) the same way reasoning_effort controls OpenAI ones.
-            _budget = thinking_config.get("budget_tokens")
-            if not _budget:
-                _mode = thinking_config.get("mode", "medium")
-                _budget = {"low": 2048, "medium": 4096, "high": 8192}.get(_mode, 4096)
-            kwargs["thinking"] = {"type": "enabled", "budget_tokens": int(_budget)}
+            # Adaptive thinking steered by effort (low/medium/high/xhigh/max) —
+            # the model decides when/how much to think, same mode the OpenAI
+            # side sends as reasoning_effort. Live-probed: Kimi/glm anthropic
+            # endpoints accept all five effort levels via adaptive+output_config,
+            # so no budget_tokens mapping is needed.
+            _mode = thinking_config.get("mode", "medium")
+            kwargs["thinking"] = {"type": "adaptive"}
+            kwargs["output_config"] = {"effort": _mode}
 
         # Wrap only the connection setup (__aenter__) with retry. Once the
         # stream starts yielding, errors propagate — the runtime's
