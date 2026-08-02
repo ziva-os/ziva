@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.4] - 2026-08-02
+
+### Added
+- **Per-session reasoning effort** — `thinking_mode` is now per-session
+  (persisted across restarts), exposed as a composer dropdown, a `/effort`
+  slash command + structured picker (desktop), and `/effort` on IM/CLI. The
+  backend maps it to OpenAI `reasoning_effort`, Anthropic adaptive thinking +
+  `output_config.effort`, or MiniMax `reasoning_split`.
+- **Per-model effort levels** — models can declare
+  `capabilities.effort_levels`; the UI only offers supported levels and
+  downgrades gracefully on model switch (max→xhigh→…→disabled). Default is
+  the full `low…max` range.
+- **Multi-provider same model** — same-named models across providers (e.g.
+  `glm-5.2` under `glm` and `opencode`) are now distinguishable via a
+  `provider_name` field; the composer groups by provider and `/model`
+  (desktop + IM) uses `provider:model`.
+
+### Changed
+- **Dropped `thinking_budget_tokens`** — effort is adaptive+effort
+  everywhere now; no more mode→budget mapping.
+- **Default effort is the model's highest level** (max), not "off", so a new
+  session reasons from the first turn and UI/backend agree.
+- **Composer selects fit their label** (no widening to the longest option)
+  and the native dropdown arrow is hidden — the control already opens a list
+  on click.
+
+### Fixed
+- **Switching sessions no longer corrupts the model** — the composer's
+  composite `provider|model` value was persisted as `model_name`, so
+  switching back matched no model and the dropdown fell through to the first
+  option with effort lookup failing. Now parsed into clean `model_name` +
+  `provider_name`; legacy corrupted sessions are healed on read.
+- **`/model` + `/effort` pickers render in empty sessions** without hiding
+  the status bar / workspace selector.
+- **IM `/model` shows the provider**; **IM `/new` echoes model + effort** and
+  pins them on the fresh session.
+- **IM reconnect no longer requires re-entering credentials** — a configured
+  channel reconnects with saved secrets (one click), and start failures no
+  longer flip `enabled:false`, so a transient drop auto-retries on the next
+  restart instead of forcing a full re-setup.
+- **MiniMax-M2.7** now gets `reasoning_split` (the minimax check only
+  matched M3).
+- **`esc()`** now escapes double quotes so HTML attribute values aren't
+  truncated.
+
 ## [1.1.3] - 2026-07-31
 
 ### Fixed
