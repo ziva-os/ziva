@@ -1845,6 +1845,8 @@ class DesktopAPIServer:
             updates["model_name"] = payload["model_name"]
         if "provider_name" in payload:
             updates["provider_name"] = payload["provider_name"]
+        if "thinking_mode" in payload:
+            updates["thinking_mode"] = payload["thinking_mode"]
         # Resolve the project_id the session actually lives in. Sessions
         # can belong to any of the known workspaces (active + recently
         # visited); using the runtime's current project_id here would
@@ -1869,13 +1871,15 @@ class DesktopAPIServer:
         # disk reload on the next _get_session. Only the active
         # project's sessions live in memory; sessions from other
         # projects will be populated from disk when they're loaded.
-        if "model_name" in updates or "provider_name" in updates:
+        if "model_name" in updates or "provider_name" in updates or "thinking_mode" in updates:
             sess = self.runtime._sessions.get(sid)
             if sess is not None:
                 if "model_name" in updates:
                     sess.model_name = updates["model_name"]
                 if "provider_name" in updates:
                     sess.provider_name = updates["provider_name"]
+                if "thinking_mode" in updates:
+                    sess.thinking_mode = updates["thinking_mode"]
             # Broadcast so split panes / IM-initiated changes stay in sync
             # even when the PATCH itself didn't originate in the current UI.
             changed: dict = {"type": "model_changed"}
@@ -1883,6 +1887,8 @@ class DesktopAPIServer:
                 changed["model_name"] = updates["model_name"]
             if "provider_name" in updates:
                 changed["provider_name"] = updates["provider_name"]
+            if "thinking_mode" in updates:
+                changed["thinking_mode"] = updates["thinking_mode"]
             await self.runtime._emit(sid, changed)
         return web.json_response({"ok": True})
 

@@ -518,6 +518,23 @@ function bindComposerEvents() {
       }
       return;
     }
+    if (target.classList.contains("pane-effort")) {
+      const sel = target as HTMLSelectElement;
+      const sid = sel.dataset.sid || "";
+      const thinking_mode = sel.value;
+      if (sid) {
+        const { sessions } = store.get();
+        const s = sessions.find(x => x.id === sid);
+        try {
+          await api.updateSession(sid, { thinking_mode });
+          if (s) (s as any).thinking_mode = thinking_mode;
+        } catch (err: any) {
+          appendError(i18n.t("toast.modelSwitchFailed", { err: err?.message || err }));
+          console.error("updateSession(thinking_mode) failed:", err);
+        }
+      }
+      return;
+    }
     if (target.classList.contains("pane-approval")) {
       const sel = target as HTMLSelectElement;
       const sid = sel.dataset.sid || "";
@@ -963,6 +980,12 @@ function composerTemplate(sid: string): string {
           <option value="full-auto">${i18n.t("composer.modeFullAuto")}</option>
         </select>
         <select class="pane-model" data-sid="${esc(sid)}" title="${i18n.t("composer.modelTitle")}"></select>
+        <select class="pane-effort" data-sid="${esc(sid)}" title="Reasoning effort">
+          <option value="disabled">off</option>
+          <option value="low">low</option>
+          <option value="medium">med</option>
+          <option value="high">high</option>
+        </select>
       </div>
       <div class="toolbar-right">
         <span class="char-count pane-charcount" data-sid="${esc(sid)}"></span>
@@ -4537,6 +4560,11 @@ function hydrateComposer(sid: string) {
         modelSel.appendChild(opt);
       });
     }
+  }
+  const effortSel = document.querySelector(`.pane-effort[data-sid="${sid}"]`) as HTMLSelectElement | null;
+  if (effortSel) {
+    const cur = (s as any)?.thinking_mode || (config as any).model?.thinking_mode || "disabled";
+    effortSel.value = ["disabled", "low", "medium", "high"].includes(cur) ? cur : "disabled";
   }
   if (approvalSel) {
     approvalSel.value = (s as any)?.approval_policy || "full-auto";

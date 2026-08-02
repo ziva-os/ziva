@@ -386,6 +386,19 @@ async def _repl_loop(runtime: Runtime, approval_policy: str, session_id: str | N
             runtime.config["model"]["provider_name"] = match[0]
             console.print(f"  Model → [cyan]{match[0]}:{match[1]}[/cyan]")
             continue
+        elif line == "/effort" or line.startswith("/effort "):
+            _EFFORTS = ("disabled", "low", "medium", "high")
+            arg = line.split(" ", 1)[1].strip() if line.startswith("/effort ") else ""
+            if not arg:
+                cur = runtime.config.get("model", {}).get("thinking_mode", "disabled")
+                console.print(f"  Current effort: [cyan]{cur}[/cyan]")
+                console.print(f"  [dim]Options: {', '.join(_EFFORTS)}[/dim]")
+            elif arg in _EFFORTS:
+                runtime.config["model"]["thinking_mode"] = arg
+                console.print(f"  Effort → [cyan]{arg}[/cyan]")
+            else:
+                console.print(f"  [red]Unknown effort '{arg}'. Options: {', '.join(_EFFORTS)}[/red]")
+            continue
         elif line == "/new":
             history = []
             session_id = str(uuid.uuid4())

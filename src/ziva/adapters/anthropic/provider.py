@@ -221,7 +221,15 @@ class AnthropicChatAdapter:
         if anthropic_tools:
             kwargs["tools"] = anthropic_tools
         if thinking_config:
-            kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_config.get("budget_tokens", 4000)}
+            # budget_tokens: explicit config value wins; otherwise derive from
+            # mode (low/medium/high) so the per-session effort toggle controls
+            # extended-thinking depth on Anthropic-compatible endpoints
+            # (Kimi/glm) the same way reasoning_effort controls OpenAI ones.
+            _budget = thinking_config.get("budget_tokens")
+            if not _budget:
+                _mode = thinking_config.get("mode", "medium")
+                _budget = {"low": 2048, "medium": 4096, "high": 8192}.get(_mode, 4096)
+            kwargs["thinking"] = {"type": "enabled", "budget_tokens": int(_budget)}
 
         resp = await call_with_retry(self._client.messages.create, **kwargs)
 
@@ -282,7 +290,15 @@ class AnthropicChatAdapter:
         if anthropic_tools:
             kwargs["tools"] = anthropic_tools
         if thinking_config:
-            kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_config.get("budget_tokens", 4000)}
+            # budget_tokens: explicit config value wins; otherwise derive from
+            # mode (low/medium/high) so the per-session effort toggle controls
+            # extended-thinking depth on Anthropic-compatible endpoints
+            # (Kimi/glm) the same way reasoning_effort controls OpenAI ones.
+            _budget = thinking_config.get("budget_tokens")
+            if not _budget:
+                _mode = thinking_config.get("mode", "medium")
+                _budget = {"low": 2048, "medium": 4096, "high": 8192}.get(_mode, 4096)
+            kwargs["thinking"] = {"type": "enabled", "budget_tokens": int(_budget)}
 
         # Wrap only the connection setup (__aenter__) with retry. Once the
         # stream starts yielding, errors propagate — the runtime's

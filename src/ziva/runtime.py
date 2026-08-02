@@ -539,6 +539,9 @@ class Runtime:
                 saved_provider = meta.get("provider_name")
                 if isinstance(saved_provider, str) and saved_provider:
                     sess.provider_name = saved_provider
+                saved_effort = meta.get("thinking_mode")
+                if isinstance(saved_effort, str) and saved_effort:
+                    sess.thinking_mode = saved_effort
                 saved_ws = meta.get("workspace_root")
                 if isinstance(saved_ws, str) and saved_ws:
                     sess.workspace_root = saved_ws
@@ -1171,6 +1174,9 @@ class Runtime:
             # Pin the provider so _find_provider_for_model resolves the right
             # one when the same model name is listed under multiple providers.
             model_cfg["provider_name"] = session.provider_name
+        if session.thinking_mode:
+            # Per-session effort override wins over the global thinking_mode.
+            model_cfg["thinking_mode"] = session.thinking_mode
         turn_config = dict(self.config)
         turn_config["model"] = model_cfg
         turn_adapter = _create_adapter(turn_config)
@@ -1336,6 +1342,9 @@ class Runtime:
             # Pin the provider so _find_provider_for_model resolves the right
             # one when the same model name is listed under multiple providers.
             model_cfg["provider_name"] = session.provider_name
+        if session.thinking_mode:
+            # Per-session effort override wins over the global thinking_mode.
+            model_cfg["thinking_mode"] = session.thinking_mode
         turn_config = dict(self.config)
         turn_config["model"] = model_cfg
         turn_adapter = _create_adapter(turn_config)
