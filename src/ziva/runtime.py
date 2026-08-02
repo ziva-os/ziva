@@ -60,7 +60,18 @@ def _find_provider_for_model(config: dict) -> dict | None:
     model_name = (config.get("model", {}).get("name") or "").lower()
     if not model_name:
         return None
-    for p in config.get("providers", []) or []:
+    provider_name = (config.get("model", {}).get("provider_name") or "").lower()
+    providers = config.get("providers", []) or []
+    if provider_name:
+        # Same model name under multiple providers — match the chosen one exactly.
+        for p in providers:
+            if (p.get("name") or "").lower() == provider_name:
+                for m in p.get("models", []) or []:
+                    if (m.get("name") or "").lower() == model_name:
+                        return p
+                return None
+        return None
+    for p in providers:
         for m in p.get("models", []) or []:
             if (m.get("name") or "").lower() == model_name:
                 return p
@@ -525,6 +536,9 @@ class Runtime:
                 saved = meta.get("model_name")
                 if isinstance(saved, str) and saved:
                     sess.model_name = saved
+                saved_provider = meta.get("provider_name")
+                if isinstance(saved_provider, str) and saved_provider:
+                    sess.provider_name = saved_provider
                 saved_ws = meta.get("workspace_root")
                 if isinstance(saved_ws, str) and saved_ws:
                     sess.workspace_root = saved_ws
@@ -1153,6 +1167,10 @@ class Runtime:
         model_cfg = dict(self.config.get("model", {}))
         if session.model_name:
             model_cfg["name"] = session.model_name
+        if session.provider_name:
+            # Pin the provider so _find_provider_for_model resolves the right
+            # one when the same model name is listed under multiple providers.
+            model_cfg["provider_name"] = session.provider_name
         turn_config = dict(self.config)
         turn_config["model"] = model_cfg
         turn_adapter = _create_adapter(turn_config)
@@ -1314,6 +1332,10 @@ class Runtime:
         model_cfg = dict(self.config.get("model", {}))
         if session.model_name:
             model_cfg["name"] = session.model_name
+        if session.provider_name:
+            # Pin the provider so _find_provider_for_model resolves the right
+            # one when the same model name is listed under multiple providers.
+            model_cfg["provider_name"] = session.provider_name
         turn_config = dict(self.config)
         turn_config["model"] = model_cfg
         turn_adapter = _create_adapter(turn_config)

@@ -196,6 +196,10 @@ class SessionState:
     event_queue: asyncio.Queue | None = None
     event_history: deque = field(default_factory=lambda: deque(maxlen=100))
     model_name: str | None = None
+    # Provider that owns model_name when the same model is listed under multiple
+    # providers (e.g. glm-5.2 under both glm and opencode). None = first-wins
+    # (backward compatible). Persisted alongside model_name; restored on reload.
+    provider_name: str | None = None
     # When the session is driven from the IM bridge, which channel it's on
     # (e.g. "feishu"/"telegram"). Surfaced to the model via the system prompt
     # so it knows `send_file` delivers to this chat. None for desktop sessions.

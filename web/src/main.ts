@@ -495,22 +495,23 @@ function bindComposerEvents() {
     if (target.classList.contains("pane-model")) {
       const sel = target as HTMLSelectElement;
       const sid = sel.dataset.sid || "";
-      const model = sel.value;
+      const raw = sel.value;  // "provider|model" (grouped) or "model" (flat)
       if (sid) {
-        // Capture the previous value so we can revert on PATCH failure
-        // — silently swallowing the error (old behavior) left the UI
-        // and the backend out of sync: subsequent turns used the old
-        // model even though the dropdown showed the new one.
+        const sep = raw.indexOf("|");
+        const provider_name = sep > 0 ? raw.slice(0, sep) : undefined;
+        const model = sep > 0 ? raw.slice(sep + 1) : raw;
+        // Capture previous so we can revert on PATCH failure — silently
+        // swallowing left UI and backend out of sync.
         const { sessions } = store.get();
         const s = sessions.find(x => x.id === sid);
         const prevModel = s ? (s as any).model_name : undefined;
+        const prevProvider = s ? (s as any).provider_name : undefined;
         try {
-          await api.updateSession(sid, { model_name: model });
-          if (s) (s as any).model_name = model;
+          await api.updateSession(sid, { model_name: model, ...(provider_name ? { provider_name } : {}) });
+          if (s) { (s as any).model_name = model; (s as any).provider_name = provider_name ?? null; }
         } catch (err: any) {
-          // Roll back UI to match server state.
-          if (s && prevModel !== undefined) (s as any).model_name = prevModel;
-          sel.value = prevModel ?? sel.value;
+          if (s && prevModel !== undefined) { (s as any).model_name = prevModel; (s as any).provider_name = prevProvider ?? null; }
+          sel.value = prevProvider ? `${prevProvider}|${prevModel}` : (prevModel ?? sel.value);
           appendError(i18n.t("toast.modelSwitchFailed", { err: err?.message || err }));
           console.error("updateSession(model_name) failed:", err);
         }
@@ -4502,14 +4503,40 @@ function hydrateComposer(sid: string) {
   const models = (config as any).modelDetails || ((config as any).model?.available || []).map((m: string) => ({ name: m }));
   if (modelSel) {
     const currentModel = (s as any)?.model_name || config.model;
+    const currentProvider = (s as any)?.provider_name || "";
     modelSel.replaceChildren();
-    models.forEach((m: any) => {
-      const opt = document.createElement("option");
-      opt.value = m.name;
-      opt.textContent = m.name;
-      if (m.name === currentModel) opt.selected = true;
-      modelSel.appendChild(opt);
-    });
+    // Group by provider so same-named models across providers (e.g. glm-5.2
+    // under glm + opencode) each get their own row. option.value encodes
+    // "provider|model"; the change handler parses it back. Falls back to a
+    // flat list when the backend gives no provider attribution.
+    if (models.some((m: any) => m.provider)) {
+      const byProvider = new Map<string, any[]>();
+      models.forEach((m: any) => {
+        const p = m.provider || "(default)";
+        if (!byProvider.has(p)) byProvider.set(p, []);
+        byProvider.get(p)!.push(m);
+      });
+      [...byProvider.keys()].sort().forEach((p) => {
+        const og = document.createElement("optgroup");
+        og.label = p;
+        byProvider.get(p)!.forEach((m: any) => {
+          const opt = document.createElement("option");
+          opt.value = `${p}|${m.name}`;
+          opt.textContent = m.name;
+          if (m.name === currentModel && (p === currentProvider || !currentProvider)) opt.selected = true;
+          og.appendChild(opt);
+        });
+        modelSel.appendChild(og);
+      });
+    } else {
+      models.forEach((m: any) => {
+        const opt = document.createElement("option");
+        opt.value = m.name;
+        opt.textContent = m.name;
+        if (m.name === currentModel) opt.selected = true;
+        modelSel.appendChild(opt);
+      });
+    }
   }
   if (approvalSel) {
     approvalSel.value = (s as any)?.approval_policy || "full-auto";

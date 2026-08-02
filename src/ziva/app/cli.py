@@ -347,13 +347,44 @@ async def _repl_loop(runtime: Runtime, approval_policy: str, session_id: str | N
             console.print("  [dim]History cleared.[/dim]")
             continue
         elif line == "/model":
-            model_name = runtime.config.get("model", {}).get("name", "unknown")
-            console.print(f"  Current model: [cyan]{model_name}[/cyan]")
+            mcfg = runtime.config.get("model", {})
+            name = mcfg.get("name", "unknown")
+            provider = mcfg.get("provider_name")
+            shown = f"{provider}:{name}" if provider else name
+            console.print(f"  Current model: [cyan]{shown}[/cyan]")
+            avail = [f"{p.get('name')}:{m.get('name')}"
+                     for p in (runtime.config.get("providers") or [])
+                     for m in (p.get("models") or [])]
+            if avail:
+                console.print(f"  [dim]Available: {', '.join(avail[:24])}{'…' if len(avail) > 24 else ''}[/dim]")
             continue
         elif line.startswith("/model "):
-            new_model = line.split(" ", 1)[1].strip()
-            runtime.config["model"]["name"] = new_model
-            console.print(f"  Model → [cyan]{new_model}[/cyan]")
+            arg = line.split(" ", 1)[1].strip()
+            # Accept "provider:model" (exact) or bare "model" (first-wins).
+            provider_name: str | None = None
+            if ":" in arg:
+                provider_name, new_model = arg.split(":", 1)
+                provider_name, new_model = provider_name.strip(), new_model.strip()
+            else:
+                new_model = arg
+            providers = runtime.config.get("providers") or []
+            match = None
+            for p in providers:
+                if provider_name and p.get("name") != provider_name:
+                    continue
+                for m in p.get("models") or []:
+                    if (m.get("name") or "").lower() == new_model.lower():
+                        match = (p.get("name"), m.get("name"))
+                        break
+                if match:
+                    break
+            if not match:
+                avail = [f"{p.get('name')}:{m.get('name')}" for p in providers for m in (p.get("models") or [])]
+                console.print(f"  [red]Unknown model '{arg}'. Available: {', '.join(avail[:24])}[/red]")
+                continue
+            runtime.config["model"]["name"] = match[1]
+            runtime.config["model"]["provider_name"] = match[0]
+            console.print(f"  Model → [cyan]{match[0]}:{match[1]}[/cyan]")
             continue
         elif line == "/new":
             history = []
