@@ -293,7 +293,7 @@ export async function openSettingsModal() {
             <input class="settings-input s-model-name" value="${esc(model.name)}" placeholder="${i18n.t("settings.modelName")}" style="flex:1" />
             <label class="settings-model-check" title="${i18n.t("settings.visionTitle")}"><input type="checkbox" class="s-model-image" ${supportsImage ? "checked" : ""} /> ${i18n.t("settings.vision")}</label>
             <label class="settings-model-check" title="${i18n.t("settings.defaultModelTitle")}"><input type="radio" name="modelDefault" class="s-model-default" ${model.name === defaultModelName ? "checked" : ""} /> ${i18n.t("settings.default")}</label>
-            <select class="settings-input s-model-effort" title="Highest effort this model supports (default = low/medium/high)">${(() => { const lv = model.capabilities?.effort_levels || []; const top = lv.length ? lv[lv.length - 1] : ""; return ["", "low", "medium", "high", "xhigh", "max"].map(o => `<option value="${o}" ${o === top ? "selected" : ""}>${o || "default"}</option>`).join(""); })()}</select>
+            <select class="settings-input s-model-effort" title="Highest effort this model supports (default = max)">${(() => { const lv = model.capabilities?.effort_levels || []; const top = lv.length ? lv[lv.length - 1] : "max"; return ["low", "medium", "high", "xhigh", "max"].map(o => `<option value="${o}" ${o === top ? "selected" : ""}>${o}</option>`).join(""); })()}</select>
             <button class="settings-hook-remove s-model-remove" title="${i18n.t("common.remove")}">×</button>
           </div>`;
       }
@@ -600,7 +600,7 @@ export async function openSettingsModal() {
             <input class="settings-input s-model-name" value="" placeholder="${i18n.t("settings.modelName")}" style="flex:1" />
             <label class="settings-model-check"><input type="checkbox" class="s-model-image" /> ${i18n.t("settings.image")}</label>
             <label class="settings-model-check"><input type="radio" name="modelDefault" class="s-model-default" /> ${i18n.t("settings.default")}</label>
-            <select class="settings-input s-model-effort" title="Highest effort this model supports (default = low/medium/high)">${["", "low", "medium", "high", "xhigh", "max"].map(o => `<option value="${o}" ${o === "" ? "selected" : ""}>${o || "default"}</option>`).join("")}</select>
+            <select class="settings-input s-model-effort" title="Highest effort this model supports (default = max)">${["low", "medium", "high", "xhigh", "max"].map(o => `<option value="${o}" ${o === "max" ? "selected" : ""}>${o}</option>`).join("")}</select>
             <button class="settings-hook-remove s-model-remove" title="${i18n.t("common.remove")}">×</button>`;
           (row.querySelector(".s-model-remove") as HTMLElement).onclick = () => row.remove();
           (row.querySelector(".s-model-default") as HTMLElement).onchange = () => {
@@ -703,9 +703,12 @@ export async function openSettingsModal() {
             if (!name) return;
             const vision = (row.querySelector(".s-model-image") as HTMLInputElement)?.checked ?? true;
             const caps: any = { vision };
-            const effortTop = (row.querySelector(".s-model-effort") as HTMLSelectElement)?.value || "";
+            const effortTop = (row.querySelector(".s-model-effort") as HTMLSelectElement)?.value || "max";
             const ORDER = ["low", "medium", "high", "xhigh", "max"];
-            if (effortTop && ORDER.includes(effortTop)) {
+            // max is the default — leave effort_levels unset so the runtime
+            // default (full list) applies and the config stays minimal. Only
+            // persist an explicit cap for models that cap below max.
+            if (effortTop !== "max" && ORDER.includes(effortTop)) {
               caps.effort_levels = ORDER.slice(0, ORDER.indexOf(effortTop) + 1);
             }
             models.push({ name, capabilities: caps });

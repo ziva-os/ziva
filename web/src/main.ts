@@ -3003,11 +3003,13 @@ function appendSystem(iconSvg: string, label: string, detail?: string, target: H
 
 // Structured model picker for the no-arg `/model` command. Shows the
 // current model as a labeled header, each available model as a clickable
-// row (clicking fires the same PATCH the slash command would), and a
-// footer hint. The card itself isn't persisted to history.
+// row (clicking fires the same PATCH the slash command would), grouped by
+// provider so same-named models across providers are distinguishable, plus
+// a footer hint. The card itself isn't persisted to history.
 function appendModelPicker(
   currentModel: string,
-  models: { name: string }[],
+  currentProvider: string,
+  models: { name: string; provider?: string }[],
   sid: string,
   target: HTMLElement = (getLiveStreamTarget() || $("messages")),
 ) {
@@ -3026,13 +3028,27 @@ function appendModelPicker(
   head.appendChild(pill);
   card.appendChild(head);
 
-  // List: one row per model
+  // Group by provider when any model carries a provider so duplicates
+  // (e.g. glm-5.2 under glm + opencode) each get their own row.
+  const hasProviders = models.some((m) => m.provider);
+  const byProvider = new Map<string, { name: string; provider?: string }[]>();
+  if (hasProviders) {
+    models.forEach((m) => {
+      const p = m.provider || "(default)";
+      if (!byProvider.has(p)) byProvider.set(p, []);
+      byProvider.get(p)!.push(m);
+    });
+  }
+
   const list = document.createElement("div");
   list.className = "model-picker-list";
-  for (const m of models) {
+
+  const renderRow = (m: { name: string; provider?: string }) => {
     const row = document.createElement("div");
     row.className = "model-picker-row";
-    if (m.name === currentModel) row.classList.add("is-current");
+    const isCurrent = m.name === currentModel &&
+      (!hasProviders || !currentProvider || !m.provider || m.provider === currentProvider);
+    if (isCurrent) row.classList.add("is-current");
 
     const check = document.createElement("span");
     check.className = "check";
@@ -3044,7 +3060,7 @@ function appendModelPicker(
     name.textContent = m.name;
     row.appendChild(name);
 
-    if (m.name === currentModel) {
+    if (isCurrent) {
       const badge = document.createElement("span");
       badge.className = "badge";
       badge.textContent = i18n.t("modelPicker.inUse");
@@ -3052,36 +3068,25 @@ function appendModelPicker(
     }
 
     // Click anywhere on the row to switch — mirrors typing
-    // `/model <name>` and Enter.
+    // `/model <provider:model>` and Enter. Rebuild the composer dropdown
+    // (option values are "provider|model") via hydrateComposer; assigning a
+    // bare name would leave the select empty.
     row.addEventListener("click", async () => {
-      if (m.name === currentModel) return; // already on it
+      if (isCurrent) return; // already on it
       try {
-        await api.updateSession(sid, { model_name: m.name });
+        const payload: Record<string, string> = { model_name: m.name };
+        if (m.provider) payload.provider_name = m.provider;
+        await api.updateSession(sid, payload);
         const sessions = store.get().sessions;
         const s = sessions.find(x => x.id === sid);
-        if (s) (s as any).model_name = m.name;
-        const sel = composerModelSelect(sid);
-        if (sel) sel.value = m.name;
-        // Replace the card with a confirmation pill so the user can see
-        // the switch landed. (Clicking a row = exactly the same code
-        // path as `/model <name>` Enter, so reuse the same acknowledgement.)
-        card.replaceWith((() => {
-          const wrap = document.createElement("div");
-          wrap.className = "system-card";
-          const inner = document.createElement("div");
-          inner.className = "system-inner";
-          inner.innerHTML = `<span class="system-icon">${CHECK_ICON_SVG}</span>`;
-          const lbl = document.createElement("span");
-          lbl.className = "system-label";
-          lbl.textContent = i18n.t("system.switchedModel");
-          inner.appendChild(lbl);
-          const det = document.createElement("span");
-          det.className = "system-detail";
-          det.textContent = m.name;
-          inner.appendChild(det);
-          wrap.appendChild(inner);
-          return wrap;
-        })());
+        if (s) { (s as any).model_name = m.name; (s as any).provider_name = m.provider ?? null; }
+        hydrateComposer(sid);
+        // Swap the picker for a confirmation card (same code path as
+        // `/model <name>` Enter).
+        const detail = m.provider ? `${m.provider}:${m.name}` : m.name;
+        const host = card.parentElement;
+        card.remove();
+        appendSystem(CHECK_ICON_SVG, i18n.t("system.switchedModel"), detail, host || undefined);
       } catch (err: any) {
         appendError(i18n.t("toast.modelSwitchFailed", { err: err?.message || err }));
         console.error("updateSession(model_name) failed:", err);
@@ -3089,6 +3094,22 @@ function appendModelPicker(
     });
 
     list.appendChild(row);
+  };
+
+  if (hasProviders) {
+    [...byProvider.keys()].sort().forEach((p) => {
+      // Only show the provider subhead when there's >1 group — otherwise the
+      // single provider is just noise.
+      if (byProvider.size > 1) {
+        const sub = document.createElement("div");
+        sub.className = "model-picker-group";
+        sub.textContent = p;
+        list.appendChild(sub);
+      }
+      byProvider.get(p)!.forEach(renderRow);
+    });
+  } else {
+    models.forEach(renderRow);
   }
   card.appendChild(list);
 
@@ -3096,6 +3117,97 @@ function appendModelPicker(
   const foot = document.createElement("div");
   foot.className = "model-picker-foot";
   foot.innerHTML = i18n.t("modelPicker.hint");
+  card.appendChild(foot);
+
+  target.appendChild(card);
+  card.scrollIntoView({ behavior: "smooth", block: "end" });
+  invalidateLiveStreamEl();
+}
+
+// Structured effort picker for the no-arg `/effort` command. Mirrors the
+// model picker: current level as a labeled header, each supported level as
+// a clickable row, footer hint. Reuses `.model-picker` styles. Empty
+// `levels` (non-thinking model) renders an explanatory note instead.
+function appendEffortPicker(
+  current: string,
+  levels: string[],
+  sid: string,
+  target: HTMLElement = (getLiveStreamTarget() || $("messages")),
+) {
+  const card = document.createElement("div");
+  card.className = "model-picker";
+
+  const head = document.createElement("div");
+  head.className = "model-picker-head";
+  const title = document.createElement("h4");
+  title.textContent = i18n.t("effortPicker.title");
+  head.appendChild(title);
+  const pill = document.createElement("span");
+  pill.className = "current-pill";
+  pill.textContent = i18n.t("effortPicker.current", { effort: current === "disabled" ? "off" : current });
+  head.appendChild(pill);
+  card.appendChild(head);
+
+  if (!levels.length) {
+    const empty = document.createElement("div");
+    empty.className = "model-picker-foot";
+    empty.textContent = i18n.t("effortPicker.none");
+    card.appendChild(empty);
+    target.appendChild(card);
+    card.scrollIntoView({ behavior: "smooth", block: "end" });
+    invalidateLiveStreamEl();
+    return;
+  }
+
+  const list = document.createElement("div");
+  list.className = "model-picker-list";
+  ["disabled", ...levels].forEach((lv) => {
+    const row = document.createElement("div");
+    row.className = "model-picker-row";
+    const isCurrent = lv === current;
+    if (isCurrent) row.classList.add("is-current");
+
+    const check = document.createElement("span");
+    check.className = "check";
+    check.textContent = "✓";
+    row.appendChild(check);
+
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = lv === "disabled" ? "off" : lv;
+    row.appendChild(name);
+
+    if (isCurrent) {
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = i18n.t("modelPicker.inUse");
+      row.appendChild(badge);
+    }
+
+    row.addEventListener("click", async () => {
+      if (isCurrent) return;
+      try {
+        await api.updateSession(sid, { thinking_mode: lv });
+        const sessions = store.get().sessions;
+        const s = sessions.find(x => x.id === sid);
+        if (s) (s as any).thinking_mode = lv;
+        hydrateComposer(sid);
+        const host = card.parentElement;
+        card.remove();
+        appendSystem(CHECK_ICON_SVG, "Effort", lv === "disabled" ? "off" : lv, host || undefined);
+      } catch (err: any) {
+        appendError(i18n.t("toast.modelSwitchFailed", { err: err?.message || err }));
+        console.error("updateSession(thinking_mode) failed:", err);
+      }
+    });
+
+    list.appendChild(row);
+  });
+  card.appendChild(list);
+
+  const foot = document.createElement("div");
+  foot.className = "model-picker-foot";
+  foot.innerHTML = i18n.t("effortPicker.hint");
   card.appendChild(foot);
 
   target.appendChild(card);
@@ -4173,24 +4285,36 @@ async function sendComposerMessage(sid: string) {
     if (trimmedCmd === "/model" || trimmedCmd.startsWith("/model ")) {
       // No-arg: render the model picker card. With arg: switch session model.
       const arg = trimmedCmd === "/model" ? "" : trimmedCmd.slice("/model ".length).trim();
+      const { config, sessions } = store.get();
+      const s = sessions.find(x => x.id === sid);
+      const models = (config as any).modelDetails
+        || ((config as any).model?.available || []).map((m: string) => ({ name: m }));
       if (!arg) {
-        const { config, sessions } = store.get();
-        const s = sessions.find(x => x.id === sid);
         const currentModel = (s as any)?.model_name || (config as any).model;
-        const models = (config as any).modelDetails
-          || ((config as any).model?.available || []).map((m: string) => ({ name: m }));
-        appendModelPicker(currentModel, models, sid, messagesEl || undefined);
+        const currentProvider = (s as any)?.provider_name || "";
+        appendModelPicker(currentModel, currentProvider, models, sid, messagesEl || undefined);
       } else {
         try {
-          await api.updateSession(sid, { model_name: arg });
-          const sessions = store.get().sessions;
-          const s = sessions.find(x => x.id === sid);
-          if (s) (s as any).model_name = arg;
-          // Refresh the per-pane model dropdown so the UI matches.
+          // Accept "provider:model" (exact) or a bare model name (resolve
+          // provider from modelDetails so the composer dropdown lands on the
+          // right "provider|model" option instead of going blank).
+          let provider_name: string | undefined;
+          let model_name = arg;
+          if (arg.includes(":")) {
+            const idx = arg.indexOf(":");
+            provider_name = arg.slice(0, idx).trim();
+            model_name = arg.slice(idx + 1).trim();
+          } else {
+            const found = (models as any[]).find((m) => m.name === arg);
+            provider_name = found?.provider;
+          }
+          await api.updateSession(sid, { model_name, ...(provider_name ? { provider_name } : {}) });
+          const ss = store.get().sessions.find(x => x.id === sid);
+          if (ss) { (ss as any).model_name = model_name; (ss as any).provider_name = provider_name ?? null; }
           // Rebuild the dropdown — option values are "provider|model" now, so
           // assigning a bare model name leaves the select empty.
           hydrateComposer(sid);
-          appendSystem(CHECK_ICON_SVG, i18n.t("system.switchedModel"), arg);
+          appendSystem(CHECK_ICON_SVG, i18n.t("system.switchedModel"), provider_name ? `${provider_name}:${model_name}` : model_name);
         } catch (err: any) {
           appendError(i18n.t("toast.modelSwitchFailed", { err: err?.message || err }));
           console.error("updateSession(model_name) failed:", err);
@@ -4203,16 +4327,27 @@ async function sendComposerMessage(sid: string) {
       const { config, sessions } = store.get();
       const s = sessions.find(x => x.id === sid);
       const cur = (s as any)?.thinking_mode || (config as any).model?.thinking_mode || "disabled";
+      // Resolve the current model's supported effort levels (server reports
+      // the resolved list — capped set, full default, or [] for non-thinking).
+      const models = (config as any).modelDetails || [];
+      const curModel = (s as any)?.model_name || (config as any).model?.name || "";
+      const curProvider = (s as any)?.provider_name || "";
+      const mEntry = (models as any[]).find((m) => m.name === curModel && (!curProvider || m.provider === curProvider))
+                    || (models as any[]).find((m) => m.name === curModel);
+      const levels: string[] = Array.isArray(mEntry?.effort_levels) ? mEntry.effort_levels : [];
       if (!arg) {
-        appendSystem(CHECK_ICON_SVG, `Effort: ${cur}`, "low/medium/high/xhigh/max");
+        appendEffortPicker(cur, levels, sid, messagesEl || undefined);
       } else {
-        const allowed = ["disabled", "low", "medium", "high", "xhigh", "max"];
-        if (!allowed.includes(arg)) { appendError(`Unknown effort '${arg}'. Options: ${allowed.join("/")}`); return; }
+        const allowed = ["disabled", ...levels];
+        if (!allowed.includes(arg)) {
+          appendError(`Unknown effort '${arg}'. Options: ${allowed.join("/")}`);
+          return;
+        }
         try {
           await api.updateSession(sid, { thinking_mode: arg });
           if (s) (s as any).thinking_mode = arg;
           hydrateComposer(sid);
-          appendSystem(CHECK_ICON_SVG, `Effort → ${arg}`);
+          appendSystem(CHECK_ICON_SVG, `Effort → ${arg === "disabled" ? "off" : arg}`);
         } catch (err: any) {
           appendError(i18n.t("toast.modelSwitchFailed", { err: err?.message || err }));
         }
@@ -4546,6 +4681,30 @@ function insertSlashCommandFor(sid: string, cmd: string) {
 // ---- Mount / hydrate / reconcile ----
 // Populate a mounted composer from per-session state (model, approval,
 // draft text + images, char count, running state). Idempotent + cheap.
+// Size a <select> to its currently-selected text instead of the widest
+// option. Native selects size to the longest <option>, so a short model
+// name next to a long one renders far wider than its own label. We measure
+// the selected label with a hidden probe that shares the select's font and
+// add room for the dropdown arrow + padding.
+function fitSelectWidth(sel: HTMLSelectElement | null) {
+  if (!sel) return;
+  const opt = sel.selectedOptions[0] || sel.options[0];
+  if (!opt) { sel.style.width = ""; return; }
+  const probe = document.createElement("span");
+  probe.style.position = "absolute";
+  probe.style.visibility = "hidden";
+  probe.style.whiteSpace = "pre";
+  const cs = getComputedStyle(sel);
+  probe.style.font = cs.font;
+  probe.style.letterSpacing = cs.letterSpacing;
+  probe.textContent = opt.textContent || opt.value || "";
+  document.body.appendChild(probe);
+  const w = probe.getBoundingClientRect().width;
+  probe.remove();
+  // Arrow + left/right padding + border (~28px at the composer's 11px font).
+  sel.style.width = Math.ceil(w + 28) + "px";
+}
+
 function hydrateComposer(sid: string) {
   const modelSel = composerModelSelect(sid);
   const approvalSel = composerApprovalSelect(sid);
@@ -4651,6 +4810,10 @@ function hydrateComposer(sid: string) {
   setComposerRunning(sid, !!store.get().runningSessions[sid]);
   renderComposerPreviews(sid);
   renderComposerPending(sid);
+  // Size the model + effort selects to their current labels so short names
+  // don't stretch to the width of the longest option in the list.
+  fitSelectWidth(modelSel);
+  fitSelectWidth(document.querySelector(`.pane-effort[data-sid="${sid}"]`) as HTMLSelectElement | null);
 }
 
 // Mount the unified composer template into `host` for `sid`. Re-mounts only

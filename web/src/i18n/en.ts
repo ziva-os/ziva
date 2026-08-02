@@ -137,6 +137,12 @@ export const dict = {
   "modelPicker.inUse": "in use",
   "modelPicker.hint": "Type <code>/model &lt;name&gt;</code> to switch without clicking, or pass a name inline.",
 
+  // ---- effort picker ----
+  "effortPicker.title": "Reasoning effort",
+  "effortPicker.current": "current: {{effort}}",
+  "effortPicker.hint": "Type <code>/effort &lt;level&gt;</code> to switch without clicking.",
+  "effortPicker.none": "This model doesn't expose reasoning effort.",
+
   // ---- toasts ----
   "toast.compacting": "Compacting context...",
   "toast.compacted": "Context compacted",

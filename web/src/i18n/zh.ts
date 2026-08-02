@@ -136,6 +136,12 @@ export const dict: Partial<Dict> = {
   "modelPicker.inUse": "使用中",
   "modelPicker.hint": "输入 <code>/model &lt;名称&gt;</code> 可免点击切换，也可直接带名称。",
 
+  // ---- effort picker ----
+  "effortPicker.title": "推理强度",
+  "effortPicker.current": "当前：{{effort}}",
+  "effortPicker.hint": "输入 <code>/effort &lt;等级&gt;</code> 可免点击切换。",
+  "effortPicker.none": "当前模型不支持推理强度。",
+
   // ---- toasts ----
   "toast.compacting": "正在压缩上下文…",
   "toast.compacted": "上下文已压缩",
