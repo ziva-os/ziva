@@ -8,8 +8,13 @@ other module can safely import them.
 /** HTML-escape a string for safe interpolation into innerHTML templates. */
 export function esc(s: string): string {
   const d = document.createElement("span");
-  d.textContent = s;
-  return d.innerHTML;
+  d.textContent = String(s ?? "");
+  // Also escape double quotes so the result is safe inside HTML *attributes*
+  // (value="..."), not just text content. textContent→innerHTML leaves " as-is,
+  // which truncates attribute values at the first inner quote — e.g. MCP
+  // commands like `uvx --with "pkg<1.0"` got saved as `uvx --with ` after the
+  // settings UI round-trip. See settings MCP command field.
+  return d.innerHTML.replace(/"/g, "&quot;");
 }
 
 /** getElementById shorthand with a typed cast (the app's ubiquitous `$()`). */
