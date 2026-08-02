@@ -90,9 +90,12 @@ class IMBridge:
                     await self._start_adapter(name)
                 except Exception:
                     logger.exception("im_bridge: failed to start channel %s", name)
-                    # Disable the channel so a bad config doesn't retry forever.
-                    cfg.enabled = False
-                    self.config.save()
+                    # Leave enabled=True. Flipping it to False here used to
+                    # discard the user's saved intent on a transient failure,
+                    # so the next restart skipped the channel entirely and the
+                    # user had to re-enter credentials to bring it back. The
+                    # adapter's status already reflects the error; a restart
+                    # retries from the saved config automatically.
 
         # After all adapters have had a chance to connect, check whether
         # the previous process asked us to send restart notifications. The
@@ -284,7 +287,41 @@ class IMBridge:
             except Exception:
                 logger.exception("im_bridge: /new failed to tag fresh session")
             old_hint = f" (previous: `{old_sid[:8]}`)" if old_sid else ""
-            return f"已开启新会话 `{new_sid[:8]}`{old_hint}。"
+            # Surface the new session's model + effort so the IM user can see
+            # what they're starting with (mirrors the desktop composer, which
+            # always shows both). A fresh session has no per-session override,
+            # so default effort to the model's highest supported level — same
+            # rule the desktop UI applies — and persist it so the backend
+            # agrees from the first turn.
+            try:
+                _cfg = self.runtime.config
+            except Exception:
+                _cfg = {}
+            _mc = _cfg.get("model", {}) if isinstance(_cfg, dict) else {}
+            _mn = _mc.get("name", "unknown")
+            _pn = _mc.get("provider_name")
+            _providers = _cfg.get("providers", []) if isinstance(_cfg, dict) else []
+            if not _pn:
+                _mn_l = (_mn or "").lower()
+                for _p in _providers:
+                    if any((m.get("name") or "").lower() == _mn_l for m in _p.get("models", [])):
+                        _pn = _p.get("name")
+                        break
+            _levels = self.runtime._effort_levels_for_model(_mn) if _mn else []
+            _effort = _levels[-1] if _levels else (_mc.get("thinking_mode") or "disabled")
+            try:
+                FileStorage.update_session(self.runtime.project_id, new_sid, {
+                    "model_name": _mn, "provider_name": _pn, "thinking_mode": _effort,
+                })
+                sess = self.runtime._get_session(new_sid)
+                sess.model_name = _mn
+                sess.provider_name = _pn
+                sess.thinking_mode = _effort
+            except Exception:
+                logger.exception("im_bridge: /new failed to pin model/effort")
+            _shown = f"{_pn}:{_mn}" if _pn else _mn
+            return (f"已开启新会话 `{new_sid[:8]}`{old_hint}。\n"
+                    f"模型: {_shown} · effort: {_effort}")
 
         # --- /stop: cancel the in-flight turn on the current session ----------
         if cmd == "/stop":
@@ -1140,12 +1177,12 @@ class IMBridge:
             await self._start_adapter(name)
         except Exception as exc:
             logger.exception("im_bridge: start_channel %s failed", name)
-            cfg.enabled = False
-            self.config.save()
+            # Keep enabled=True: the user just asked to connect, so a failure
+            # should leave the channel retryable (next restart, or a one-click
+            # reconnect with the saved credentials) rather than silently
+            # disabling it.
             return {"error": "start_failed", "message": str(exc)}
         if self._adapters[name].status().get("state") == "error":
-            cfg.enabled = False
-            self.config.save()
             return {"error": "start_failed", "message": self._adapters[name].status().get("error") or "连接失败"}
         return {"ok": True, "status": self._adapters[name].status()}
 

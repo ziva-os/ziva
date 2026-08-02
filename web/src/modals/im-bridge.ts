@@ -219,7 +219,11 @@ function renderChannelCard(ch: api.IMChannelStatus): HTMLElement {
     const btn = document.createElement("button");
     btn.className = "im-btn primary";
     btn.textContent = i18n.t("im.connect");
-    btn.onclick = () => openAddRobotOverlay(ch.name);
+    // Already-configured channel: reconnect with saved credentials (no form,
+    // no re-entry). Not yet configured: open the credential form.
+    btn.onclick = ch.configured
+      ? () => void reconnectConfigured(ch.name)
+      : () => openAddRobotOverlay(ch.name);
     actions.appendChild(btn);
   }
   card.appendChild(actions);
@@ -398,6 +402,24 @@ async function disconnect(name: string): Promise<void> {
     await loadIMBridgeIntoModal();
   } catch (e: any) {
     alert(i18n.t("im.disconnectFailed", { err: e?.message || e }));
+  }
+}
+
+async function reconnectConfigured(name: string): Promise<void> {
+  // Reconnect an already-configured channel using its SAVED credentials —
+  // no credential form, no re-entry. The backend start_channel keeps saved
+  // secrets when no fields are passed. This is the one-click recovery path
+  // for a channel that dropped (network blip, app restart) but whose config
+  // is still on disk.
+  try {
+    const res = await api.startIMChannel(name, {});
+    if (res && res.error) {
+      alert(i18n.t("im.connectFailed", { err: res.message || res.error }));
+      return;
+    }
+    await loadIMBridgeIntoModal();
+  } catch (e: any) {
+    alert(i18n.t("im.connectFailed", { err: e?.message || e }));
   }
 }
 

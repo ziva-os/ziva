@@ -338,6 +338,7 @@ export const dict = {
   "im.fillField": "Please fill in {{field}}",
   "im.connecting": "Connecting...",
   "im.disconnectFailed": "Disconnect failed: {{err}}",
+  "im.connectFailed": "Connect failed: {{err}}",
 
   // im: states
   "im.state.connected": "Connected",

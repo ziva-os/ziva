@@ -337,6 +337,7 @@ export const dict: Partial<Dict> = {
   "im.fillField": "请填写 {{field}}",
   "im.connecting": "连接中…",
   "im.disconnectFailed": "断开失败：{{err}}",
+  "im.connectFailed": "连接失败：{{err}}",
 
   // im: states
   "im.state.connected": "已连接",
