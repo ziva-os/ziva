@@ -2194,7 +2194,7 @@ class Runtime:
         levels = caps.get("effort_levels")
         if isinstance(levels, list) and levels:
             return [str(x) for x in levels]
-        return ["low", "medium", "high"]
+        return ["low", "medium", "high", "xhigh", "max"]
 
     def _model_supports_image(self, model_name: str) -> bool:
         """True if `model_name` can consume `image_url` blocks.
