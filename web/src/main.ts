@@ -562,6 +562,9 @@ function bindComposerEvents() {
           console.error("updateSession(thinking_mode) failed:", err);
         }
       }
+      // The selected label changed (e.g. low → medium); refit so a longer
+      // label isn't ellipsised to "m..." by the stale, narrower width.
+      fitSelectWidth(sel);
       return;
     }
     if (target.classList.contains("pane-approval")) {
