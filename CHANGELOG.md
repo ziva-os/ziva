@@ -51,6 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   matched M3).
 - **`esc()`** now escapes double quotes so HTML attribute values aren't
   truncated.
+- **Effort dropdown no longer truncates "medium" to "m..."** — the select is
+  sized to its selected label, but the width wasn't refit after changing
+  effort, so switching to a longer label (e.g. max → medium) kept the old
+  narrower width and `text-overflow: ellipsis` cut it.
 
 ## [1.1.3] - 2026-07-31
 
