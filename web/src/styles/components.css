@@ -2613,7 +2613,8 @@ webview.browser-frame {
    containers where `flex: 1` is a no-op. Without this they collapse to
    the browser's default <textarea> width (~300px) and look visibly
    narrower than the agent card around them. */
-textarea.settings-input, .settings-agent-instructions { width: 100%; box-sizing: border-box; resize: vertical; min-height: 60px; font-family: inherit; }
+textarea.settings-input, .settings-agent-instructions, .settings-agent-description { width: 100%; box-sizing: border-box; resize: vertical; min-height: 60px; font-family: inherit; }
+.settings-agent-description { resize: none; min-height: 0; }
 .settings-mcp-card {
   border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; margin-bottom: 10px;
 }

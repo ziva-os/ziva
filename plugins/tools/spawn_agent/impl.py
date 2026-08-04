@@ -164,16 +164,25 @@ class SpawnAgentTool:
         else:
             _allowed_skills = None
 
-        # ---- hooks (by event_name) ----
-        has_hooks_key = "hooks" in agent_def
-        has_deny_hooks_key = "deny_hooks" in agent_def
-        _all_hook_events = {"before_turn", "after_turn", "before_tool", "after_tool"}
-        if has_hooks_key:
+        # ---- hooks (by registered hook id) ----
+        # Sub-agents now select which *specific* hooks may run, rather
+        # than filtering by lifecycle event. ``hooks: [...]`` /
+        # ``deny_hooks: [...]`` carry hook ids (e.g. ``hook.image_guard``);
+        # the runtime matches each registered hook's ``id`` against these
+        # sets. deny-mode blocks individual hooks (not whole event phases)
+        # so the user can e.g. keep ``plan_reminder`` but block
+        # ``image_guard`` on a specific sub-agent.
+        _allowed_hooks: set[str] | None
+        _denied_hooks: set[str] | None
+        if "hooks" in agent_def:
             _allowed_hooks = set(agent_def.get("hooks") or [])
-        elif has_deny_hooks_key:
-            _allowed_hooks = _all_hook_events - set(agent_def.get("deny_hooks") or [])
+            _denied_hooks = None
+        elif "deny_hooks" in agent_def:
+            _allowed_hooks = None
+            _denied_hooks = set(agent_def.get("deny_hooks") or [])
         else:
             _allowed_hooks = None
+            _denied_hooks = None
 
         # Build child agent messages. The sub-agent has its own system
         # prompt construction taken directly from the agent configuration
@@ -225,6 +234,8 @@ class SpawnAgentTool:
             child_meta["_allowed_skills"] = _allowed_skills
         if _allowed_hooks is not None:
             child_meta["_allowed_hooks"] = _allowed_hooks
+        if _denied_hooks is not None:
+            child_meta["_denied_hooks"] = _denied_hooks
 
         child_ctx = RuntimeContext(
             session_id=child_sid,

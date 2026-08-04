@@ -79,9 +79,20 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 
 
 def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursively merge ``overlay`` into ``base``.
+
+    ``None`` in ``overlay`` is treated as an explicit deletion: any
+    matching key in ``base`` is removed from the result, and the key
+    is not re-introduced if absent. This is required for the
+    three-state permission fields (``tools``, ``skills``, ``hooks``)
+    where "inherit" must round-trip back to "the key is absent"
+    rather than being silently preserved from the on-disk config.
+    """
     result = dict(base)
     for key, value in overlay.items():
-        if isinstance(value, dict) and isinstance(result.get(key), dict):
+        if value is None:
+            result.pop(key, None)
+        elif isinstance(value, dict) and isinstance(result.get(key), dict):
             result[key] = _deep_merge(result[key], value)
         else:
             result[key] = value

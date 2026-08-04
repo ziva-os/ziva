@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Sub-agent permission UI persistence** — Switching an agent's tool/skill/
+  hook selector between inherit / allow / deny now round-trips cleanly.
+  Previously, switching from "allow specific" to "inherit all" would
+  silently leave the old allow-list on disk, so re-opening the modal
+  would show the selector snapping back to "allow". The deep-merge now
+  treats an explicit `null` overlay value as a key deletion; the UI
+  sends `null` for whichever side of the pair (`tools` ↔ `deny_tools`)
+  is inactive for the current mode.
+- **Hooks selector uses registered hook IDs, not event names** — The
+  per-agent hooks dimension in Settings now lists each *registered* hook
+  by its ID (e.g. `hook.image_guard`) with a label like
+  `image_guard · before_tool`. The runtime filters sub-agent hooks by
+  hook id first, falling back to event name for backwards compatibility
+  with older configs. deny-mode now blocks specific hook ids instead of
+  whole event phases.
+- **Agent description input full width** — The "Description" field on
+  the per-agent card was rendering at ~300px (the browser's default
+  `<input>` width) because it lived inside a block-level
+  `.settings-section` where `flex: 1` is a no-op. It now spans the full
+  card width like the adjacent Instructions textarea.
+
 ## [1.1.5] - 2026-08-04
 
 ### Added

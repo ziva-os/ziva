@@ -2338,14 +2338,24 @@ class Runtime:
 
     async def _run_hooks(self, lifecycle: str, payload: Dict[str, Any], ctx: RuntimeContext) -> Dict[str, Any]:
         from fnmatch import fnmatch
-        # 子 agent hooks 过滤：_allowed_hooks 为 None 时继承全部
+        # 子 agent hooks 过滤：
+        # - ``_allowed_hooks`` 为 None 且 ``_denied_hooks`` 为 None → 继承全部
+        # - ``_allowed_hooks`` 非 None → 只跑 id 在白名单内的 hook
+        # - ``_denied_hooks`` 非 None → 跳过 id 在黑名单内的 hook
+        # 两者并存时黑名单优先（deny 胜于 allow）。匹配按注册的 hook id，
+        # 老的"event_name 写法"作为兼容仍然有效。
         allowed_hooks = ctx.metadata.get("_allowed_hooks") if ctx else None
-        if allowed_hooks is not None and lifecycle not in allowed_hooks:
-            return payload
+        denied_hooks = ctx.metadata.get("_denied_hooks") if ctx else None
         for hook_rec in self.registry.list_kind("hook"):
             hook = hook_rec.instance
             if getattr(hook, "event_name", "") != lifecycle:
                 continue
+            hid = getattr(hook_rec, "id", "")
+            if denied_hooks is not None and (hid in denied_hooks or lifecycle in denied_hooks):
+                continue
+            if allowed_hooks is not None:
+                if hid not in allowed_hooks and lifecycle not in allowed_hooks:
+                    continue
             matcher = getattr(hook, "matcher", None)
             if matcher and "tool" in payload:
                 if not fnmatch(payload["tool"], matcher):

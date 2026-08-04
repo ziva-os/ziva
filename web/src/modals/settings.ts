@@ -95,13 +95,26 @@ export async function openSettingsModal() {
     }
 
     // Build hooks HTML — fetch registered hooks from backend + folder register input
-    const hookTypes = ["before_turn", "after_turn", "before_tool", "after_tool"];
+    // Hook options for the per-agent dimension selector come from the registry,
+    // not from a hard-coded list of event names. The agent config then stores
+    // hook IDs (e.g. "hook.image_guard"), which the runtime matches directly.
+    // A fallback empty list keeps the modal usable if the backend isn't ready.
+    const registeredHooks: Array<{ id: string; label: string; eventName: string }> = [];
     const hookPhaseLabel: Record<string, string> = {
       before_turn: i18n.t("settings.hookPhase.beforeTurn"),
       after_turn: i18n.t("settings.hookPhase.afterTurn"),
       before_tool: i18n.t("settings.hookPhase.beforeTool"),
       after_tool: i18n.t("settings.hookPhase.afterTool"),
     };
+    try {
+      for (const h of await api.listHooks()) {
+        const phase = hookPhaseLabel[h.event_name] || h.event_name;
+        registeredHooks.push({ id: h.id, label: `${h.name} · ${phase}`, eventName: h.event_name });
+      }
+    } catch (_e) {
+      // leave registeredHooks empty; selectors will be empty
+    }
+    const hookTypes = registeredHooks;
     let hooksHtml = '<div id="hooksPanel"></div>';
 
     // Build agents HTML
@@ -130,16 +143,28 @@ export async function openSettingsModal() {
       const agentHooks: string[] = def.hooks || def.deny_hooks || [];
 
       // Build a mode selector + tag selector section for one dimension.
-      const buildDimension = (kind: string, label: string, desc: string, all: string[], selected: string[], mode: string) => {
+      // ``all`` accepts either a flat list of strings (tools/skills) or
+      // ``Array<{id, label}>`` (hooks) so each kind can carry its own
+      // display metadata. ``selected`` is always a flat list of ids.
+      type HookOption = { id: string; label: string };
+      const buildDimension = (kind: string, label: string, desc: string, all: Array<string | HookOption>, selected: string[], mode: string) => {
         const modeOpts = [
           { v: "inherit", l: i18n.t("settings.modeInherit") || "Inherit all" },
           { v: "allow", l: i18n.t("settings.modeAllow") || "Allow specific" },
           { v: "deny", l: i18n.t("settings.modeDeny") || "Deny specific" },
         ].map(o => `<option value="${o.v}" ${mode === o.v ? "selected" : ""}>${o.l}</option>`).join("");
         const modeSelect = `<select class="settings-select agent-mode-select" data-agent-mode="${kind}" data-agent-name="${esc(name)}" style="margin-left:8px;font-size:11px;width:auto;padding:2px 6px">${modeOpts}</select>`;
-        const options = all.filter((x) => !selected.includes(x)).map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join("");
+        const valueOf = (x: string | HookOption) => typeof x === "string" ? x : x.id;
+        const labelOf = (x: string | HookOption) => typeof x === "string" ? x : x.label;
+        const options = all.filter((x) => !selected.includes(valueOf(x))).map((x) => `<option value="${esc(valueOf(x))}">${esc(labelOf(x))}</option>`).join("");
         const tagSelect = `<select class="settings-select agent-${kind}-select" data-agent-select-${kind}="${esc(name)}"><option value="">${addKindLabel(kind)}</option>${options}</select>`;
-        const tags = selected.map((x) => `<span class="agent-selected-tag" data-kind="${kind}" data-value="${esc(x)}">${esc(x)}<button type="button" class="agent-selected-remove" data-remove-kind="${kind}" data-remove="${esc(x)}">×</button></span>`).join("");
+        // For tags, render the human label when the selected id corresponds to a
+        // hook option; fall back to the raw id for tools/skills.
+        const labelFor = (id: string) => {
+          for (const x of all) if (typeof x !== "string" && x.id === id) return x.label;
+          return id;
+        };
+        const tags = selected.map((x) => `<span class="agent-selected-tag" data-kind="${kind}" data-value="${esc(x)}">${esc(labelFor(x))}<button type="button" class="agent-selected-remove" data-remove-kind="${kind}" data-remove="${esc(x)}">×</button></span>`).join("");
         const tagBox = `<div class="agent-selected-box" data-agent-box-${kind}="${esc(name)}">${tags}</div>`;
         return `
           <div class="settings-section">
@@ -207,12 +232,16 @@ export async function openSettingsModal() {
         if (!box || !select) return;
         box.querySelector(`[data-value="${esc(value)}"]`)?.remove();
         const all = kind === "tools" ? allToolNames : kind === "skills" ? allSkillNames : hookTypes;
-        const remaining = all.filter((x) => !Array.from(box.querySelectorAll(".agent-selected-tag")).map(t => (t as HTMLElement).dataset.value).includes(x));
-        select.innerHTML = `<option value="">${addKindLabel(kind)}</option>` + remaining.map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join("");
+        const valueOf = (x: any) => typeof x === "string" ? x : x.id;
+        const labelOf = (x: any) => typeof x === "string" ? x : x.label;
+        const taken = new Set(Array.from(box.querySelectorAll(".agent-selected-tag")).map(t => (t as HTMLElement).dataset.value!));
+        const remaining = all.filter((x) => !taken.has(valueOf(x)));
+        select.innerHTML = `<option value="">${addKindLabel(kind)}</option>` + remaining.map((x) => `<option value="${esc(valueOf(x))}">${esc(labelOf(x))}</option>`).join("");
       };
       const selectAll = (kind: string) => {
         const all = kind === "tools" ? allToolNames : kind === "skills" ? allSkillNames : hookTypes;
-        for (const x of all) addTag(kind, x);
+        const valueOf = (x: any) => typeof x === "string" ? x : x.id;
+        for (const x of all) addTag(kind, valueOf(x));
       };
       const clearAll = (kind: string) => {
         const box = card.querySelector(`[data-agent-box-${kind}="${name}"]`) as HTMLElement | null;
@@ -220,7 +249,9 @@ export async function openSettingsModal() {
         if (!box || !select) return;
         box.innerHTML = "";
         const all = kind === "tools" ? allToolNames : kind === "skills" ? allSkillNames : hookTypes;
-        select.innerHTML = `<option value="">${addKindLabel(kind)}</option>` + all.map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join("");
+        const valueOf = (x: any) => typeof x === "string" ? x : x.id;
+        const labelOf = (x: any) => typeof x === "string" ? x : x.label;
+        select.innerHTML = `<option value="">${addKindLabel(kind)}</option>` + all.map((x) => `<option value="${esc(valueOf(x))}">${esc(labelOf(x))}</option>`).join("");
       };
       card.addEventListener("change", (e) => {
         const sel = e.target as HTMLSelectElement;
@@ -543,8 +574,10 @@ export async function openSettingsModal() {
           { v: "allow", l: i18n.t("settings.modeAllow") || "Allow specific" },
           { v: "deny", l: i18n.t("settings.modeDeny") || "Deny specific" },
         ].map(o => `<option value="${o.v}">${o.l}</option>`).join("");
-        const buildNewDim = (kind: string, label: string, desc: string, all: string[]) => {
-          const options = all.map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join("");
+        const buildNewDim = (kind: string, label: string, desc: string, all: Array<string | { id: string; label: string }>) => {
+          const valueOf = (x: string | { id: string; label: string }) => typeof x === "string" ? x : x.id;
+          const labelOf = (x: string | { id: string; label: string }) => typeof x === "string" ? x : x.label;
+          const options = all.map((x) => `<option value="${esc(valueOf(x))}">${esc(labelOf(x))}</option>`).join("");
           const modeSelect = `<select class="settings-select agent-mode-select" data-agent-mode="${kind}" data-agent-name="${esc(n)}" style="margin-left:8px;font-size:11px;width:auto;padding:2px 6px"><option value="inherit" selected>${i18n.t("settings.modeInherit") || "Inherit all"}</option><option value="allow">${i18n.t("settings.modeAllow") || "Allow specific"}</option><option value="deny">${i18n.t("settings.modeDeny") || "Deny specific"}</option></select>`;
           return `
             <div class="settings-section">
@@ -796,7 +829,11 @@ export async function openSettingsModal() {
           const bg = !!(card.querySelector(`input[data-agent-bg="${origName}"]`) as HTMLInputElement)?.checked;
           const agentObj: Record<string, any> = { instructions: instr, background: bg };
           if (desc) agentObj.description = desc;
-          // For each kind, read the mode selector and store accordingly
+          // For each kind, read the mode selector and store accordingly.
+          // Three-state: inherit / allow / deny. The "irrelevant" key for the
+          // current mode is sent as ``null`` so the server's deep-merge deletes
+          // it from disk; otherwise stale allow/deny lists would silently round
+          // trip back from disk the next time the modal opens.
           for (const kind of ["tools", "skills", "hooks"] as const) {
             const modeSel = card.querySelector(`select.agent-mode-select[data-agent-mode="${kind}"]`) as HTMLSelectElement | null;
             const mode = modeSel?.value || "inherit";
@@ -804,10 +841,15 @@ export async function openSettingsModal() {
             const denyKey = kind === "tools" ? "deny_tools" : kind === "skills" ? "deny_skills" : "deny_hooks";
             if (mode === "allow") {
               agentObj[kind] = selected;
+              agentObj[denyKey] = null;
             } else if (mode === "deny") {
               agentObj[denyKey] = selected;
+              agentObj[kind] = null;
+            } else {
+              // inherit: explicitly delete both keys from disk
+              agentObj[kind] = null;
+              agentObj[denyKey] = null;
             }
-            // inherit: omit both keys
           }
           newAgents[newName] = agentObj;
         });
