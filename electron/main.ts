@@ -465,12 +465,12 @@ async function createMainWindow() {
         font-family:-apple-system,'SF Pro Display',system-ui,sans-serif;
         color:#e8e8f0; overflow:hidden;
       }
-      .wordmark { font-size:30px; font-weight:700; letter-spacing:1px; color:#e8e8f0; margin-bottom:26px; }
+      .wordmark { font-size:38px; font-weight:700; letter-spacing:1px; color:#e8e8f0; margin-bottom:26px; }
       .wordmark .os { color:#8ab4f8; font-weight:500; margin-left:1px; }
-      .mark { width:92px; height:38px; animation: breathe 2.8s ease-in-out infinite; }
+      .mark { width:87px; height:36px; animation: breathe 2.8s ease-in-out infinite; }
       @keyframes breathe { 0%,100%{ transform:scale(1); opacity:.92; } 50%{ transform:scale(1.03); opacity:1; } }
       .mark svg { width:100%; height:100%; overflow:visible; }
-      .inf { fill:none; stroke-linecap:round; stroke-linejoin:round; stroke-width:5; }
+      .inf { fill:none; stroke-linecap:round; stroke-linejoin:round; stroke-width:4; }
       .base { stroke:url(#g); opacity:0.55; }
       .head { fill:#dbeaff; filter:url(#glow); }
     </style></head><body>

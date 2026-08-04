@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.5] - 2026-08-04
+
+### Added
+- **Sub-agent three-state permission control** — `tools` / `skills` /
+  `hooks` now support inherit (omit key), allow (list), and deny (list) on
+  the spawn-agent UI. Spawned agents translate the UI selection into
+  `_allowed_tools` / `_allowed_skills` / `_allowed_hooks` automatically.
+- **Custom sub-agents** — `config.agents.<name>` blocks now register as
+  spawnable agents, and `spawn_agent` lists them in its dynamic enum.
+- **Hook system overhaul** — `BaseHook` is the unified base for Python and
+  shell hooks (`event_name` / `matcher` / `block` / `timeout` / `async_run`).
+  A new `ShellHook` lets you add hooks without writing Python — drop a
+  folder with `manifest.yaml` + `impl.sh`, the runtime loads it. The
+  registry hot-reloads via `GET /api/hooks` + `POST /api/hooks/register`.
+- **`before_tool` hooks can block** — non-zero exit (shell) / `_block=True`
+  (Python) aborts the tool call and surfaces the reason to the model.
+- **`Hooks` tab is now a real registration surface** — folder paths you
+  register are loaded on next start; previously-registered hooks show as
+  cards (event / matcher / blocking / timeout).
+- **Agent description field** on the settings card; surfaced in the
+  `spawn_agent` tool description so the parent model picks the right agent.
+- **`image_guard` example shell hook** — blocks non-vision models that
+  try to `read_file` an image (redirects them to specialized
+  image-analysis tools). Lives at `~/.ziva/plugins/hooks/image_guard/`.
+- **`/api/hooks` endpoints** — `GET` lists registered hooks with their
+  effective capability flags (null for fields the manifest didn't set);
+  `POST /api/hooks/register` adds a folder path and reloads.
+
+### Changed
+- **App icon now respects macOS HIG padding** — was 100% canvas fill, now
+  80.5% (~10% transparent padding per side), matching Apple's
+  `824/1024` convention. Other app icons no longer look bigger.
+- **Loading screen infinity symbol** uses the icon's exact Arial Rounded
+  Bold ∞ centerline (was a hand-drawn bezier approximation that didn't
+  match); stroke-width and container size tuned to keep the proportions.
+- **`ZivaOS` wordmark** is now 38 px (was 30 px); all other styling
+  matches the original. Infinity container shrunk 5 % (92×38 → 87×36) to
+  give the bigger wordmark room.
+- **Multimodal prompt** — when `supports_image: true`, the system prompt
+  tells the model to use `read_file` for image paths instead of reaching
+  for external image-analysis tools. Plugin tools are no longer named in
+  the base prompt (they belong in their own tool descriptions).
+- **`_build_skill_index` runtime fallback removed** — `read_skill` errors
+  if the runtime is missing the skill registry, instead of silently
+  returning empty. Same lookup goes through `Runtime.get_skill()` (O(1)
+  over a per-startup dict cache).
+- **Skill list only injected when reachable** — `_allowed_tools` not
+  containing `read_skill` skips the entire "Available Skills" block in
+  the system prompt; `_allowed_skills` non-None filters to the allow-list.
+
+### Removed
+- **`_maybe_apply_skill` dead code** — `plugins/skills/` was never
+  registered as a plugin kind, so the function was unreachable. Skills
+  now flow through `plugins/tools/read_skill` only.
+
 ## [1.1.4] - 2026-08-02
 
 ### Added
