@@ -19,10 +19,24 @@ class Skill(Protocol):
     async def execute(self, input_data: Dict[str, Any], ctx: RuntimeContext) -> Dict[str, Any]: ...
 
 
-class Hook(Protocol):
-    event_name: str
-    matcher: str | None
-    async def handle(self, payload: Dict[str, Any], ctx: RuntimeContext) -> Dict[str, Any]: ...
+class BaseHook:
+    """所有 hook 的基类。Python hook 和 shell hook 共享这套字段。
+
+    字段由 loader 从 manifest.yaml 统一赋值（manifest 是 source of truth）。
+    子类只需实现 ``handle``。
+    """
+    event_name: str = "after_tool"
+    matcher: str | None = None
+    block: bool = False
+    timeout: int = 10
+    async_run: bool = False
+
+    async def handle(self, payload: Dict[str, Any], ctx: RuntimeContext) -> Dict[str, Any]:
+        raise NotImplementedError
+
+
+# 向后兼容别名
+Hook = BaseHook
 
 
 class MemoryStore(Protocol):

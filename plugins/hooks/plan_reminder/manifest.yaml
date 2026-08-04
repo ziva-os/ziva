@@ -3,3 +3,4 @@ type: hook
 version: 0.1.0
 entry: impl.py:PlanReminderHook
 enabled_by_default: true
+event_name: after_tool

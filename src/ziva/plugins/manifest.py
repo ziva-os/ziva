@@ -20,6 +20,12 @@ class PluginManifest:
     permissions: Dict[str, Any]
     enabled_by_default: bool
     path: Path
+    # —— hook 专用（平铺在 manifest.yaml 顶层；None = 未声明，由 loader 回退到 BaseHook 默认值）——
+    event_name: str | None = None
+    matcher: str | None = None
+    block: bool | None = None
+    timeout: int | None = None
+    async_run: bool | None = None
 
 
 def load_manifest(path: Path) -> PluginManifest:
@@ -40,8 +46,9 @@ def load_manifest(path: Path) -> PluginManifest:
         raise ValueError(f"Manifest id should contain namespace separator '.': {path}")
 
     entry = str(raw["entry"])
-    if ":" not in entry:
+    if ":" not in entry and manifest_type != "hook":
         raise ValueError(f"Manifest entry must use 'module.py:Symbol' format: {path}")
+    # hook 类型允许 entry 无 ":"（shell 脚本，如 impl.sh）
 
     cfg = raw.get("config", {}) or {}
     perms = raw.get("permissions", {}) or {}
@@ -50,6 +57,10 @@ def load_manifest(path: Path) -> PluginManifest:
     if not isinstance(perms, dict):
         raise ValueError(f"Manifest permissions must be an object: {path}")
 
+    # hook 专用：键不存在 / 值为 null → 保留 None；loader 见 None 会回退到 BaseHook 默认值
+    block_raw = raw.get("block")
+    timeout_raw = raw.get("timeout")
+    async_raw = raw.get("async_run")
     return PluginManifest(
         id=plugin_id,
         type=manifest_type,
@@ -59,4 +70,9 @@ def load_manifest(path: Path) -> PluginManifest:
         permissions=perms,
         enabled_by_default=bool(raw.get("enabled_by_default", True)),
         path=path.parent,
+        event_name=raw.get("event_name"),
+        matcher=raw.get("matcher"),
+        block=bool(block_raw) if block_raw is not None else None,
+        timeout=int(timeout_raw) if timeout_raw is not None else None,
+        async_run=bool(async_raw) if async_raw is not None else None,
     )

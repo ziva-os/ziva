@@ -272,12 +272,9 @@ export const dict: Partial<Dict> = {
   "settings.sandbox.restrictive": "受限",
 
   // settings: prompt
-  "settings.promptProfile": "提示词配置",
-  "settings.profile": "配置",
-  "settings.profile.default": "默认",
-  "settings.profile.concise": "简洁",
-  "settings.profile.detailed": "详细",
-  "settings.profile.custom": "自定义",
+  "settings.promptProfile": "系统提示词",
+  "settings.promptDesc": "Agent 的基础系统提示词。该文本在拼装时位于最前，后接分层 AGENTS.md、环境块、技能索引，最终作为 system 字段发给模型。",
+  "settings.promptPlaceholder": "在此输入 Agent 的基础系统提示词...",
 
   // settings: thinking mode levels
   "settings.thinking.disabled": "禁用",
@@ -296,10 +293,16 @@ export const dict: Partial<Dict> = {
   "settings.removeAgent": "移除 Agent",
   "settings.instructions": "指令",
   "settings.instructionsPlaceholder": "子 Agent 的系统提示词",
+  "settings.agentDescription": "描述",
+  "settings.agentDescriptionHint": "一行摘要，会显示在主 Agent 的 spawn_agent 工具描述中。",
+  "settings.agentDescriptionPlaceholder": "例如：只读调查 Agent",
   "settings.tools": "工具",
   "settings.skills": "技能",
   "settings.hooks": "Hooks",
   "settings.nSelected": "（已选 {{n}} 个）",
+  "settings.modeInherit": "继承全部",
+  "settings.modeAllow": "仅允许指定",
+  "settings.modeDeny": "排除指定",
   "settings.toolsDesc": "子 Agent 可调用的工具白名单。留空 = 无工具（纯 LLM）。spawn_agent / get_agent_result / cancel_agent 始终被禁止。",
   "settings.skillsDesc": "子 Agent 可用的技能。",
   "settings.agentHooksDesc": "此子 Agent 触发的 Hook 类型。每个选中类型都会在子 Agent 自己的回合/工具上执行配置中对应的 <code>hooks.&lt;type&gt;</code> 命令。留空 = 继承主 Agent 的全部 Hook 类型。",
@@ -308,6 +311,20 @@ export const dict: Partial<Dict> = {
   "settings.addTools": "添加工具…",
   "settings.addSkills": "添加技能…",
   "settings.addHooks": "添加 Hook…",
+
+  // settings: hooks panel
+  "settings.hookSourceBuiltin": "内置",
+  "settings.event": "事件",
+  "settings.matcher": "匹配",
+  "settings.block": "阻断",
+  "settings.timeout": "超时",
+  "settings.async": "异步",
+  "settings.noTimeout": "不限时",
+  "settings.noHooks": "暂无已注册的 Hook。",
+  "settings.registeredHooks": "已注册 Hook",
+  "settings.addHook": "添加 Hook",
+  "settings.addHookDesc": "输入包含 manifest.yaml（+ impl.sh 或 impl.py）的文件夹路径",
+  "settings.register": "注册",
 
   // ---- im ----
   "im.title": "连接手机",

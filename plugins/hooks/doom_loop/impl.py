@@ -4,15 +4,13 @@ import hashlib
 import json
 from typing import Any, Dict
 
+from ziva.capabilities.interfaces import BaseHook
 from ziva.shared_types import RuntimeContext, ToolResult
 
 _THRESHOLD = 3
 
 
-class DoomLoopHook:
-    event_name: str = "after_tool"
-    matcher: str | None = None
-
+class DoomLoopHook(BaseHook):
     def _args_hash(self, arguments: dict) -> str:
         return hashlib.md5(json.dumps(arguments, sort_keys=True).encode()).hexdigest()[:12]
 

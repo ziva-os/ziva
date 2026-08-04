@@ -205,6 +205,29 @@ export async function saveConfigJson(config: Record<string, any>): Promise<void>
   await api("PUT", "/config/json", config);
 }
 
+export interface HookInfo {
+  id: string;
+  name: string;
+  event_name: string;
+  matcher: string | null;
+  // 注意：block/timeout/async_run 只有 shell hook 消费；python hook 这三个字段为 null
+  // （前端应据此隐藏这些字段，避免误导）
+  block: boolean | null;
+  timeout: number | null;
+  async_run: boolean | null;
+  source: string;
+  type: string;
+}
+
+export async function listHooks(): Promise<HookInfo[]> {
+  const data = await api<{ hooks: HookInfo[] }>("GET", "/api/hooks");
+  return data.hooks || [];
+}
+
+export async function registerHook(path: string): Promise<{ ok: boolean; id: string }> {
+  return api("POST", "/api/hooks/register", { path });
+}
+
 export interface MCPServerStatus {
   name: string;
   status: string;

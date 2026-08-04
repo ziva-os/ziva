@@ -113,34 +113,67 @@ class SpawnAgentTool:
         # Resolve predefined agent definition from config, allowing call-time overrides.
         config = getattr(runtime, "config", {}) or {}
         agents = config.get("agents", {})
-        # 'agent' is REQUIRED and must be one of the three fixed types.
-        _FIXED_AGENTS = ("explore", "plan", "general-purpose")
         agent_name = input_data.get("agent", "").strip()
         if not agent_name:
             return ToolResult(
-                text=f"Error: missing_agent\n'agent' is required. Choose one of: {', '.join(_FIXED_AGENTS)}",
+                text=f"Error: missing_agent\n'agent' is required. Available: {', '.join(agents.keys())}",
                 error=True,
             )
-        if agent_name not in _FIXED_AGENTS:
+        if agent_name not in agents:
             return ToolResult(
-                text=f"Error: unknown_agent\nUnknown agent '{agent_name}'. Choose one of: {', '.join(_FIXED_AGENTS)}",
+                text=f"Error: unknown_agent\nUnknown agent '{agent_name}'. Available: {', '.join(agents.keys())}",
                 error=True,
             )
-        agent_def = agents.get(agent_name) or {}
+        agent_def = agents[agent_name]
 
-        # Instructions and tools come ONLY from the predefined agent type —
-        # no call-time overrides (keeps agent types predictable, aligns with
-        # Claude Code's Task tool). background is a run-mode toggle, so it
-        # stays call-time overridable with the agent's default as fallback.
-        #
-        # Whitelist semantics are STRICT: if `tools` is set (even to []),
-        # the sub-agent can ONLY use those tools. An empty list means
-        # "no tools" (pure LLM). To inherit all tools, omit the `tools`
-        # key entirely from the agent definition.
+        # ── Three-state permission control (allow / deny / inherit) ──
+        # For each dimension (tools / skills / hooks):
+        #   - "tools" key present  → allow mode (whitelist)
+        #   - "deny_tools" present → deny mode (all minus selected)
+        #   - neither present      → inherit all (omit key entirely)
         instructions = (agent_def.get("instructions", "") or "").strip()
-        has_tools_key = "tools" in agent_def
-        tool_whitelist = agent_def.get("tools")
         background = bool(input_data.get("background", agent_def.get("background", False)))
+
+        # ---- tools ----
+        all_tool_names = {
+            rec.instance.spec()["name"]
+            for rec in runtime.registry.list_kind("tool")
+        }
+        has_tools_key = "tools" in agent_def
+        has_deny_tools_key = "deny_tools" in agent_def
+        if has_tools_key:
+            configured = set(agent_def.get("tools") or [])
+            resolved = {_TOOL_ALIASES.get(t, t) for t in configured}
+            _allowed_tools = resolved - BLOCKED_TOOLS
+        elif has_deny_tools_key:
+            denied = set(agent_def.get("deny_tools") or [])
+            resolved_denied = {_TOOL_ALIASES.get(t, t) for t in denied}
+            _allowed_tools = all_tool_names - resolved_denied - BLOCKED_TOOLS
+        else:
+            _allowed_tools = None  # inherit all
+
+        # ---- skills ----
+        has_skills_key = "skills" in agent_def
+        has_deny_skills_key = "deny_skills" in agent_def
+        if has_skills_key:
+            _allowed_skills = set(agent_def.get("skills") or [])
+        elif has_deny_skills_key:
+            _all_skill_ids = {rec.id for rec in runtime.registry.list_kind("skill")}
+            _all_skill_ids |= {rec.id.replace("skill.", "") for rec in runtime.registry.list_kind("skill")}
+            _allowed_skills = _all_skill_ids - set(agent_def.get("deny_skills") or [])
+        else:
+            _allowed_skills = None
+
+        # ---- hooks (by event_name) ----
+        has_hooks_key = "hooks" in agent_def
+        has_deny_hooks_key = "deny_hooks" in agent_def
+        _all_hook_events = {"before_turn", "after_turn", "before_tool", "after_tool"}
+        if has_hooks_key:
+            _allowed_hooks = set(agent_def.get("hooks") or [])
+        elif has_deny_hooks_key:
+            _allowed_hooks = _all_hook_events - set(agent_def.get("deny_hooks") or [])
+        else:
+            _allowed_hooks = None
 
         # Build child agent messages. The sub-agent has its own system
         # prompt construction taken directly from the agent configuration
@@ -186,11 +219,12 @@ class SpawnAgentTool:
             # explicit — otherwise the child silently falls back to os.getcwd().
             "_workspace_root": ctx.metadata.get("_workspace_root"),
         }
-        if has_tools_key:
-            resolved = set()
-            for t in (tool_whitelist or []):
-                resolved.add(_TOOL_ALIASES.get(t, t))
-            child_meta["_allowed_tools"] = resolved - BLOCKED_TOOLS
+        if _allowed_tools is not None:
+            child_meta["_allowed_tools"] = _allowed_tools
+        if _allowed_skills is not None:
+            child_meta["_allowed_skills"] = _allowed_skills
+        if _allowed_hooks is not None:
+            child_meta["_allowed_hooks"] = _allowed_hooks
 
         child_ctx = RuntimeContext(
             session_id=child_sid,

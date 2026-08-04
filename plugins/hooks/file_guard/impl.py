@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from ziva.capabilities.interfaces import BaseHook
 from ziva.shared_types import RuntimeContext
 
 _HINT = (
@@ -24,9 +25,8 @@ def _has_image_url(messages: list[dict]) -> bool:
     return False
 
 
-class FileGuardHook:
+class FileGuardHook(BaseHook):
     event_name: str = "before_turn"
-    matcher: str | None = None
 
     async def handle(self, payload: Dict[str, Any], _ctx: RuntimeContext) -> Dict[str, Any]:
         messages = payload.get("messages", [])

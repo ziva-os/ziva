@@ -424,6 +424,8 @@ class DesktopAPIServer:
         self.app.router.add_put("/config/json", self.save_config_json)
         self.app.router.add_get("/skills", self.list_skills)
         self.app.router.add_get("/skills/file", self.read_skill_file)
+        self.app.router.add_get("/api/hooks", self.get_hooks)
+        self.app.router.add_post("/api/hooks/register", self.register_hook)
         self.app.router.add_get("/api/system/choose-folder", self.choose_folder)
         self.app.router.add_get("/api/workspace/recent", self.get_recent_workspaces)
         self.app.router.add_post("/api/workspace/switch", self.switch_workspace)
@@ -2198,6 +2200,81 @@ class DesktopAPIServer:
         """
         skill_index = self.runtime.build_skill_index()
         return web.json_response({"skills": skill_index})
+
+    async def get_hooks(self, _request: web.Request) -> web.Response:
+        """Return metadata for every registered hook."""
+        from ziva.capabilities.shell_hook import ShellHook
+        hooks = []
+        for rec in self.runtime.registry.list_kind("hook"):
+            hook = rec.instance
+            manifest = rec.manifest or {}
+            path = manifest.get("path", "")
+            # Determine source: built-in plugin vs user directory
+            is_builtin = "plugins" in path or not path
+            is_shell = isinstance(hook, ShellHook)
+            hooks.append({
+                "id": rec.id,
+                "name": rec.id.replace("hook.", ""),
+                "event_name": getattr(hook, "event_name", "after_tool"),
+                "matcher": getattr(hook, "matcher", None),
+                # block/timeout/async_run 只有 Shell hook 消费；Python hook 显示 None
+                # 让前端把它们隐藏掉，避免误导用户以为 Python hook 有这些行为
+                "block": getattr(hook, "block", False) if is_shell else None,
+                "timeout": getattr(hook, "timeout", 10) if is_shell else None,
+                "async_run": getattr(hook, "async_run", False) if is_shell else None,
+                "source": "builtin" if is_builtin else str(path),
+                "type": "shell" if is_shell else "python",
+            })
+        return web.json_response({"hooks": hooks})
+
+    async def register_hook(self, request: web.Request) -> web.Response:
+        """Register a hook from a user-specified folder path.
+
+        The folder must contain a ``manifest.yaml`` (+ ``impl.sh`` for shell
+        hooks or ``impl.py:Symbol`` for Python hooks). The hook is loaded
+        immediately and added to the registry (hot-load, no restart needed).
+        """
+        import os
+        body = await request.json()
+        raw_path = body.get("path", "").strip()
+        if not raw_path:
+            return web.json_response({"error": "path_required", "message": "Folder path is required"}, status=400)
+        path = os.path.expanduser(raw_path)
+        manifest_path = Path(path) / "manifest.yaml"
+        if not manifest_path.exists():
+            return web.json_response({"error": "manifest_not_found", "message": f"No manifest.yaml found in {path}"}, status=400)
+        try:
+            from ziva.plugins.manifest import load_manifest
+            from ziva.plugins.loader import _load_symbol
+            from ziva.capabilities.shell_hook import ShellHook
+            manifest = load_manifest(manifest_path)
+            if manifest.type != "hook":
+                return web.json_response({"error": "not_a_hook", "message": f"Manifest type is '{manifest.type}', expected 'hook'"}, status=400)
+            # Create instance (same logic as loader.py)
+            if ":" not in manifest.entry:
+                instance = ShellHook(script_path=str(manifest.path / manifest.entry))
+            else:
+                module_file, symbol = manifest.entry.split(":", 1)
+                cls_or_fn = _load_symbol(manifest.path / module_file, symbol)
+                instance = cls_or_fn() if isinstance(cls_or_fn, type) else cls_or_fn
+            # Assign hook fields from manifest
+            instance.event_name = manifest.event_name or getattr(instance, "event_name", "after_tool")
+            instance.matcher = manifest.matcher if manifest.matcher is not None else getattr(instance, "matcher", None)
+            instance.block = manifest.block
+            instance.timeout = manifest.timeout
+            instance.async_run = manifest.async_run
+            # Register (register() overwrites if same id already exists)
+            self.runtime.registry.register(manifest.id, "hook", instance, {
+                "version": manifest.version,
+                "config": manifest.config,
+                "permissions": manifest.permissions,
+                "enabled_by_default": manifest.enabled_by_default,
+                "path": str(manifest.path),
+                "entry": manifest.entry,
+            })
+            return web.json_response({"ok": True, "id": manifest.id})
+        except Exception as e:
+            return web.json_response({"error": "register_failed", "message": str(e)}, status=400)
 
     async def read_skill_file(self, request: web.Request) -> web.Response:
         """Read a file from inside one of the configured skill directories.

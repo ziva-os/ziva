@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from ziva.capabilities.interfaces import BaseHook
 from ziva.shared_types import RuntimeContext, ToolResult
 
 # After this many tool calls without an `update_plan`, start nudging. The
@@ -11,9 +12,8 @@ from ziva.shared_types import RuntimeContext, ToolResult
 _THRESHOLD = 8
 
 
-class PlanReminderHook:
+class PlanReminderHook(BaseHook):
     event_name: str = "after_tool"
-    matcher: str | None = None
 
     async def handle(self, payload: Dict[str, Any], ctx: RuntimeContext) -> Dict[str, Any]:
         runtime = ctx.metadata.get("_runtime")

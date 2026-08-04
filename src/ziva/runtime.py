@@ -472,6 +472,11 @@ class Runtime:
     # memory otherwise (see web/src/modals/skills.ts) and would never see
     # new skills until a hard reload.
     _last_skill_index_sig: str | None = field(default=None)
+    # 缓存 build_skill_index 结果的 dict 视图（name → entry），
+    # 供 read_skill 等"按 name 单次查找"的调用方 O(1) 命中。
+    # 每次 build_skill_index 返回新 list 时，这里也会刷新，
+    # 与 sig 缓存同步：sig 不变只会跳过 SSE 但仍然走 build → 重建 list。
+    _skill_by_name: dict[str, dict] | None = field(default=None)
 
     def __post_init__(self) -> None:
         if self._agent_concurrency is None:
@@ -775,7 +780,22 @@ class Runtime:
                 loop = None
             if loop is not None:
                 loop.create_task(self._publish_skill_index_changed(len(index)))
+        # 刷新 dict 视图（同名 skill 取第一个出现，保持 first-match 语义）
+        self._skill_by_name = {s["name"]: s for s in index}
         return index
+
+    def get_skill(self, name: str) -> dict | None:
+        """O(1) skill lookup by name.
+
+        首次调用会主动触发一次 build_skill_index() 填充 _skill_by_name 缓存。
+        之后每次 build_skill_index() 调用（turn 提示词构建 / /skills API）
+        都会在末尾无条件刷新 _skill_by_name —— sig 只控制 SSE 通知，
+        不跳过 list 重建和 dict 刷新，所以缓存永远不会过期。
+        实际开销：dict 索引一次构建 O(n)，单次 read_skill 查询 O(1)。
+        """
+        if self._skill_by_name is None:
+            self.build_skill_index()
+        return (self._skill_by_name or {}).get(name)
 
     async def _publish_skill_index_changed(self, count: int) -> None:
         """Push a ``skill_index_changed`` SSE event so the UI can drop its
@@ -1156,12 +1176,6 @@ class Runtime:
         await self._emit(sid, {"type": "turn_start"})
 
         rendered_messages = self._apply_prompt(list(session.history), ctx)
-        _last = rendered_messages[-1].content if rendered_messages else ""
-        if isinstance(_last, list):
-            _last = " ".join(p.get("text", "") for p in _last if isinstance(p, dict) and p.get("type") == "text")
-        skill_output = await self._maybe_apply_skill(_last, ctx)
-        if skill_output:
-            rendered_messages.append(ChatMessage(role="system", content=f"Skill output: {skill_output}"))
 
         # Build the per-turn model config first, so the image-resolution
         # branch below sees the SAME model that will actually be used to
@@ -1331,12 +1345,6 @@ class Runtime:
         yield {"type": "turn_start", "session_id": sid}
 
         rendered_messages = self._apply_prompt(list(session.history), ctx)
-        _last = rendered_messages[-1].content if rendered_messages else ""
-        if isinstance(_last, list):
-            _last = " ".join(p.get("text", "") for p in _last if isinstance(p, dict) and p.get("type") == "text")
-        skill_output = await self._maybe_apply_skill(_last, ctx)
-        if skill_output:
-            rendered_messages.append(ChatMessage(role="system", content=f"Skill output: {skill_output}"))
 
         last_exc: Exception | None = None
         # Snapshot model config and adapter at turn start so a mid-turn
@@ -1510,15 +1518,26 @@ class Runtime:
             env_context = self._build_environment_context(session_ws, model_cfg)
             parts = [p for p in [base_prompt, instructions] if p]
             parts.append(env_context)
-            skill_index = self.build_skill_index()
-            if skill_index:
-                skill_lines = ["# Available Skills (use `read_skill` tool to load full details)", ""]
-                for s in skill_index:
-                    if s["description"]:
-                        skill_lines.append(f"- **{s['name']}**: {s['description']}")
-                    else:
-                        skill_lines.append(f"- **{s['name']}**")
-                parts.append("\n".join(skill_lines))
+            # Skill 列表注入 — 两个条件都满足才展示:
+            #   1. read_skill 工具未被禁（子 agent 的 _allowed_tools 不含
+            #      read_skill 时跳过整段，避免"告诉你有这些 skill 但不给你
+            #      工具读详情"的半残提示）
+            #   2. _allowed_skills 为 None（继承全部）时照常列出；
+            #      非 None 时只列白名单内的 skill
+            _allowed_tools = ctx.metadata.get("_allowed_tools") if ctx else None
+            _allowed_skills = ctx.metadata.get("_allowed_skills") if ctx else None
+            if _allowed_tools is None or "read_skill" in _allowed_tools:
+                skill_index = self.build_skill_index()
+                if _allowed_skills is not None:
+                    skill_index = [s for s in skill_index if s["name"] in _allowed_skills]
+                if skill_index:
+                    skill_lines = ["# Available Skills (use `read_skill` tool to load full details)", ""]
+                    for s in skill_index:
+                        if s["description"]:
+                            skill_lines.append(f"- **{s['name']}**: {s['description']}")
+                        else:
+                            skill_lines.append(f"- **{s['name']}**")
+                    parts.append("\n".join(skill_lines))
             effective_prompt = "\n\n".join(parts)
             # IM channel context: when a turn is driven from the IM bridge,
             # tell the model the user is reaching it REMOTELY through a
@@ -1913,6 +1932,24 @@ class Runtime:
             # If whitelist specified, only include those tools
             if allowed_tools is not None and name not in allowed_tools:
                 continue
+            # Dynamically enrich spawn_agent for parent agents: list all
+            # configured agent names as enum + descriptions
+            if name == "spawn_agent" and not is_subagent:
+                agents_cfg = self.config.get("agents", {})
+                agent_names = list(agents_cfg.keys())
+                if agent_names:
+                    spec = dict(spec)
+                    spec["input_schema"] = dict(spec.get("input_schema") or {})
+                    spec["input_schema"]["properties"] = dict(spec["input_schema"].get("properties") or {})
+                    agent_prop = dict(spec["input_schema"]["properties"].get("agent") or {})
+                    agent_prop["enum"] = agent_names
+                    spec["input_schema"]["properties"]["agent"] = agent_prop
+                    lines = []
+                    for an, ad in agents_cfg.items():
+                        desc = ad.get("description") or (ad.get("instructions", "") or "")[:120]
+                        lines.append(f"  - {an}: {desc}")
+                    base_desc = spec.get("description", "").split("\n\nAvailable agents:")[0]
+                    spec["description"] = base_desc + "\n\nAvailable agents:\n" + "\n".join(lines)
             tools.append({
                 "type": "function",
                 "function": {
@@ -2110,6 +2147,11 @@ class Runtime:
             spec = tool.spec()
             if spec.get("name") == call.name:
                 hook_result = await self._run_hooks("before_tool", {"tool": call.name, "arguments": call.arguments}, ctx)
+                if hook_result.get("_block"):
+                    return ToolResult(
+                        text=f"Blocked by hook: {hook_result.get('_block_reason', '')}",
+                        error=True,
+                    )
                 if call.name in ("spawn_agent", "ask_user", "get_agent_result"):
                     # These three block on a per-session future that the
                     # *caller* (UI for ask_user, parent turn for
@@ -2287,14 +2329,6 @@ class Runtime:
         ]
         return "\n".join(lines)
 
-    async def _maybe_apply_skill(self, input_text: str, ctx: RuntimeContext) -> str | None:
-        for skill_rec in self.registry.list_kind("skill"):
-            skill = skill_rec.instance
-            if skill.match(input_text, ctx):
-                result = await skill.execute({"input": input_text}, ctx)
-                return str(result)
-        return None
-
     async def _store_memory(self, messages: List[ChatMessage], result: ChatResult, ctx: RuntimeContext) -> None:
         mems = self.registry.list_kind("memory")
         if not mems:
@@ -2304,6 +2338,10 @@ class Runtime:
 
     async def _run_hooks(self, lifecycle: str, payload: Dict[str, Any], ctx: RuntimeContext) -> Dict[str, Any]:
         from fnmatch import fnmatch
+        # 子 agent hooks 过滤：_allowed_hooks 为 None 时继承全部
+        allowed_hooks = ctx.metadata.get("_allowed_hooks") if ctx else None
+        if allowed_hooks is not None and lifecycle not in allowed_hooks:
+            return payload
         for hook_rec in self.registry.list_kind("hook"):
             hook = hook_rec.instance
             if getattr(hook, "event_name", "") != lifecycle:
@@ -2313,6 +2351,8 @@ class Runtime:
                 if not fnmatch(payload["tool"], matcher):
                     continue
             payload = await hook.handle(payload, ctx)
+            if payload.get("_block"):          # 阻断信号，停止后续 hook
+                break
         return payload
 
     def list_tools(self) -> List[Dict[str, Any]]:

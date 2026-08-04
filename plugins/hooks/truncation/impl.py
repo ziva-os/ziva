@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict
 
+from ziva.capabilities.interfaces import BaseHook
 from ziva.shared_types import RuntimeContext, ToolResult
 
 _TOOL_LIMITS: dict[str, int] = {
@@ -24,9 +25,8 @@ _PREVIEW_TAIL_LINES = 20
 _PREVIEW_LINE_WIDTH = 200
 
 
-class TruncationHook:
+class TruncationHook(BaseHook):
     event_name: str = "after_tool"
-    matcher: str | None = None
 
     async def handle(self, payload: Dict[str, Any], ctx: RuntimeContext) -> Dict[str, Any]:
         output = payload.get("output")

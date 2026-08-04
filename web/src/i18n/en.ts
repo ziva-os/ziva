@@ -273,12 +273,9 @@ export const dict = {
   "settings.sandbox.restrictive": "Restrictive",
 
   // settings: prompt
-  "settings.promptProfile": "Prompt Profile",
-  "settings.profile": "Profile",
-  "settings.profile.default": "default",
-  "settings.profile.concise": "concise",
-  "settings.profile.detailed": "detailed",
-  "settings.profile.custom": "custom",
+  "settings.promptProfile": "System Prompt",
+  "settings.promptDesc": "Base system prompt for the agent. This text is concatenated after environment context and before layered AGENTS.md, then sent as the model's system field.",
+  "settings.promptPlaceholder": "Type the agent's base system prompt here...",
 
   // settings: thinking mode levels
   "settings.thinking.disabled": "Disabled",
@@ -297,10 +294,16 @@ export const dict = {
   "settings.removeAgent": "Remove agent",
   "settings.instructions": "Instructions",
   "settings.instructionsPlaceholder": "System prompt for the sub-agent",
+  "settings.agentDescription": "Description",
+  "settings.agentDescriptionHint": "One-line summary shown to the parent agent in the spawn_agent tool description.",
+  "settings.agentDescriptionPlaceholder": "e.g. Read-only investigation agent",
   "settings.tools": "Tools",
   "settings.skills": "Skills",
   "settings.hooks": "Hooks",
   "settings.nSelected": "({{n}} selected)",
+  "settings.modeInherit": "Inherit all",
+  "settings.modeAllow": "Allow specific",
+  "settings.modeDeny": "Deny specific",
   "settings.toolsDesc": "Whitelist of tools the sub-agent can call. Empty = no tools (pure LLM). spawn_agent / get_agent_result / cancel_agent are always blocked.",
   "settings.skillsDesc": "Skills available to the sub-agent.",
   "settings.agentHooksDesc": "Hook types this sub-agent triggers. Each selected type runs the matching <code>hooks.&lt;type&gt;</code> commands from config on the sub-agent's own turns/tools. Empty = inherit all hook types from main.",
@@ -309,6 +312,20 @@ export const dict = {
   "settings.addTools": "Add tools...",
   "settings.addSkills": "Add skills...",
   "settings.addHooks": "Add hooks...",
+
+  // settings: hooks panel
+  "settings.hookSourceBuiltin": "Built-in",
+  "settings.event": "Event",
+  "settings.matcher": "Matcher",
+  "settings.block": "Block",
+  "settings.timeout": "Timeout",
+  "settings.async": "Async",
+  "settings.noTimeout": "no limit",
+  "settings.noHooks": "No hooks registered.",
+  "settings.registeredHooks": "Registered Hooks",
+  "settings.addHook": "Add Hook",
+  "settings.addHookDesc": "Enter a folder path containing manifest.yaml (+ impl.sh or impl.py)",
+  "settings.register": "Register",
 
   // ---- im ----
   "im.title": "Connect Phone",

@@ -94,7 +94,7 @@ export async function openSettingsModal() {
         </div>`;
     }
 
-    // Build hooks HTML per hook type
+    // Build hooks HTML — fetch registered hooks from backend + folder register input
     const hookTypes = ["before_turn", "after_turn", "before_tool", "after_tool"];
     const hookPhaseLabel: Record<string, string> = {
       before_turn: i18n.t("settings.hookPhase.beforeTurn"),
@@ -102,21 +102,7 @@ export async function openSettingsModal() {
       before_tool: i18n.t("settings.hookPhase.beforeTool"),
       after_tool: i18n.t("settings.hookPhase.afterTool"),
     };
-    let hooksHtml = "";
-    for (const ht of hookTypes) {
-      const items: string[] = hooks[ht] || [];
-      let rows = "";
-      for (let i = 0; i < items.length; i++) {
-        rows += `<div class="settings-hook-row"><input class="settings-input" data-hook="${ht}" data-hook-idx="${i}" value="${esc(items[i])}" /><button class="settings-hook-remove" data-hook-remove="${ht}:${i}" title="Remove">×</button></div>`;
-      }
-      hooksHtml += `
-        <div class="settings-section">
-          <div class="settings-section-title">${hookPhaseLabel[ht] || ht}</div>
-          <div class="settings-desc">${i18n.t("settings.hooksDesc", { phase: hookPhaseLabel[ht] || ht })}</div>
-          <div data-hook-list="${ht}">${rows}</div>
-          <button class="settings-add-btn" data-hook-add="${ht}">${i18n.t("settings.addCommand")}</button>
-        </div>`;
-    }
+    let hooksHtml = '<div id="hooksPanel"></div>';
 
     // Build agents HTML
     // Each agent has: name (key), instructions (textarea), tools
@@ -133,25 +119,42 @@ export async function openSettingsModal() {
     const agentEntries = Object.entries(agents);
     const agentsHtml = agentEntries.map(([name, def]) => {
       const instructions = (def.instructions || "") as string;
-      const agentTools: string[] = def.tools || [];
-      const agentSkills: string[] = def.skills || [];
-      const agentHooks: string[] = def.hooks || [];
+      const description = (def.description || "") as string;
       const background = !!def.background;
-      // Build dropdown + removable selected-tag boxes for tools/skills/hooks.
-      const buildSelect = (cls: string, kind: string, all: string[], selected: string[]) => {
+      // Three-state mode detection: allow / deny / inherit
+      const toolMode = def.deny_tools ? "deny" : def.tools ? "allow" : "inherit";
+      const skillMode = def.deny_skills ? "deny" : def.skills ? "allow" : "inherit";
+      const hookMode = def.deny_hooks ? "deny" : def.hooks ? "allow" : "inherit";
+      const agentTools: string[] = def.tools || def.deny_tools || [];
+      const agentSkills: string[] = def.skills || def.deny_skills || [];
+      const agentHooks: string[] = def.hooks || def.deny_hooks || [];
+
+      // Build a mode selector + tag selector section for one dimension.
+      const buildDimension = (kind: string, label: string, desc: string, all: string[], selected: string[], mode: string) => {
+        const modeOpts = [
+          { v: "inherit", l: i18n.t("settings.modeInherit") || "Inherit all" },
+          { v: "allow", l: i18n.t("settings.modeAllow") || "Allow specific" },
+          { v: "deny", l: i18n.t("settings.modeDeny") || "Deny specific" },
+        ].map(o => `<option value="${o.v}" ${mode === o.v ? "selected" : ""}>${o.l}</option>`).join("");
+        const modeSelect = `<select class="settings-select agent-mode-select" data-agent-mode="${kind}" data-agent-name="${esc(name)}" style="margin-left:8px;font-size:11px;width:auto;padding:2px 6px">${modeOpts}</select>`;
         const options = all.filter((x) => !selected.includes(x)).map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join("");
-        return `<select class="settings-select ${cls}" data-agent-select-${kind}="${esc(name)}"><option value="">${addKindLabel(kind)}</option>${options}</select>`;
-      };
-      const buildBox = (kind: string, selected: string[]) => {
+        const tagSelect = `<select class="settings-select agent-${kind}-select" data-agent-select-${kind}="${esc(name)}"><option value="">${addKindLabel(kind)}</option>${options}</select>`;
         const tags = selected.map((x) => `<span class="agent-selected-tag" data-kind="${kind}" data-value="${esc(x)}">${esc(x)}<button type="button" class="agent-selected-remove" data-remove-kind="${kind}" data-remove="${esc(x)}">×</button></span>`).join("");
-        return `<div class="agent-selected-box" data-agent-box-${kind}="${esc(name)}">${tags}</div>`;
+        const tagBox = `<div class="agent-selected-box" data-agent-box-${kind}="${esc(name)}">${tags}</div>`;
+        return `
+          <div class="settings-section">
+            <div class="settings-section-title">${label}${modeSelect}</div>
+            <div class="settings-desc">${desc}</div>
+            <div class="agent-tags-area" data-agent-tags-area="${kind}" data-agent-name="${esc(name)}" style="display:${mode === "inherit" ? "none" : "block"}">
+              <div class="settings-row" style="margin:6px 0;gap:8px">
+                <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="${kind}" data-agent-name="${esc(name)}" style="padding:3px 10px">${i18n.t("settings.selectAll")}</button>
+                <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="${kind}" data-agent-name="${esc(name)}" style="padding:3px 10px">${i18n.t("settings.clear")}</button>
+              </div>
+              ${tagSelect}
+              ${tagBox}
+            </div>
+          </div>`;
       };
-      const toolSelect = buildSelect("agent-tools-select", "tools", allToolNames, agentTools);
-      const toolBox = buildBox("tools", agentTools);
-      const skillSelect = buildSelect("agent-skills-select", "skills", allSkillNames, agentSkills);
-      const skillBox = buildBox("skills", agentSkills);
-      const hookSelect = buildSelect("agent-hooks-select", "hooks", hookTypes, agentHooks);
-      const hookBox = buildBox("hooks", agentHooks);
       return `
         <div class="settings-agent-card" data-agent-name="${esc(name)}">
           <div class="settings-agent-card-header">
@@ -160,50 +163,30 @@ export async function openSettingsModal() {
             <button class="settings-hook-remove" data-agent-remove="${esc(name)}" title="${i18n.t("settings.removeAgent")}">×</button>
           </div>
           <div class="settings-section">
+            <div class="settings-section-title">${i18n.t("settings.agentDescription") || "Description"}</div>
+            <div class="settings-desc">${i18n.t("settings.agentDescriptionHint") || "One-line summary shown to the parent agent in the spawn_agent tool description."}</div>
+            <input class="settings-input settings-agent-description" data-agent-description="${esc(name)}" value="${esc(description)}" placeholder="${i18n.t("settings.agentDescriptionPlaceholder") || "e.g. Read-only investigation agent"}" />
+          </div>
+          <div class="settings-section">
             <div class="settings-section-title">${i18n.t("settings.instructions")}</div>
             <textarea class="settings-input settings-agent-instructions" data-agent-instructions="${esc(name)}" rows="8" placeholder="${i18n.t("settings.instructionsPlaceholder")}">${esc(instructions)}</textarea>
           </div>
-          <div class="settings-section">
-            <div class="settings-section-title">${i18n.t("settings.tools")} <span style="color:var(--muted);font-weight:400;font-size:11px">${i18n.t("settings.nSelected", { n: agentTools.length })}</span></div>
-            <div class="settings-desc">${i18n.t("settings.toolsDesc")}</div>
-            <div class="settings-row" style="margin:6px 0;gap:8px">
-              <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="tools" data-agent-name="${esc(name)}" style="padding:3px 10px">${i18n.t("settings.selectAll")}</button>
-              <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="tools" data-agent-name="${esc(name)}" style="padding:3px 10px">${i18n.t("settings.clear")}</button>
-            </div>
-            ${toolSelect}
-            ${toolBox}
-          </div>
-          <div class="settings-section">
-            <div class="settings-section-title">${i18n.t("settings.skills")} <span style="color:var(--muted);font-weight:400;font-size:11px">${i18n.t("settings.nSelected", { n: agentSkills.length })}</span></div>
-            <div class="settings-desc">${i18n.t("settings.skillsDesc")}</div>
-            <div class="settings-row" style="margin:6px 0;gap:8px">
-              <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="skills" data-agent-name="${esc(name)}" style="padding:3px 10px">${i18n.t("settings.selectAll")}</button>
-              <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="skills" data-agent-name="${esc(name)}" style="padding:3px 10px">${i18n.t("settings.clear")}</button>
-            </div>
-            ${skillSelect}
-            ${skillBox}
-          </div>
-          <div class="settings-section">
-            <div class="settings-section-title">${i18n.t("settings.hooks")} <span style="color:var(--muted);font-weight:400;font-size:11px">${i18n.t("settings.nSelected", { n: agentHooks.length })}</span></div>
-            <div class="settings-desc">${i18n.t("settings.agentHooksDesc")}</div>
-            <div class="settings-row" style="margin:6px 0;gap:8px">
-              <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="hooks" data-agent-name="${esc(name)}" style="padding:3px 10px">${i18n.t("settings.selectAll")}</button>
-              <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="hooks" data-agent-name="${esc(name)}" style="padding:3px 10px">${i18n.t("settings.clear")}</button>
-            </div>
-            ${hookSelect}
-            ${hookBox}
-          </div>
+          ${buildDimension("tools", i18n.t("settings.tools"), i18n.t("settings.toolsDesc"), allToolNames, agentTools, toolMode)}
+          ${buildDimension("skills", i18n.t("settings.skills"), i18n.t("settings.skillsDesc"), allSkillNames, agentSkills, skillMode)}
+          ${buildDimension("hooks", i18n.t("settings.hooks"), i18n.t("settings.agentHooksDesc"), hookTypes, agentHooks, hookMode)}
         </div>`;
     }).join("");
 
     // Wire the dropdown + removable tag UX for a single agent card.
     function wireAgentSelections(card: HTMLElement, name: string) {
-      const updateCount = (kind: string) => {
-        const count = card.querySelectorAll(`.agent-selected-tag[data-kind="${kind}"]`).length;
-        const box = card.querySelector(`[data-agent-box-${kind}="${name}"]`);
-        const titleSpan = box?.parentElement?.querySelector(".settings-section-title span");
-        if (titleSpan) titleSpan.textContent = i18n.t("settings.nSelected", { n: count });
-      };
+      // Mode change: show/hide the tag selector area
+      card.querySelectorAll<HTMLSelectElement>(".agent-mode-select").forEach(modeSel => {
+        modeSel.addEventListener("change", () => {
+          const kind = modeSel.dataset.agentMode!;
+          const area = card.querySelector(`[data-agent-tags-area="${kind}"][data-agent-name="${name}"]`) as HTMLElement | null;
+          if (area) area.style.display = modeSel.value === "inherit" ? "none" : "block";
+        });
+      });
       const addTag = (kind: string, value: string) => {
         if (!value) return;
         const box = card.querySelector(`[data-agent-box-${kind}="${name}"]`) as HTMLElement | null;
@@ -217,7 +200,6 @@ export async function openSettingsModal() {
         box.appendChild(tag);
         select.querySelector(`option[value="${esc(value)}"]`)?.remove();
         select.value = "";
-        updateCount(kind);
       };
       const removeTag = (kind: string, value: string) => {
         const box = card.querySelector(`[data-agent-box-${kind}="${name}"]`) as HTMLElement | null;
@@ -227,7 +209,6 @@ export async function openSettingsModal() {
         const all = kind === "tools" ? allToolNames : kind === "skills" ? allSkillNames : hookTypes;
         const remaining = all.filter((x) => !Array.from(box.querySelectorAll(".agent-selected-tag")).map(t => (t as HTMLElement).dataset.value).includes(x));
         select.innerHTML = `<option value="">${addKindLabel(kind)}</option>` + remaining.map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join("");
-        updateCount(kind);
       };
       const selectAll = (kind: string) => {
         const all = kind === "tools" ? allToolNames : kind === "skills" ? allSkillNames : hookTypes;
@@ -240,7 +221,6 @@ export async function openSettingsModal() {
         box.innerHTML = "";
         const all = kind === "tools" ? allToolNames : kind === "skills" ? allSkillNames : hookTypes;
         select.innerHTML = `<option value="">${addKindLabel(kind)}</option>` + all.map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join("");
-        updateCount(kind);
       };
       card.addEventListener("change", (e) => {
         const sel = e.target as HTMLSelectElement;
@@ -435,14 +415,8 @@ export async function openSettingsModal() {
             <div class="settings-panel-inner">
               <div class="settings-section">
                 <div class="settings-section-title">${i18n.t("settings.promptProfile")}</div>
-                <div class="settings-row"><label class="settings-label">${i18n.t("settings.profile")}</label>
-                  <select class="settings-select" id="s_prompt_profile">
-                    <option value="default" ${prompt.profile === "default" || !prompt.profile ? "selected" : ""}>${i18n.t("settings.profile.default")}</option>
-                    <option value="concise" ${prompt.profile === "concise" ? "selected" : ""}>${i18n.t("settings.profile.concise")}</option>
-                    <option value="detailed" ${prompt.profile === "detailed" ? "selected" : ""}>${i18n.t("settings.profile.detailed")}</option>
-                    <option value="" ${!["default","concise","detailed"].includes(prompt.profile) && prompt.profile ? "selected" : ""}>${i18n.t("settings.profile.custom")}</option>
-                  </select>
-                </div>
+                <div class="settings-desc">${i18n.t("settings.promptDesc")}</div>
+                <textarea class="settings-input settings-textarea" id="s_prompt_system_prompt" rows="20" placeholder="${i18n.t("settings.promptPlaceholder")}">${esc(prompt.system_prompt || "")}</textarea>
               </div>
             </div>
           </div>
@@ -472,23 +446,71 @@ export async function openSettingsModal() {
       };
     });
 
-    // Hook add/remove
-    body.querySelectorAll<HTMLButtonElement>("[data-hook-add]").forEach(btn => {
-      btn.onclick = () => {
-        const ht = btn.dataset.hookAdd!;
-        const list = body.querySelector(`[data-hook-list="${ht}"]`)!;
-        const idx = list.children.length;
-        const row = document.createElement("div");
-        row.className = "settings-hook-row";
-        row.innerHTML = `<input class="settings-input" data-hook="${ht}" data-hook-idx="${idx}" value="" placeholder="${i18n.t("settings.hookPlaceholder")}" /><button class="settings-hook-remove" data-hook-remove="${ht}:${idx}" title="${i18n.t("common.remove")}">×</button>`;
-        (row.querySelector(".settings-hook-remove") as HTMLElement | null)!.onclick = () => row.remove();
-        list.appendChild(row);
-        row.querySelector("input")?.focus();
-      };
-    });
-    body.querySelectorAll<HTMLButtonElement>("[data-hook-remove]").forEach(btn => {
-      btn.onclick = () => (btn.closest(".settings-hook-row") as HTMLElement)?.remove();
-    });
+    // Hooks panel — fetch registered hooks and render read-only cards + register input
+    async function renderHooksPanel() {
+      const panel = body.querySelector<HTMLElement>("#hooksPanel");
+      if (!panel) return;
+      panel.innerHTML = `<div style="color:var(--muted);font-size:12px;padding:8px 0">${i18n.t("common.loading") || "Loading..."}</div>`;
+      try {
+        const hooks = await api.listHooks();
+        let cardsHtml = "";
+        for (const h of hooks) {
+          const phaseLabel = hookPhaseLabel[h.event_name] || h.event_name;
+          const sourceLabel = h.source === "builtin" ? i18n.t("settings.hookSourceBuiltin") || "Built-in" : h.source;
+          const typeLabel = h.type === "shell" ? "Shell" : "Python";
+          cardsHtml += `
+            <div class="settings-hook-card" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                <span style="font-weight:600;font-size:13px">${esc(h.name)}</span>
+                <span style="font-size:11px;color:var(--muted)">${esc(sourceLabel)} · ${typeLabel}</span>
+              </div>
+              <div style="font-size:12px;color:var(--muted)">
+                ${i18n.t("settings.event")}: ${esc(phaseLabel)} ·
+                ${i18n.t("settings.matcher")}: ${esc(h.matcher || "—")}
+                ${h.block !== null ? ` · ${h.block ? "☑" : "☐"} ${i18n.t("settings.block")}` : ""}
+                ${h.timeout !== null ? ` · ${i18n.t("settings.timeout")}: ${h.timeout === 0 ? i18n.t("settings.noTimeout") || "no limit" : h.timeout + "s"}` : ""}
+                ${h.async_run !== null ? ` · ${h.async_run ? "☑" : "☐"} ${i18n.t("settings.async")}` : ""}
+              </div>
+            </div>`;
+        }
+        if (!cardsHtml) {
+          cardsHtml = `<div style="color:var(--muted);font-size:12px;padding:8px 0">${i18n.t("settings.noHooks") || "No hooks registered."}</div>`;
+        }
+        panel.innerHTML = `
+          <div class="settings-section">
+            <div class="settings-section-title">${i18n.t("settings.registeredHooks") || "Registered Hooks"}</div>
+            ${cardsHtml}
+          </div>
+          <div class="settings-section" style="margin-top:16px">
+            <div class="settings-section-title">${i18n.t("settings.addHook") || "Add Hook"}</div>
+            <div class="settings-desc">${i18n.t("settings.addHookDesc") || "Enter a folder path containing manifest.yaml (+ impl.sh or impl.py)"}</div>
+            <div class="settings-row" style="gap:8px">
+              <input class="settings-input" id="s_hook_folder_path" placeholder="~/.ziva/hooks/my-hook/" style="flex:1" />
+              <button class="settings-add-btn" id="s_hook_register_btn" style="white-space:nowrap">${i18n.t("settings.register") || "Register"}</button>
+            </div>
+          </div>`;
+        const registerBtn = panel.querySelector<HTMLElement>("#s_hook_register_btn");
+        if (registerBtn) {
+          registerBtn.onclick = async () => {
+            const input = panel.querySelector<HTMLInputElement>("#s_hook_folder_path");
+            const folderPath = input?.value?.trim();
+            if (!folderPath) return;
+            registerBtn.textContent = "...";
+            try {
+              await api.registerHook(folderPath);
+              input!.value = "";
+              await renderHooksPanel();
+            } catch (e) {
+              alert((e as Error).message);
+              registerBtn.textContent = i18n.t("settings.register") || "Register";
+            }
+          };
+        }
+      } catch (e) {
+        panel.innerHTML = `<div style="color:var(--muted);font-size:12px;padding:8px 0">${(e as Error).message}</div>`;
+      }
+    }
+    renderHooksPanel();
 
     // MCP server remove
     body.querySelectorAll<HTMLButtonElement>("[data-mcp-remove]").forEach(btn => {
@@ -509,15 +531,35 @@ export async function openSettingsModal() {
     // Add agent button — spawn an empty card the user can fill in
     const addAgentBtn = body.querySelector("#addAgentBtn") as HTMLButtonElement | null;
     if (addAgentBtn) {
-      addAgentBtn.onclick = () => {
+        addAgentBtn.onclick = () => {
         const list = body.querySelector("#agentsList")!;
         // Find a non-colliding placeholder name
         let idx = 1;
         while (list.querySelector(`[data-agent-name="new_agent_${idx}"]`)) idx++;
         const n = `new_agent_${idx}`;
-        const toolOptions = allToolNames.map((tn) => `<option value="${esc(tn)}">${esc(tn)}</option>`).join("");
-        const skillOptions = allSkillNames.map((sn) => `<option value="${esc(sn)}">${esc(sn)}</option>`).join("");
-        const hookOptions = hookTypes.map((hk) => `<option value="${esc(hk)}">${esc(hk)}</option>`).join("");
+        // Build dimension section inline (mirrors buildDimension from agentsHtml)
+        const modeOpts = [
+          { v: "inherit", l: i18n.t("settings.modeInherit") || "Inherit all" },
+          { v: "allow", l: i18n.t("settings.modeAllow") || "Allow specific" },
+          { v: "deny", l: i18n.t("settings.modeDeny") || "Deny specific" },
+        ].map(o => `<option value="${o.v}">${o.l}</option>`).join("");
+        const buildNewDim = (kind: string, label: string, desc: string, all: string[]) => {
+          const options = all.map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join("");
+          const modeSelect = `<select class="settings-select agent-mode-select" data-agent-mode="${kind}" data-agent-name="${esc(n)}" style="margin-left:8px;font-size:11px;width:auto;padding:2px 6px"><option value="inherit" selected>${i18n.t("settings.modeInherit") || "Inherit all"}</option><option value="allow">${i18n.t("settings.modeAllow") || "Allow specific"}</option><option value="deny">${i18n.t("settings.modeDeny") || "Deny specific"}</option></select>`;
+          return `
+            <div class="settings-section">
+              <div class="settings-section-title">${label}${modeSelect}</div>
+              <div class="settings-desc">${desc}</div>
+              <div class="agent-tags-area" data-agent-tags-area="${kind}" data-agent-name="${esc(n)}" style="display:none">
+                <div class="settings-row" style="margin:6px 0;gap:8px">
+                  <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="${kind}" data-agent-name="${esc(n)}" style="padding:3px 10px">${i18n.t("settings.selectAll")}</button>
+                  <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="${kind}" data-agent-name="${esc(n)}" style="padding:3px 10px">${i18n.t("settings.clear")}</button>
+                </div>
+                <select class="settings-select agent-${kind}-select" data-agent-select-${kind}="${esc(n)}"><option value="">${addKindLabel(kind)}</option>${options}</select>
+                <div class="agent-selected-box" data-agent-box-${kind}="${esc(n)}"></div>
+              </div>
+            </div>`;
+        };
         const card = document.createElement("div");
         card.className = "settings-agent-card";
         card.dataset.agentName = n;
@@ -528,36 +570,18 @@ export async function openSettingsModal() {
             <button class="settings-hook-remove" data-agent-remove="${esc(n)}" title="${i18n.t("settings.removeAgent")}">×</button>
           </div>
           <div class="settings-section">
+            <div class="settings-section-title">${i18n.t("settings.agentDescription") || "Description"}</div>
+            <div class="settings-desc">${i18n.t("settings.agentDescriptionHint") || "One-line summary shown to the parent agent in the spawn_agent tool description."}</div>
+            <input class="settings-input settings-agent-description" data-agent-description="${esc(n)}" value="" placeholder="${i18n.t("settings.agentDescriptionPlaceholder") || "e.g. Read-only investigation agent"}" />
+          </div>
+          <div class="settings-section">
             <div class="settings-section-title">${i18n.t("settings.instructions")}</div>
             <textarea class="settings-input settings-agent-instructions" data-agent-instructions="${esc(n)}" rows="8" placeholder="${i18n.t("settings.instructionsPlaceholder")}"></textarea>
           </div>
-          <div class="settings-section">
-            <div class="settings-section-title">${i18n.t("settings.tools")} <span style="color:var(--muted);font-weight:400;font-size:11px">${i18n.t("settings.nSelected", { n: 0 })}</span></div>
-            <div class="settings-row" style="margin:6px 0;gap:8px">
-              <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="tools" data-agent-name="${esc(n)}" style="padding:3px 10px">${i18n.t("settings.selectAll")}</button>
-              <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="tools" data-agent-name="${esc(n)}" style="padding:3px 10px">${i18n.t("settings.clear")}</button>
-            </div>
-            <select class="settings-select agent-tools-select" data-agent-select-tools="${esc(n)}"><option value="">${i18n.t("settings.addTools")}</option>${toolOptions}</select>
-            <div class="agent-selected-box" data-agent-box-tools="${esc(n)}"></div>
-          </div>
-          <div class="settings-section">
-            <div class="settings-section-title">${i18n.t("settings.skills")} <span style="color:var(--muted);font-weight:400;font-size:11px">${i18n.t("settings.nSelected", { n: 0 })}</span></div>
-            <div class="settings-row" style="margin:6px 0;gap:8px">
-              <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="skills" data-agent-name="${esc(n)}" style="padding:3px 10px">${i18n.t("settings.selectAll")}</button>
-              <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="skills" data-agent-name="${esc(n)}" style="padding:3px 10px">${i18n.t("settings.clear")}</button>
-            </div>
-            <select class="settings-select agent-skills-select" data-agent-select-skills="${esc(n)}"><option value="">${i18n.t("settings.addSkills")}</option>${skillOptions}</select>
-            <div class="agent-selected-box" data-agent-box-skills="${esc(n)}"></div>
-          </div>
-          <div class="settings-section">
-            <div class="settings-section-title">${i18n.t("settings.hooks")} <span style="color:var(--muted);font-weight:400;font-size:11px">${i18n.t("settings.nSelected", { n: 0 })}</span></div>
-            <div class="settings-row" style="margin:6px 0;gap:8px">
-              <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="hooks" data-agent-name="${esc(n)}" style="padding:3px 10px">${i18n.t("settings.selectAll")}</button>
-              <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="hooks" data-agent-name="${esc(n)}" style="padding:3px 10px">${i18n.t("settings.clear")}</button>
-            </div>
-            <select class="settings-select agent-hooks-select" data-agent-select-hooks="${esc(n)}"><option value="">${i18n.t("settings.addHooks")}</option>${hookOptions}</select>
-             <div class="agent-selected-box" data-agent-box-hooks="${esc(n)}"></div>
-          </div>`;
+          ${buildNewDim("tools", i18n.t("settings.tools"), i18n.t("settings.toolsDesc"), allToolNames)}
+          ${buildNewDim("skills", i18n.t("settings.skills"), i18n.t("settings.skillsDesc"), allSkillNames)}
+          ${buildNewDim("hooks", i18n.t("settings.hooks"), i18n.t("settings.agentHooksDesc"), hookTypes)}
+        `;
         // Wire the new card's remove button and selections
         const removeBtn = card.querySelector("[data-agent-remove]") as HTMLButtonElement;
         removeBtn.onclick = () => card.remove();
@@ -758,36 +782,40 @@ export async function openSettingsModal() {
         updated.sandbox = { ...updated.sandbox, mode: (backdrop.querySelector("#s_sandbox_mode") as HTMLSelectElement).value };
 
         // Prompt
-        updated.prompt = { ...updated.prompt, profile: (backdrop.querySelector("#s_prompt_profile") as HTMLSelectElement).value };
+        updated.prompt = { ...updated.prompt, system_prompt: (backdrop.querySelector("#s_prompt_system_prompt") as HTMLTextAreaElement).value };
 
-        // Agents — rebuild from DOM. Each card has: name (key),
-        // instructions, tools[], skills[], background, memory.
+        // Agents — rebuild from DOM. Each dimension uses three-state mode:
+        // inherit (omit key) / allow (store `tools`) / deny (store `deny_tools`).
         const newAgents: Record<string, any> = {};
         backdrop.querySelectorAll<HTMLElement>(".settings-agent-card").forEach(card => {
           const origName = card.dataset.agentName!;
           const renameInput = card.querySelector(`[data-agent-rename="${origName}"]`) as HTMLInputElement;
           const newName = (renameInput?.value?.trim()) || origName;
           const instr = ((card.querySelector(`[data-agent-instructions="${origName}"]`) as HTMLTextAreaElement)?.value || "").trim();
-          const tools = Array.from(card.querySelectorAll<HTMLElement>(`.agent-selected-tag[data-kind="tools"]`)).map(c => c.dataset.value!);
-          const skills = Array.from(card.querySelectorAll<HTMLElement>(`.agent-selected-tag[data-kind="skills"]`)).map(c => c.dataset.value!);
-          const hooks = Array.from(card.querySelectorAll<HTMLElement>(`.agent-selected-tag[data-kind="hooks"]`)).map(c => c.dataset.value!);
+          const desc = ((card.querySelector(`[data-agent-description="${origName}"]`) as HTMLInputElement)?.value || "").trim();
           const bg = !!(card.querySelector(`input[data-agent-bg="${origName}"]`) as HTMLInputElement)?.checked;
-          newAgents[newName] = {
-            instructions: instr,
-            tools,
-            skills,
-            hooks,
-            background: bg,
-          };
+          const agentObj: Record<string, any> = { instructions: instr, background: bg };
+          if (desc) agentObj.description = desc;
+          // For each kind, read the mode selector and store accordingly
+          for (const kind of ["tools", "skills", "hooks"] as const) {
+            const modeSel = card.querySelector(`select.agent-mode-select[data-agent-mode="${kind}"]`) as HTMLSelectElement | null;
+            const mode = modeSel?.value || "inherit";
+            const selected = Array.from(card.querySelectorAll<HTMLElement>(`.agent-selected-tag[data-kind="${kind}"]`)).map(c => c.dataset.value!);
+            const denyKey = kind === "tools" ? "deny_tools" : kind === "skills" ? "deny_skills" : "deny_hooks";
+            if (mode === "allow") {
+              agentObj[kind] = selected;
+            } else if (mode === "deny") {
+              agentObj[denyKey] = selected;
+            }
+            // inherit: omit both keys
+          }
+          newAgents[newName] = agentObj;
         });
+
         updated.agents = newAgents;
 
-        // Hooks — rebuild from DOM
-        const newHooks: Record<string, string[]> = {};
-        for (const ht of hookTypes) {
-          newHooks[ht] = Array.from(backdrop.querySelectorAll<HTMLInputElement>(`[data-hook="${ht}"]`)).map(i => i.value).filter(Boolean);
-        }
-        updated.hooks = newHooks;
+        // Hooks are now managed via manifest files + /api/hooks, not config
+        delete updated.hooks;
 
         // Remove skill_index metadata before saving
         delete (updated as any)._skill_index;

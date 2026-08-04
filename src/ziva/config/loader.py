@@ -13,7 +13,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "thinking_mode": "disabled",
     },
     "providers": [{"name": "Anthropic", "api_type": "anthropic", "api_key": "", "base_url": "https://api.anthropic.com", "models": [{"name": "claude-sonnet-4-5", "capabilities": {"vision": True}}]}],
-    "prompt": {"profile": "default", "variables": {}},
+    "prompt": {"system_prompt": "", "variables": {}},
     "tool": {"allow": [], "deny": [], "max_rounds": 0},
     "skill": {
         "enabled": [],
@@ -147,7 +147,7 @@ def validate_config(config: Dict[str, Any]) -> None:
     prompt = config.get("prompt", {})
     if not isinstance(prompt, dict):
         raise ValueError("prompt must be an object")
-    _expect_type(prompt, "profile", str, "prompt")
+    _expect_type(prompt, "system_prompt", str, "prompt")
     _expect_type(prompt, "variables", dict, "prompt")
 
     tool = config.get("tool", {})
@@ -214,12 +214,18 @@ def validate_config(config: Dict[str, Any]) -> None:
         _expect_type(definition, "tools", list, f"agents.{name}")
         if "tools" in definition and not all(isinstance(t, str) for t in definition["tools"]):
             raise ValueError(f"agents.{name}.tools must be a list of strings")
+        _expect_type(definition, "deny_tools", list, f"agents.{name}")
+        if "deny_tools" in definition and not all(isinstance(t, str) for t in definition["deny_tools"]):
+            raise ValueError(f"agents.{name}.deny_tools must be a list of strings")
         if "background" in definition and not isinstance(definition["background"], bool):
             raise ValueError(f"agents.{name}.background must be a boolean")
         # Skills whitelist (sub-agent only sees these). Optional.
         _expect_type(definition, "skills", list, f"agents.{name}")
         if "skills" in definition and not all(isinstance(s, str) for s in definition["skills"]):
             raise ValueError(f"agents.{name}.skills must be a list of strings")
+        _expect_type(definition, "deny_skills", list, f"agents.{name}")
+        if "deny_skills" in definition and not all(isinstance(s, str) for s in definition["deny_skills"]):
+            raise ValueError(f"agents.{name}.deny_skills must be a list of strings")
         # Hook types this sub-agent triggers. Each value must be one
         # of the supported hook types the runtime recognises
         # (matches cfg.hooks keys). Empty list = inherit all hook
@@ -233,6 +239,17 @@ def validate_config(config: Dict[str, Any]) -> None:
                 if hk not in valid_hook_types:
                     raise ValueError(
                         f"agents.{name}.hooks contains unknown type '{hk}'. "
+                        f"Valid types: {sorted(valid_hook_types)}"
+                    )
+        _expect_type(definition, "deny_hooks", list, f"agents.{name}")
+        if "deny_hooks" in definition:
+            valid_hook_types = {"before_turn", "after_turn", "before_tool", "after_tool"}
+            for hk in definition["deny_hooks"]:
+                if not isinstance(hk, str):
+                    raise ValueError(f"agents.{name}.deny_hooks must be a list of strings")
+                if hk not in valid_hook_types:
+                    raise ValueError(
+                        f"agents.{name}.deny_hooks contains unknown type '{hk}'. "
                         f"Valid types: {sorted(valid_hook_types)}"
                     )
 
