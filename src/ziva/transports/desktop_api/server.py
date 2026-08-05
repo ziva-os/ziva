@@ -19,7 +19,7 @@ from typing import Any, Dict, List
 
 from aiohttp import web
 
-from ziva.config.loader import _deep_merge
+from ziva.config.loader import _deep_merge, _strip_none_values
 from ziva.runtime import Runtime
 from ziva.scheduled import (
     ScheduleError,
@@ -2070,6 +2070,10 @@ class DesktopAPIServer:
                 pass
 
         merged = _deep_merge(disk_config, payload)
+        # Strip ``None`` entries before writing so the UI's "delete this
+        # key" signals don't pollute the YAML for newly-created agents
+        # (where there's no base for the merge to recurse into).
+        merged = _strip_none_values(merged)
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(yaml.dump(merged, default_flow_style=False, allow_unicode=True, sort_keys=False), encoding="utf-8")
         # Hot-reload the in-memory config

@@ -87,6 +87,13 @@ def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]
     three-state permission fields (``tools``, ``skills``, ``hooks``)
     where "inherit" must round-trip back to "the key is absent"
     rather than being silently preserved from the on-disk config.
+
+    Note: when the base dict lacks a key but the overlay carries a
+    nested dict at that key, this function does NOT recurse — the
+    overlay's sub-tree is copied wholesale. Callers that want to
+    guarantee no ``None`` entries leak into freshly-created sections
+    should run :func:`_strip_none_values` on the merged result before
+    persisting.
     """
     result = dict(base)
     for key, value in overlay.items():
@@ -97,6 +104,26 @@ def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]
         else:
             result[key] = value
     return result
+
+
+def _strip_none_values(obj: Any) -> Any:
+    """Recursively drop every ``None`` value from nested dicts.
+
+    The UI uses ``None`` to signal "delete this key" for three-state
+    permission fields. The merge logic deletes those keys from any
+    base that already had them, but a brand-new agent block (no base
+    yet) would otherwise persist with literal ``tools: null`` /
+    ``deny_tools: null`` entries — semantically correct but visually
+    noisy and prone to confuse anyone reading the YAML. Running the
+    merged config through this scrubber before write-back keeps the
+    file tidy without changing semantics (None vs absent is
+    equivalent under the merge rules).
+    """
+    if isinstance(obj, dict):
+        return {k: _strip_none_values(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, list):
+        return [_strip_none_values(v) for v in obj if v is not None]
+    return obj
 
 
 def _load_yaml(path: Path) -> Dict[str, Any]:

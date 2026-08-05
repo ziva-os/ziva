@@ -933,19 +933,26 @@ export async function openSettingsModal() {
           // current mode is sent as ``null`` so the server's deep-merge deletes
           // it from disk; otherwise stale allow/deny lists would silently round
           // trip back from disk the next time the modal opens.
+          //
+          // Edge case: "allow" with an empty selection means "use no tools"
+          // at runtime, which is catastrophic (sub-agent is locked out of
+          // everything, including read_file). Treat it as inherit so the
+          // user's intent ("I clicked Customize but didn't pick anything")
+          // matches the actual config on disk.
           for (const kind of ["tools", "skills", "hooks"] as const) {
             const modeSel = card.querySelector(`select.agent-mode-select[data-agent-mode="${kind}"]`) as HTMLSelectElement | null;
             const mode = modeSel?.value || "inherit";
             const selected = Array.from(card.querySelectorAll<HTMLElement>(`.agent-selected-tag[data-kind="${kind}"]`)).map(c => c.dataset.value!);
             const denyKey = kind === "tools" ? "deny_tools" : kind === "skills" ? "deny_skills" : "deny_hooks";
-            if (mode === "allow") {
+            if (mode === "allow" && selected.length > 0) {
               agentObj[kind] = selected;
               agentObj[denyKey] = null;
-            } else if (mode === "deny") {
+            } else if (mode === "deny" && selected.length > 0) {
               agentObj[denyKey] = selected;
               agentObj[kind] = null;
             } else {
-              // inherit: explicitly delete both keys from disk
+              // inherit (or allow/deny with nothing picked): explicitly
+              // delete both keys from disk
               agentObj[kind] = null;
               agentObj[denyKey] = null;
             }
