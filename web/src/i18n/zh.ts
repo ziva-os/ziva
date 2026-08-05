@@ -322,6 +322,7 @@ export const dict: Partial<Dict> = {
   "settings.noTimeout": "不限时",
   "settings.noHooks": "暂无已注册的 Hook。",
   "settings.registeredHooks": "已注册 Hook",
+  "settings.enabled": "已启用",
   "settings.addHook": "添加 Hook",
   "settings.addHookDesc": "输入包含 manifest.yaml（+ impl.sh 或 impl.py）的文件夹路径",
   "settings.register": "注册",

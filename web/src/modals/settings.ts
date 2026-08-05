@@ -484,16 +484,33 @@ export async function openSettingsModal() {
       panel.innerHTML = `<div style="color:var(--muted);font-size:12px;padding:8px 0">${i18n.t("common.loading") || "Loading..."}</div>`;
       try {
         const hooks = await api.listHooks();
+        // Tracks which hook ids are toggled off in this UI session. We
+        // only persist on Save — the toggles live on the cards until
+        // then, mirroring how the rest of the settings modal works.
+        const disabledNow = new Set<string>(
+          hooks.filter((h: any) => h.enabled === false).map((h: any) => h.id as string),
+        );
         let cardsHtml = "";
         for (const h of hooks) {
           const phaseLabel = hookPhaseLabel[h.event_name] || h.event_name;
-          const sourceLabel = h.source === "builtin" ? i18n.t("settings.hookSourceBuiltin") || "Built-in" : h.source;
+          // 后端用 "builtin" 或原始路径区分 source；非 builtin 时显示
+          // 真实路径让用户知道 hook 是从哪里加载的。
+          const sourceLabel = h.source === "builtin"
+            ? (i18n.t("settings.hookSourceBuiltin") || "Built-in")
+            : h.source;
           const typeLabel = h.type === "shell" ? "Shell" : "Python";
+          const isEnabled = !disabledNow.has(h.id);
           cardsHtml += `
-            <div class="settings-hook-card" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+            <div class="settings-hook-card" data-hook-id="${esc(h.id)}" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;opacity:${isEnabled ? "1" : "0.5"}">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;gap:12px">
                 <span style="font-weight:600;font-size:13px">${esc(h.name)}</span>
-                <span style="font-size:11px;color:var(--muted)">${esc(sourceLabel)} · ${typeLabel}</span>
+                <div style="display:flex;align-items:center;gap:10px">
+                  <span style="font-size:11px;color:var(--muted)">${esc(sourceLabel)} · ${typeLabel}</span>
+                  <label class="settings-toggle" style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:4px;cursor:pointer">
+                    <input type="checkbox" class="hook-enable-toggle" data-hook-toggle="${esc(h.id)}" ${isEnabled ? "checked" : ""} />
+                    ${i18n.t("settings.enabled") || "Enabled"}
+                  </label>
+                </div>
               </div>
               <div style="font-size:12px;color:var(--muted)">
                 ${i18n.t("settings.event")}: ${esc(phaseLabel)} ·
@@ -520,6 +537,23 @@ export async function openSettingsModal() {
               <button class="settings-add-btn" id="s_hook_register_btn" style="white-space:nowrap">${i18n.t("settings.register") || "Register"}</button>
             </div>
           </div>`;
+        // Wire toggle switches — update visual state immediately; the
+        // actual save happens when the user clicks the global Save
+        // button (alongside the other sections).
+        panel.querySelectorAll<HTMLInputElement>(".hook-enable-toggle").forEach(t => {
+          t.addEventListener("change", () => {
+            const id = t.dataset.hookToggle!;
+            const card = panel.querySelector<HTMLElement>(`.settings-hook-card[data-hook-id="${id}"]`);
+            if (!card) return;
+            if (t.checked) {
+              disabledNow.delete(id);
+              card.style.opacity = "1";
+            } else {
+              disabledNow.add(id);
+              card.style.opacity = "0.5";
+            }
+          });
+        });
         const registerBtn = panel.querySelector<HTMLElement>("#s_hook_register_btn");
         if (registerBtn) {
           registerBtn.onclick = async () => {
@@ -537,6 +571,9 @@ export async function openSettingsModal() {
             }
           };
         }
+        // Stash the in-progress disable set on the panel element so the
+        // global Save handler can pick it up.
+        (panel as any).__disabledHooks = disabledNow;
       } catch (e) {
         panel.innerHTML = `<div style="color:var(--muted);font-size:12px;padding:8px 0">${(e as Error).message}</div>`;
       }
@@ -856,8 +893,13 @@ export async function openSettingsModal() {
 
         updated.agents = newAgents;
 
-        // Hooks are now managed via manifest files + /api/hooks, not config
-        delete updated.hooks;
+        // Hook disable list — collected from the toggles on the hooks
+        // panel. Empty list means "all enabled"; explicit list lets the
+        // user mute a hook globally without removing its folder from
+        // ``plugin.paths``.
+        const hooksPanel = body.querySelector<HTMLElement>("#hooksPanel");
+        const disabledSet: Set<string> = (hooksPanel as any)?.__disabledHooks || new Set();
+        updated.hooks = { ...(updated.hooks || {}), disabled: Array.from(disabledSet) };
 
         // Remove skill_index metadata before saving
         delete (updated as any)._skill_index;

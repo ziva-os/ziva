@@ -2203,14 +2203,24 @@ class DesktopAPIServer:
 
     async def get_hooks(self, _request: web.Request) -> web.Response:
         """Return metadata for every registered hook."""
+        from pathlib import Path
         from ziva.capabilities.shell_hook import ShellHook
         hooks = []
+        # Anything installed under the user's ``~/.ziva/`` config dir is
+        # user-installed; anything under the workspace's ``plugins/`` (or
+        # the PyInstaller-bundled ``_MEIPASS/plugins/``) is built-in.
+        # Earlier versions used ``"plugins" in path`` which wrongly
+        # classified user hooks like ``~/.ziva/plugins/hooks/image_guard``
+        # as built-in because the literal substring ``plugins`` appeared
+        # in their path.
+        user_root = (Path.home() / ".ziva").resolve()
+        disabled_ids = set(self.runtime.config.get("hooks", {}).get("disabled", []) or [])
         for rec in self.runtime.registry.list_kind("hook"):
             hook = rec.instance
             manifest = rec.manifest or {}
-            path = manifest.get("path", "")
-            # Determine source: built-in plugin vs user directory
-            is_builtin = "plugins" in path or not path
+            raw_path = manifest.get("path", "") or ""
+            path_obj = Path(raw_path).resolve() if raw_path else None
+            is_builtin = (path_obj is None) or (user_root not in path_obj.parents and path_obj != user_root)
             is_shell = isinstance(hook, ShellHook)
             hooks.append({
                 "id": rec.id,
@@ -2222,8 +2232,9 @@ class DesktopAPIServer:
                 "block": getattr(hook, "block", False) if is_shell else None,
                 "timeout": getattr(hook, "timeout", 10) if is_shell else None,
                 "async_run": getattr(hook, "async_run", False) if is_shell else None,
-                "source": "builtin" if is_builtin else str(path),
+                "source": "builtin" if is_builtin else str(raw_path),
                 "type": "shell" if is_shell else "python",
+                "enabled": rec.id not in disabled_ids,
             })
         return web.json_response({"hooks": hooks})
 

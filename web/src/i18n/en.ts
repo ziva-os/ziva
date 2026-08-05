@@ -323,6 +323,7 @@ export const dict = {
   "settings.noTimeout": "no limit",
   "settings.noHooks": "No hooks registered.",
   "settings.registeredHooks": "Registered Hooks",
+  "settings.enabled": "Enabled",
   "settings.addHook": "Add Hook",
   "settings.addHookDesc": "Enter a folder path containing manifest.yaml (+ impl.sh or impl.py)",
   "settings.register": "Register",

@@ -2338,6 +2338,10 @@ class Runtime:
 
     async def _run_hooks(self, lifecycle: str, payload: Dict[str, Any], ctx: RuntimeContext) -> Dict[str, Any]:
         from fnmatch import fnmatch
+        # 全局禁用列表：从 config.hooks.disabled 读，所有子 agent / 父 agent 都受影响。
+        # 与 ``_allowed_hooks`` / ``_denied_hooks`` 的"子 agent 个体限制"是正交维度——
+        # 一个 hook 既要被全局允许、又要被该子 agent 个体允许才会跑。
+        globally_disabled = set(self.config.get("hooks", {}).get("disabled", []) or [])
         # 子 agent hooks 过滤：
         # - ``_allowed_hooks`` 为 None 且 ``_denied_hooks`` 为 None → 继承全部
         # - ``_allowed_hooks`` 非 None → 只跑 id 在白名单内的 hook
@@ -2351,6 +2355,9 @@ class Runtime:
             if getattr(hook, "event_name", "") != lifecycle:
                 continue
             hid = getattr(hook_rec, "id", "")
+            # 全局禁用胜于所有其他设置——开关关闭后 hook 直接不跑。
+            if hid in globally_disabled:
+                continue
             if denied_hooks is not None and (hid in denied_hooks or lifecycle in denied_hooks):
                 continue
             if allowed_hooks is not None:
