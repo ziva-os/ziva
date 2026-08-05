@@ -304,6 +304,7 @@ export const dict = {
   "settings.modeInherit": "Inherit all",
   "settings.modeAllow": "Allow specific",
   "settings.modeDeny": "Deny specific",
+  "settings.customize": "Customize…",
   "settings.toolsDesc": "Whitelist of tools the sub-agent can call. Empty = no tools (pure LLM). spawn_agent / get_agent_result / cancel_agent are always blocked.",
   "settings.skillsDesc": "Skills available to the sub-agent.",
   "settings.agentHooksDesc": "Hook types this sub-agent triggers. Each selected type runs the matching <code>hooks.&lt;type&gt;</code> commands from config on the sub-agent's own turns/tools. Empty = inherit all hook types from main.",

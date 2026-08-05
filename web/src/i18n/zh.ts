@@ -303,6 +303,7 @@ export const dict: Partial<Dict> = {
   "settings.modeInherit": "继承全部",
   "settings.modeAllow": "仅允许指定",
   "settings.modeDeny": "排除指定",
+  "settings.customize": "自定义…",
   "settings.toolsDesc": "子 Agent 可调用的工具白名单。留空 = 无工具（纯 LLM）。spawn_agent / get_agent_result / cancel_agent 始终被禁止。",
   "settings.skillsDesc": "子 Agent 可用的技能。",
   "settings.agentHooksDesc": "此子 Agent 触发的 Hook 类型。每个选中类型都会在子 Agent 自己的回合/工具上执行配置中对应的 <code>hooks.&lt;type&gt;</code> 命令。留空 = 继承主 Agent 的全部 Hook 类型。",
