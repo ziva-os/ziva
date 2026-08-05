@@ -155,6 +155,14 @@ export async function openSettingsModal() {
       const buildDimension = (kind: string, label: string, desc: string, all: Array<string | HookOption>, selected: string[], mode: string) => {
         const valueOf = (x: string | HookOption) => typeof x === "string" ? x : x.id;
         const labelOf = (x: string | HookOption) => typeof x === "string" ? x : x.label;
+        // isCustom drives whether the section shows the static "Inherit
+        // all" chip + Customize link (default) or the dropdown + tag
+        // picker (after the user opts in). Must be declared BEFORE any
+        // template literal that references it — otherwise the templates
+        // evaluate while `isCustom` is still in the temporal dead zone
+        // and the modal blows up with "Cannot access 'is' before
+        // initialization".
+        const isCustom = mode !== "inherit";
         const inheritChip = `
           <span class="agent-inherit-chip" data-kind="${kind}" data-agent-name="${esc(name)}"
                 style="display:${isCustom ? "none" : "inline-flex"};align-items:center;gap:6px;margin-left:8px;font-size:11px;color:var(--muted);background:var(--surface-alt);padding:3px 8px;border-radius:4px">
@@ -180,7 +188,6 @@ export async function openSettingsModal() {
         };
         const tags = selected.map((x) => `<span class="agent-selected-tag" data-kind="${kind}" data-value="${esc(x)}">${esc(labelFor(x))}<button type="button" class="agent-selected-remove" data-remove-kind="${kind}" data-remove="${esc(x)}">×</button></span>`).join("");
         const tagBox = `<div class="agent-selected-box" data-agent-box-${kind}="${esc(name)}">${tags}</div>`;
-        const isCustom = mode !== "inherit";
         return `
           <div class="settings-section">
             <div class="settings-section-title">${label}${inheritChip}${modeSelect}</div>
