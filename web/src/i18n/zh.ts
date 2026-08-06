@@ -199,7 +199,7 @@ export const dict: Partial<Dict> = {
   "settings.tab.mcp": "MCP 服务器",
   "settings.tab.tool": "工具",
   "settings.tab.hooks": "Hooks",
-  "settings.tab.memory": "记忆",
+  "settings.tab.context": "上下文",
   "settings.tab.sandbox": "沙箱",
   "settings.tab.prompt": "提示词",
   "settings.tab.agents": "子 Agent",
@@ -258,11 +258,10 @@ export const dict: Partial<Dict> = {
   "settings.hookPhase.beforeTool": "工具执行前",
   "settings.hookPhase.afterTool": "工具执行后",
 
-  // settings: memory
-  "settings.memory": "记忆",
-  "settings.backend": "Backend",
-  "settings.backend.inmemory": "内存",
+  // settings: context
+  "settings.context": "上下文",
   "settings.contextWindow": "Context Window",
+  "settings.contextDesc": "模型上下文窗口大小（tokens）。超出时早期消息会被自动截断。",
   "settings.tokens": "tokens",
 
   // settings: sandbox
@@ -284,7 +283,7 @@ export const dict: Partial<Dict> = {
 
   // settings: agents
   "settings.subAgents": "子 Agent",
-  "settings.agentsDesc": "主 Agent 可通过 <code>spawn_agent(agent=\"name\", task=\"...\")</code> 调起的预设 Agent。每个 Agent 有自己的指令、工具白名单、技能集和记忆设置。主 Agent 调用时仍可传 <code>instructions</code> / <code>tools</code> / <code>background</code> 覆盖下方默认值。",
+   "settings.agentsDesc": "主 Agent 可通过 <code>spawn_agent(agent=\"name\", task=\"...\")</code> 调起的预设 Agent。每个 Agent 有自己的指令、工具白名单、技能集和上下文设置。主 Agent 调用时仍可传 <code>instructions</code> / <code>tools</code> / <code>background</code> 覆盖下方默认值。",
   "settings.noAgents": "尚未定义任何 Agent。点击下方 <strong>+ 添加 Agent</strong> 创建一个。",
   "settings.addAgent": "+ 添加 Agent",
   "settings.agentNamePlaceholder": "agent 名称",

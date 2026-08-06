@@ -20,7 +20,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "extra_paths": ["~/.ziva/skills", "~/.agents/skills"],
     },
     "hooks": {"before_turn": [], "after_turn": [], "before_tool": [], "after_tool": []},
-    "memory": {"backend": "inmemory", "context_window_tokens": 200000},
+    "memory": {"backend": "markdown", "context_window_tokens": 200000},
     "plugin": {"paths": ["./plugins"], "trust": {"unsigned": "low"}},
     "approval": {"policy": "suggest", "allow_without_prompt": []},
     "sandbox": {"mode": "off", "writable_dirs": [], "blocked_commands": []},

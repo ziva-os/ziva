@@ -343,7 +343,7 @@ export async function openSettingsModal() {
           <button class="settings-tab" data-tab="mcp">${icons.mcp}<span>${i18n.t("settings.tab.mcp")}</span></button>
           <button class="settings-tab" data-tab="tool">${icons.tool}<span>${i18n.t("settings.tab.tool")}</span></button>
           <button class="settings-tab" data-tab="hooks">${icons.hooks}<span>${i18n.t("settings.tab.hooks")}</span></button>
-          <button class="settings-tab" data-tab="memory">${icons.memory}<span>${i18n.t("settings.tab.memory")}</span></button>
+          <button class="settings-tab" data-tab="context">${icons.memory}<span>${i18n.t("settings.tab.context")}</span></button>
           <button class="settings-tab" data-tab="sandbox">${icons.sandbox}<span>${i18n.t("settings.tab.sandbox")}</span></button>
           <button class="settings-tab" data-tab="prompt">${icons.prompt}<span>${i18n.t("settings.tab.prompt")}</span></button>
           <button class="settings-tab" data-tab="agents">${icons.agents}<span>${i18n.t("settings.tab.agents")}</span></button>
@@ -419,17 +419,13 @@ export async function openSettingsModal() {
           <div class="settings-panel" data-panel="hooks">
             <div class="settings-panel-inner">${hooksHtml}</div>
           </div>
-          <!-- Memory -->
-          <div class="settings-panel" data-panel="memory">
+          <!-- Context -->
+          <div class="settings-panel" data-panel="context">
             <div class="settings-panel-inner">
               <div class="settings-section">
-                <div class="settings-section-title">${i18n.t("settings.memory")}</div>
-                <div class="settings-row"><label class="settings-label">${i18n.t("settings.backend")}</label>
-                  <select class="settings-select" id="s_memory_backend">
-                    <option value="inmemory" ${mem.backend === "inmemory" || !mem.backend ? "selected" : ""}>${i18n.t("settings.backend.inmemory")}</option>
-                  </select>
-                </div>
+                <div class="settings-section-title">${i18n.t("settings.context")}</div>
                 <div class="settings-row"><label class="settings-label">${i18n.t("settings.contextWindow")}</label><input class="settings-input" type="number" id="s_memory_tokens" value="${mem.context_window_tokens || 200000}" /><span style="font-size:12px;color:var(--muted);margin-left:4px">${i18n.t("settings.tokens")}</span></div>
+                <div class="settings-desc">${i18n.t("settings.contextDesc")}</div>
               </div>
             </div>
           </div>

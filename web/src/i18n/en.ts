@@ -200,7 +200,7 @@ export const dict = {
   "settings.tab.mcp": "MCP Servers",
   "settings.tab.tool": "Tool",
   "settings.tab.hooks": "Hooks",
-  "settings.tab.memory": "Memory",
+  "settings.tab.context": "Context",
   "settings.tab.sandbox": "Sandbox",
   "settings.tab.prompt": "Prompt",
   "settings.tab.agents": "Agents",
@@ -259,11 +259,10 @@ export const dict = {
   "settings.hookPhase.beforeTool": "before tool",
   "settings.hookPhase.afterTool": "after tool",
 
-  // settings: memory
-  "settings.memory": "Memory",
-  "settings.backend": "Backend",
-  "settings.backend.inmemory": "In-memory",
+  // settings: context
+  "settings.context": "Context",
   "settings.contextWindow": "Context Window",
+  "settings.contextDesc": "Maximum context window size (tokens). Earlier messages are truncated when exceeded.",
   "settings.tokens": "tokens",
 
   // settings: sandbox
@@ -285,7 +284,7 @@ export const dict = {
 
   // settings: agents
   "settings.subAgents": "Sub-Agents",
-  "settings.agentsDesc": "Predefined agent profiles the main agent can spawn via <code>spawn_agent(agent=\"name\", task=\"...\")</code>. Each agent has its own instructions, tool whitelist, skill set, and memory setting. The main agent may still pass <code>instructions</code> / <code>tools</code> / <code>background</code> at call time to override the defaults below.",
+   "settings.agentsDesc": "Predefined agent profiles the main agent can spawn via <code>spawn_agent(agent=\"name\", task=\"...\")</code>. Each agent has its own instructions, tool whitelist, skill set, and context setting. The main agent may still pass <code>instructions</code> / <code>tools</code> / <code>background</code> at call time to override the defaults below.",
   "settings.noAgents": "No agents defined yet. Click <strong>+ Add agent</strong> below to create one.",
   "settings.addAgent": "+ Add agent",
   "settings.agentNamePlaceholder": "agent name",

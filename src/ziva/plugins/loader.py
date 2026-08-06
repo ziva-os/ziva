@@ -50,11 +50,7 @@ def load_plugins(plugin_roots: Iterable[Path], registry: CapabilityRegistry, con
     loaded = []
     for manifest in manifests:
         if not manifest.enabled_by_default:
-            if config and manifest.type == "memory":
-                backend = config.get("memory", {}).get("backend", "inmemory")
-                if manifest.id != f"memory.{backend}":
-                    continue
-            elif manifest.type in ("hook", "prompt"):
+            if manifest.type in ("hook", "prompt"):
                 # hook/prompt 类型：enabled_by_default=false 时直接跳过
                 continue
             elif config:

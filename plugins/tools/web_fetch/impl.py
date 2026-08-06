@@ -42,7 +42,7 @@ class WebFetchTool:
         }
 
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(trust_env=True) as session:
                 async with session.get(
                     url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)
                 ) as resp:

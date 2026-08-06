@@ -1173,6 +1173,7 @@ class Runtime:
         # and the JSONL on disk in sync and avoids the provider 400 error about
         # unmatched tool_call_ids.
         sanitized = self._sanitize_orphaned_tool_calls(sid, list(session.history))
+        is_first_turn = len(sanitized) == 0
         session.history[:] = sanitized
         session.history.extend(new_messages)
         for msg in new_messages:
@@ -1288,7 +1289,6 @@ class Runtime:
             reasoning_content=final_reasoning_content or None,
             reasoning_signature=final_reasoning_signature,
         )
-        await self._store_memory(list(session.history), result, ctx)
         await self._run_hooks("after_turn", {"result": result.__dict__}, ctx)
         await self._emit(sid, {"type": "turn_end", "session_id": sid, "result": result.__dict__})
         return result
@@ -1341,6 +1341,7 @@ class Runtime:
             # list back into session.history so the in-memory copy and
             # the JSONL stay in sync.
             sanitized = self._sanitize_orphaned_tool_calls(sid, list(session.history))
+            is_first_turn = len(sanitized) == 0
             session.history[:] = sanitized
 
         session.history.extend(new_messages)
@@ -1573,6 +1574,16 @@ class Runtime:
                     "sync it. Do not save up all updates for the end; keep the plan current "
                     "as you work so progress stays visible."
                 )
+
+            # Long-term memory: tell the agent where its persistent memory lives.
+            effective_prompt += (
+                "\n\n## Long-term Memory\n"
+                "Your persistent cross-session memory is stored in `~/.ziva/memories/MEMORY.md`. "
+                "Use `read_file` to read it, `write_file` to create or rewrite it, `edit_file` "
+                "to make targeted changes, and `grep` to search for specific entries. "
+                "Write down durable knowledge worth remembering across sessions: user preferences, "
+                "project conventions, important decisions. Do not store ephemeral task details."
+            )
 
             thinking_config = None
             # Capability lookup is parameterized on this turn's model
@@ -2334,13 +2345,6 @@ class Runtime:
             f"supports_image: {str(self._model_supports_image(model_name)).lower()}",
         ]
         return "\n".join(lines)
-
-    async def _store_memory(self, messages: List[ChatMessage], result: ChatResult, ctx: RuntimeContext) -> None:
-        mems = self.registry.list_kind("memory")
-        if not mems:
-            return
-        store = mems[0].instance
-        await store.put("last_turn", {"messages": [m.__dict__ for m in messages], "result": result.__dict__}, ctx)
 
     async def _run_hooks(self, lifecycle: str, payload: Dict[str, Any], ctx: RuntimeContext) -> Dict[str, Any]:
         from fnmatch import fnmatch

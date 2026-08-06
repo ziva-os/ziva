@@ -321,7 +321,7 @@ async def _repl_loop(runtime: Runtime, approval_policy: str, session_id: str | N
             console.print("  [bold]/compact[/bold]       Show conversation summary")
             console.print("  [bold]/diff[/bold]          Show git diff --stat")
             console.print("  [bold]/status[/bold]        Show runtime status")
-            console.print("  [bold]/memories[/bold]      Show memory store keys")
+            console.print("  [bold]/memories[/bold]      Show MEMORY.md content")
             console.print("  [bold]/mcp[/bold]           Show MCP server status")
             continue
         elif line == "/tools":
@@ -434,14 +434,19 @@ async def _repl_loop(runtime: Runtime, approval_policy: str, session_id: str | N
             console.print(f"  Tools: {len(tools)}")
             continue
         elif line == "/memories":
-            if hasattr(runtime, 'memory_store') and runtime.memory_store:
-                try:
-                    summary = runtime.memory_store.summarize()
-                    console.print(f"  Memory keys: {list(summary.keys())}")
-                except Exception as e:
-                    console.print(f"  [red]Error reading memory: {e}[/red]")
+            from pathlib import Path
+            mem_path = Path.home() / ".ziva" / "memories" / "MEMORY.md"
+            if mem_path.exists():
+                content = mem_path.read_text(encoding="utf-8")
+                lines_count = len(content.splitlines())
+                console.print(f"  Memory file: [dim]{mem_path}[/dim] ({lines_count} lines)")
+                # Show first 30 lines as preview
+                for ln in content.splitlines()[:30]:
+                    console.print(f"  [dim]{ln}[/dim]")
+                if lines_count > 30:
+                    console.print(f"  [dim]... ({lines_count - 30} more lines)[/dim]")
             else:
-                console.print("  [dim]No memory store active[/dim]")
+                console.print("  [dim]No MEMORY.md yet[/dim]")
             continue
         elif line == "/mcp":
             mcp_config = runtime.config.get("mcp", {})

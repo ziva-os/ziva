@@ -1,7 +1,0 @@
-id: memory.markdown
-type: memory
-version: 0.1.0
-entry: impl.py:MarkdownMemoryStore
-config:
-  storage_dir: ~/.ziva/memories
-enabled_by_default: false
