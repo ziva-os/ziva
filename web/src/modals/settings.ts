@@ -380,7 +380,6 @@ export async function openSettingsModal() {
                 <div class="settings-row"><label class="settings-label">${i18n.t("settings.policy")}</label>
                   <select class="settings-select" id="s_approval_policy">
                     <option value="suggest" ${ap.policy === "suggest" ? "selected" : ""}>${i18n.t("settings.policy.suggest")}</option>
-                    <option value="auto-edit" ${ap.policy === "auto-edit" ? "selected" : ""}>${i18n.t("settings.policy.autoEdit")}</option>
                     <option value="full-auto" ${ap.policy === "full-auto" ? "selected" : ""}>${i18n.t("settings.policy.fullAuto")}</option>
                   </select>
                 </div>
@@ -450,7 +449,7 @@ export async function openSettingsModal() {
               <div class="settings-section">
                 <div class="settings-section-title">${i18n.t("settings.promptProfile")}</div>
                 <div class="settings-desc">${i18n.t("settings.promptDesc")}</div>
-                <textarea class="settings-input settings-textarea" id="s_prompt_system_prompt" rows="20" placeholder="${i18n.t("settings.promptPlaceholder")}">${esc(prompt.system_prompt || "")}</textarea>
+                <textarea class="settings-input settings-textarea" id="s_prompt_system_prompt" placeholder="${i18n.t("settings.promptPlaceholder")}">${esc(prompt.system_prompt || "")}</textarea>
               </div>
             </div>
           </div>

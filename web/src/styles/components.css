@@ -2588,17 +2588,22 @@ webview.browser-frame {
   flex: 1;
   overflow-y: auto;
   padding: 24px;
+  display: flex;
+  flex-direction: column;
 }
 .settings-panel { display: none; }
-.settings-panel.active { display: block; }
+.settings-panel.active { display: flex; flex-direction: column; flex: 1; }
 /* Unified cap across all settings panels. The previous split (560px vs.
    `none` / 100% on the Agents + Prompt tabs) made adjacent tabs visibly
    jump in width. 800px sits roughly midway between the two and is wide
    enough to fit an agent card without forcing the whole settings dialog
    to expand to the viewport. */
-.settings-panel-inner { max-width: 800px; }
+.settings-panel-inner { max-width: 800px; flex: 1; display: flex; flex-direction: column; }
 .settings-panel-inner.settings-panel-wide { max-width: 800px; }
 .settings-section { margin-bottom: 24px; border: 1px solid var(--line); border-radius: 10px; padding: 16px 20px; }
+/* Section containing a textarea (e.g. system prompt) fills remaining height */
+.settings-section:has(> textarea.settings-input) { flex: 1; display: flex; flex-direction: column; }
+.settings-section:has(> textarea.settings-input) > textarea.settings-input { flex: 1; }
 .settings-section-title { font-size: 14px; font-weight: 700; color: var(--ink); margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
 .settings-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
 .settings-row:last-child { margin-bottom: 0; }

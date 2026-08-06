@@ -1008,7 +1008,6 @@ function composerTemplate(sid: string): string {
         <button class="composer-action-btn pane-btn-attach" data-sid="${esc(sid)}" title="${i18n.t("composer.attachTitle")}">+</button>
         <select class="pane-approval" data-sid="${esc(sid)}" title="${i18n.t("composer.modeTitle")}">
           <option value="suggest">${i18n.t("composer.modeSuggest")}</option>
-          <option value="auto-edit">${i18n.t("composer.modeAutoEdit")}</option>
           <option value="full-auto">${i18n.t("composer.modeFullAuto")}</option>
         </select>
         <select class="pane-model" data-sid="${esc(sid)}" title="${i18n.t("composer.modelTitle")}"></select>

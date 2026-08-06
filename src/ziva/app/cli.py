@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--workspace", default=".")
     run.add_argument("--model", help="Override model name")
     run.add_argument("--session", help="Resume an existing session ID")
-    run.add_argument("--approval", choices=["suggest", "auto-edit", "full-auto"], default=None)
+    run.add_argument("--approval", choices=["suggest", "full-auto"], default=None)
     run.add_argument("--max-rounds", type=int, default=None, help="Max tool-call rounds")
     run.add_argument("--no-stream", action="store_true", help="Disable streaming output")
 
@@ -75,7 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     repl.add_argument("--workspace", default=".")
     repl.add_argument("--model", help="Override model name")
     repl.add_argument("--session", help="Resume an existing session ID")
-    repl.add_argument("--approval", choices=["suggest", "auto-edit", "full-auto"], default="suggest")
+    repl.add_argument("--approval", choices=["suggest", "full-auto"], default="full-auto")
     repl.add_argument("--max-rounds", type=int, default=None, help="Max tool-call rounds")
 
     return parser
@@ -330,7 +330,7 @@ async def _repl_loop(runtime: Runtime, approval_policy: str, session_id: str | N
             continue
         elif line.startswith("/approval "):
             new_policy = line.split(" ", 1)[1].strip()
-            if new_policy in ("suggest", "auto-edit", "full-auto"):
+            if new_policy in ("suggest", "full-auto"):
                 runtime.config["approval"]["policy"] = new_policy
                 console.print(f"  Approval policy → [cyan]{new_policy}[/cyan]")
             else:

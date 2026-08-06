@@ -454,6 +454,7 @@ class Runtime:
     _project_id: str | None = None
     _ask_user_callbacks: list = field(default_factory=list)
     _send_file_callbacks: list = field(default_factory=list)
+    _permission_callbacks: list = field(default_factory=list)
     _agent_concurrency: Optional[asyncio.Semaphore] = field(default=None)
     _agent_max_history: int = 50
     # Injectable storage (SDK): defaults to the filesystem-backed FileStorage
@@ -2020,6 +2021,16 @@ class Runtime:
         """
         self._send_file_callbacks.append(callback)
 
+    def on_permission_request(self, callback) -> None:
+        """Register a callback for permission_request events.
+
+        The callback receives the request info dict (with ``id``,
+        ``permission``, ``tool``, etc.) and is called when a tool needs
+        approval in ``suggest`` mode. The IM bridge uses this to forward
+        the request to the originating chat.
+        """
+        self._permission_callbacks.append(callback)
+
     async def await_user_answer(self, session_id: str, call_id: str = "") -> Dict[str, Any]:
         """Block the calling tool until the user replies via the UI.
 
@@ -2082,79 +2093,93 @@ class Runtime:
                 return ToolResult(text=f"Error: tool_blocked\nTool '{call.name}' is not available in this sub-agent", error=True)
 
         # Check approval policy
-        approval_policy: ApprovalPolicy = self.config.get("approval", {}).get("policy", "suggest")
+        approval_policy: ApprovalPolicy = self.config.get("approval", {}).get("policy", "full-auto")
         request_id = str(uuid.uuid4())
 
-        # Get tool permissions for permission checking
-        tool_perms = []
+        # Expand manifest permissions {fs: [read, write]} → ["fs:read", "fs:write"]
+        raw_perms = {}
         tool_rec = None
         for rec in self.registry.list_kind("tool"):
             if rec.instance.spec().get("name") == call.name:
                 tool_rec = rec
-                tool_perms = rec.manifest.get("permissions", {}).keys()
+                raw_perms = rec.manifest.get("permissions", {})
                 break
+        tool_perms = []
+        for category, actions in raw_perms.items():
+            if isinstance(actions, list):
+                for action in actions:
+                    tool_perms.append(f"{category}:{action}")
+            elif isinstance(actions, str):
+                tool_perms.append(f"{category}:{actions}")
 
         if approval_policy == "full-auto":
             pass
-        elif approval_policy == "auto-edit":
-            if "shell" in tool_perms:
-                return ToolResult(text=f"Error: permission_denied\nTool '{call.name}' requires shell access which is denied in auto-edit mode", error=True)
         elif approval_policy == "suggest":
             perm_manager = self.permission_manager
 
-            patterns = []
-            permissions = []
-            metadata = {"tool": call.name, "arguments": call.arguments}
+            # Auto-allow read-only operations
+            needs_approval = any(
+                p not in ("fs:read", "network:http") for p in tool_perms
+            )
+            if not needs_approval:
+                pass  # read-only tool, no approval needed
+            else:
+                patterns = []
+                permissions = []
+                metadata = {"tool": call.name, "arguments": call.arguments}
 
-            if "fs:read" in tool_perms or "fs:write" in tool_perms:
-                if "file_path" in call.arguments:
-                    patterns.append(call.arguments["file_path"])
-                if "path" in call.arguments:
-                    patterns.append(call.arguments["path"])
+                if "fs:read" in tool_perms or "fs:write" in tool_perms:
+                    if "file_path" in call.arguments:
+                        patterns.append(call.arguments["file_path"])
+                    if "path" in call.arguments:
+                        patterns.append(call.arguments["path"])
 
-            for perm in tool_perms:
-                if perm == "fs:read":
-                    permissions.append("fs:read")
-                elif perm == "fs:write":
-                    permissions.append("fs:write")
-                elif perm == "shell:execute":
-                    permissions.append("shell:execute")
-                elif perm == "tool":
-                    permissions.append(call.name)
+                for perm in tool_perms:
+                    if perm in ("fs:read", "fs:write", "shell:execute", "network:http"):
+                        permissions.append(perm)
+                    elif perm.startswith("agent:"):
+                        permissions.append(perm)
 
-            if not patterns:
-                patterns = ["*"]
+                if not patterns:
+                    patterns = ["*"]
 
-            perm_config = self.config.get("permissions", {})
-            ruleset = from_config(perm_config) if perm_config else []
+                perm_config = self.config.get("permissions", {})
+                ruleset = from_config(perm_config) if perm_config else []
 
-            try:
-                async def emit_permission_event(req_info: Dict[str, Any]) -> None:
-                    await self._emit(
-                        ctx.session_id,
-                        {
-                            "type": "permission_request",
-                            "request": req_info,
-                        },
-                    )
+                try:
+                    async def emit_permission_event(req_info: Dict[str, Any]) -> None:
+                        await self._emit(
+                            ctx.session_id,
+                            {
+                                "type": "permission_request",
+                                "request": req_info,
+                            },
+                        )
+                        for cb in self._permission_callbacks:
+                            try:
+                                result = cb(req_info)
+                                if asyncio.iscoroutine(result):
+                                    await result
+                            except Exception:
+                                pass
 
-                for perm in permissions:
-                    await perm_manager.ask(
-                        sessionID=ctx.session_id,
-                        permission=perm,
-                        patterns=patterns,
-                        ruleset=ruleset,
-                        metadata=metadata,
-                        requestID=request_id,
-                        tool={"name": call.name, "arguments": call.arguments},
-                        event_callback=emit_permission_event,
-                    )
-            except RejectedError:
-                return ToolResult(text=f"Error: permission_rejected\nTool '{call.name}' was rejected by user", error=True)
-            except DeniedError as e:
-                return ToolResult(text=f"Error: permission_denied\n{e}", error=True)
-            except Exception as e:
-                return ToolResult(text=f"Error: permission_error\n{e}", error=True)
+                    for perm in permissions:
+                        await perm_manager.ask(
+                            sessionID=ctx.session_id,
+                            permission=perm,
+                            patterns=patterns,
+                            ruleset=ruleset,
+                            metadata=metadata,
+                            requestID=request_id,
+                            tool={"name": call.name, "arguments": call.arguments},
+                            event_callback=emit_permission_event,
+                        )
+                except RejectedError:
+                    return ToolResult(text=f"Error: permission_rejected\nTool '{call.name}' was rejected by user", error=True)
+                except DeniedError as e:
+                    return ToolResult(text=f"Error: permission_denied\n{e}", error=True)
+                except Exception as e:
+                    return ToolResult(text=f"Error: permission_error\n{e}", error=True)
 
         # Execute the tool
         tool_timeouts = self.config.get("tool", {}).get("timeouts", {})

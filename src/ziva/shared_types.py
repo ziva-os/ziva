@@ -8,7 +8,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-ApprovalPolicy = Literal["suggest", "auto-edit", "full-auto"]
+ApprovalPolicy = Literal["suggest", "full-auto"]
 
 
 class MCPConnectStatus(Enum):

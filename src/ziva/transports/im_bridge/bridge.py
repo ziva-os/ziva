@@ -68,6 +68,10 @@ class IMBridge:
         # we match the user's replies to the questions in the order they were
         # asked. One chat maps to one session, so the queue is per-conversation.
         self._pending_chat_index: Dict[str, list[str]] = {}
+        # Permission requests forwarded to IM: request_id -> routing info.
+        # Same FIFO per-chat queue as ask_user so replies match in order.
+        self._pending_permissions: Dict[str, Dict[str, Any]] = {}
+        self._pending_permission_chat_index: Dict[str, list[str]] = {}
         # /restart coordination: True while a graceful execvp is in progress.
         # Concurrent /restart commands are rejected with a "Restart already in
         # progress" reply so the pending-payload file is written exactly once.
@@ -82,6 +86,7 @@ class IMBridge:
         try:
             self.runtime.on_ask_user(self._on_ask_user_question)
             self.runtime.on_send_file(self._on_send_file)
+            self.runtime.on_permission_request(self._on_permission_request)
         except Exception:
             logger.exception("im_bridge: failed to register runtime callbacks")
         for name, cfg in self.config.channels.items():
@@ -145,6 +150,24 @@ class IMBridge:
     async def _handle(self, msg: IncomingMessage) -> None:
         if not self._is_allowed_sender(msg):
             logger.info("im_bridge: dropped non-whitelisted sender %s", msg.sender_id)
+            return
+        # Permission reply interception (checked before ask_user so a
+        # pending permission doesn't get swallowed by an ask_user queue).
+        perm_queue = self._pending_permission_chat_index.get(msg.chat_id) or []
+        perm_id = perm_queue[0] if perm_queue else None
+        if perm_id and perm_id in self._pending_permissions:
+            perm_queue.pop(0)
+            if not perm_queue:
+                self._pending_permission_chat_index.pop(msg.chat_id, None)
+            self._pending_permissions.pop(perm_id, None)
+            answer = (msg.text or "").strip().lower()
+            approved = answer in ("y", "yes", "允许", "是", "ok", "好")
+            from ziva.permissions import get_permission_manager
+            pm = get_permission_manager()
+            try:
+                pm.reply(perm_id, "once" if approved else "reject")
+            except Exception:
+                logger.exception("im_bridge: permission reply failed for %s", perm_id)
             return
         # Ask_user answer interception (must run before /stop — a /stop
         # issued while waiting on a question should still cancel the turn
@@ -829,6 +852,53 @@ class IMBridge:
         except Exception:
             logger.exception("im_bridge: failed to push ask_user question to %s", channel)
 
+    def _on_permission_request(self, req_info: Dict[str, Any]) -> None:
+        """Forward a permission request to the originating IM chat.
+
+        Called when a tool needs approval in ``suggest`` mode. We look
+        up the routing the bridge recorded when the IM message was first
+        routed to a session, format a short prompt, and push it. The
+        user's next message in that chat is intercepted as the
+        approve/deny reply instead of being fed to the model.
+        """
+        session_id = req_info.get("sessionID", "")
+        route = self._sid_route.get(session_id) or {}
+        chat_id = route.get("chat_id", "")
+        channel = route.get("channel", "")
+        if not chat_id or not channel:
+            return
+        adapter = self._adapters.get(channel)
+        if not adapter:
+            return
+        req_id = req_info.get("id", "")
+        tool = (req_info.get("tool") or {})
+        tool_name = tool.get("name", "unknown")
+        args = tool.get("arguments", {})
+        self._pending_permissions[req_id] = {
+            "sid": session_id,
+            "chat_id": chat_id,
+            "channel": channel,
+        }
+        self._pending_permission_chat_index.setdefault(chat_id, []).append(req_id)
+        # Format: 🔧 shell(args) → reply y/n
+        arg_str = ""
+        if isinstance(args, dict):
+            for k in ("command", "file_path", "path"):
+                if k in args:
+                    arg_str = str(args[k])[:60]
+                    break
+        text = f"🔧 `{tool_name}`"
+        if arg_str:
+            text += f"({arg_str})"
+        text += "\n回复 `y` 允许，`n` 拒绝"
+        asyncio.create_task(self._send_permission_prompt(adapter, chat_id, text, channel))
+
+    async def _send_permission_prompt(self, adapter: Any, chat_id: str, text: str, channel: str) -> None:
+        try:
+            await adapter.send_message(OutgoingMessage(chat_id=chat_id, text=text))
+        except Exception:
+            logger.exception("im_bridge: failed to push permission prompt to %s", channel)
+
     async def _on_send_file(self, session_id: str, path: str, media_type: str | None, caption: str) -> bool:
         """Deliver a ``send_file`` payload to the originating IM chat.
 
@@ -898,8 +968,13 @@ class IMBridge:
         chat_id = route.get("chat_id", "")
         if chat_id:
             self._pending_chat_index.pop(chat_id, None)
+            self._pending_permission_chat_index.pop(chat_id, None)
         self._pending_questions = {
             cid: v for cid, v in self._pending_questions.items()
+            if v.get("sid") != sid
+        }
+        self._pending_permissions = {
+            rid: v for rid, v in self._pending_permissions.items()
             if v.get("sid") != sid
         }
 

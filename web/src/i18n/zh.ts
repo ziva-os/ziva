@@ -47,9 +47,8 @@ export const dict: Partial<Dict> = {
   "composer.modelTitle": "模型",
   "composer.contextTitle": "上下文用量",
   "composer.removePreview": "移除",
-  "composer.modeSuggest": "快速",
-  "composer.modeAutoEdit": "自动编辑",
-  "composer.modeFullAuto": "完全自动",
+  "composer.modeSuggest": "需确认",
+  "composer.modeFullAuto": "全自动",
 
   // ---- messages ----
   "msg.empty": "暂无消息",
@@ -229,9 +228,8 @@ export const dict: Partial<Dict> = {
   "settings.approvalPolicy": "审批策略",
   "settings.approvalPolicyDesc": "控制工具在执行前如何请求授权。",
   "settings.policy": "策略",
-  "settings.policy.suggest": "suggest（每次询问）",
-  "settings.policy.autoEdit": "auto-edit（自动编辑文件）",
-  "settings.policy.fullAuto": "full-auto（无提示）",
+  "settings.policy.suggest": "suggest（写操作和命令需确认）",
+  "settings.policy.fullAuto": "full-auto（全自动）",
 
   // settings: mcp
   "settings.mcp": "MCP",

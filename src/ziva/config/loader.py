@@ -22,7 +22,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "hooks": {"before_turn": [], "after_turn": [], "before_tool": [], "after_tool": []},
     "memory": {"backend": "markdown", "context_window_tokens": 200000},
     "plugin": {"paths": ["./plugins"], "trust": {"unsigned": "low"}},
-    "approval": {"policy": "suggest", "allow_without_prompt": []},
+    "approval": {"policy": "full-auto", "allow_without_prompt": []},
     "sandbox": {"mode": "off", "writable_dirs": [], "blocked_commands": []},
     "mcp": {"enabled": False, "servers": [], "extra_skill_paths": []},
     "stt": {"model": "mlx-community/whisper-small-mlx"},

@@ -1977,8 +1977,8 @@ class DesktopAPIServer:
             },
             "providers": providers,
             "approval": {
-                "current": self.runtime.config.get("approval", {}).get("policy", "suggest"),
-                "options": ["suggest", "auto-edit", "full-auto"],
+                "current": self.runtime.config.get("approval", {}).get("policy", "full-auto"),
+                "options": ["suggest", "full-auto"],
             },
             "agents": self.runtime.config.get("agents", {}),
         })

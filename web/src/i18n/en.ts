@@ -48,8 +48,7 @@ export const dict = {
   "composer.modelTitle": "Model",
   "composer.contextTitle": "Context usage",
   "composer.removePreview": "Remove",
-  "composer.modeSuggest": "Fast",
-  "composer.modeAutoEdit": "Auto Edit",
+  "composer.modeSuggest": "Confirm",
   "composer.modeFullAuto": "Full Auto",
 
   // ---- messages ----
@@ -230,8 +229,7 @@ export const dict = {
   "settings.approvalPolicy": "Approval Policy",
   "settings.approvalPolicyDesc": "Controls how tools request permission before execution.",
   "settings.policy": "Policy",
-  "settings.policy.suggest": "suggest (ask every time)",
-  "settings.policy.autoEdit": "auto-edit (auto file edits)",
+  "settings.policy.suggest": "suggest (writes & shell need approval)",
   "settings.policy.fullAuto": "full-auto (no prompts)",
 
   // settings: mcp
