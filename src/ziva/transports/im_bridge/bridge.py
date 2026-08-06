@@ -161,11 +161,16 @@ class IMBridge:
                 self._pending_permission_chat_index.pop(msg.chat_id, None)
             self._pending_permissions.pop(perm_id, None)
             answer = (msg.text or "").strip().lower()
-            approved = answer in ("y", "yes", "允许", "是", "ok", "好")
+            if answer in ("a", "always", "总是", "全部允许"):
+                reply_action = "always_session"
+            elif answer in ("y", "yes", "允许", "是", "ok", "好"):
+                reply_action = "once"
+            else:
+                reply_action = "reject"
             from ziva.permissions import get_permission_manager
             pm = get_permission_manager()
             try:
-                pm.reply(perm_id, "once" if approved else "reject")
+                pm.reply(perm_id, reply_action)
             except Exception:
                 logger.exception("im_bridge: permission reply failed for %s", perm_id)
             return
@@ -890,7 +895,7 @@ class IMBridge:
         text = f"🔧 `{tool_name}`"
         if arg_str:
             text += f"({arg_str})"
-        text += "\n回复 `y` 允许，`n` 拒绝"
+        text += "\n回复 `y` 允许一次 · `a` 总是允许 · `n` 拒绝"
         asyncio.create_task(self._send_permission_prompt(adapter, chat_id, text, channel))
 
     async def _send_permission_prompt(self, adapter: Any, chat_id: str, text: str, channel: str) -> None:
