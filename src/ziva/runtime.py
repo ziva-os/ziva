@@ -1004,8 +1004,13 @@ class Runtime:
         config = load_effective_config(global_config_path, session_override)
         registry = CapabilityRegistry()
 
-        # Workspace plugins
-        plugin_paths = [workspace_root / Path(p) for p in config.get("plugin", {}).get("paths", ["./plugins"])]
+        # Workspace plugins — expand ~ before joining so that absolute
+        # user paths (e.g. ``~/.ziva/plugins``) are not treated as literal
+        # subdirectories of the workspace.
+        plugin_paths: list[Path] = []
+        for p in config.get("plugin", {}).get("paths", ["./plugins"]):
+            pp = Path(p).expanduser()
+            plugin_paths.append(pp if pp.is_absolute() else workspace_root / pp)
         # Packaged app (PyInstaller): the workspace won't have a plugins/
         # dir, so also load the plugins bundled into the app bundle (shipped
         # via PyInstaller datas to _MEIPASS/plugins).
@@ -1075,7 +1080,8 @@ class Runtime:
         if load_default_plugins:
             plugin_paths: List[Path] = []
             for p in config.get("plugin", {}).get("paths", ["./plugins"]):
-                candidate = (ws / Path(p)).expanduser()
+                pp = Path(p).expanduser()
+                candidate = pp if pp.is_absolute() else ws / pp
                 if candidate.exists():
                     plugin_paths.append(candidate)
             if plugin_paths:

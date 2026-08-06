@@ -129,8 +129,10 @@ export async function openSettingsModal() {
     ]);
     const allToolNames: string[] = status.tools || [];
     const allSkillNames: string[] = skillIndex.map((s: any) => s.name).filter(Boolean);
-    const agentEntries = Object.entries(agents);
-    const agentsHtml = agentEntries.map(([name, def]) => {
+    // Agent card rendering — extracted into a function so the save
+    // handler can re-render from fresh config after writing to disk.
+    function renderAgentsList(agentsObj: Record<string, any>): string {
+      return Object.entries(agentsObj).map(([name, def]) => {
       const instructions = (def.instructions || "") as string;
       const description = (def.description || "") as string;
       const background = !!def.background;
@@ -142,64 +144,43 @@ export async function openSettingsModal() {
       const agentSkills: string[] = def.skills || def.deny_skills || [];
       const agentHooks: string[] = def.hooks || def.deny_hooks || [];
 
-      // Build a mode selector + tag selector section for one dimension.
-      // ``all`` accepts either a flat list of strings (tools/skills) or
-      // ``Array<{id, label}>`` (hooks) so each kind can carry its own
-      // display metadata. ``selected`` is always a flat list of ids.
-      //
-      // Progressive disclosure: the section ALWAYS shows a static chip
-      // as the default entry point — even when the saved config has an
-      // explicit allow/deny list. The chip summarizes the current
-      // restriction ("Inherit all" / "Allow 3" / "Deny 2") and a
-      // Customize link expands the dropdown + tag picker for editing.
-      // This keeps the UI consistent regardless of what the agent
-      // config currently contains, and gives a clear way to revert.
+      // Build a dimension row: label + mode dropdown on one line, tag
+      // picker below (hidden when inherit). Always visible — no
+      // progressive disclosure / chip / customize button.
       type HookOption = { id: string; label: string };
-      const buildDimension = (kind: string, label: string, desc: string, all: Array<string | HookOption>, selected: string[], mode: string) => {
+      const buildDimension = (kind: string, label: string, all: Array<string | HookOption>, selected: string[], mode: string) => {
         const valueOf = (x: string | HookOption) => typeof x === "string" ? x : x.id;
         const labelOf = (x: string | HookOption) => typeof x === "string" ? x : x.label;
-        const isCustom = mode !== "inherit";
         const labelFor = (id: string) => {
           for (const x of all) if (typeof x !== "string" && x.id === id) return x.label;
           return id;
         };
-        const summary = isCustom
-          ? `${mode === "allow" ? (i18n.t("settings.modeAllow") || "Allow specific") : (i18n.t("settings.modeDeny") || "Deny specific")} · ${selected.length}`
-          : (i18n.t("settings.modeInherit") || "Inherit all");
-        const sampleList = isCustom && selected.length > 0
-          ? `: ${selected.slice(0, 3).map(labelFor).join(", ")}${selected.length > 3 ? "…" : ""}`
-          : "";
-        const inheritChip = `
-          <span class="agent-restrict-chip" data-kind="${kind}" data-agent-name="${esc(name)}"
-                style="display:inline-flex;align-items:center;gap:6px;margin-left:8px;font-size:11px;color:var(--muted);background:var(--surface-alt);padding:3px 8px;border-radius:4px"
-                title="${esc(summary + sampleList)}">
-            <span style="font-weight:500">${esc(summary)}</span>
-            <button type="button" class="agent-customize-btn" data-customize-kind="${kind}" data-agent-name="${esc(name)}"
-                    style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:11px;padding:0;text-decoration:underline">
-              ${i18n.t("settings.customize") || "Customize…"}
-            </button>
-          </span>`;
+        const isCustom = mode !== "inherit";
         const modeOpts = [
           { v: "inherit", l: i18n.t("settings.modeInherit") || "Inherit all" },
           { v: "allow", l: i18n.t("settings.modeAllow") || "Allow specific" },
           { v: "deny", l: i18n.t("settings.modeDeny") || "Deny specific" },
         ].map(o => `<option value="${o.v}" ${mode === o.v ? "selected" : ""}>${o.l}</option>`).join("");
-        const modeSelect = `<select class="settings-select agent-mode-select" data-agent-mode="${kind}" data-agent-name="${esc(name)}" style="display:none;margin-left:8px;font-size:11px;width:auto;padding:2px 6px">${modeOpts}</select>`;
-        const options = all.filter((x) => !selected.includes(valueOf(x))).map((x) => `<option value="${esc(valueOf(x))}">${esc(labelOf(x))}</option>`).join("");
-        const tagSelect = `<select class="settings-select agent-${kind}-select" data-agent-select-${kind}="${esc(name)}"><option value="">${addKindLabel(kind)}</option>${options}</select>`;
-        const tags = selected.map((x) => `<span class="agent-selected-tag" data-kind="${kind}" data-value="${esc(x)}">${esc(labelFor(x))}<button type="button" class="agent-selected-remove" data-remove-kind="${kind}" data-remove="${esc(x)}">×</button></span>`).join("");
-        const tagBox = `<div class="agent-selected-box" data-agent-box-${kind}="${esc(name)}">${tags}</div>`;
+        const options = all.filter((x) => !selected.includes(valueOf(x)))
+          .map((x) => `<option value="${esc(valueOf(x))}">${esc(labelOf(x))}</option>`).join("");
+        const tags = selected.map((x) =>
+          `<span class="agent-selected-tag" data-kind="${kind}" data-value="${esc(x)}">${esc(labelFor(x))}<button type="button" class="agent-selected-remove" data-remove-kind="${kind}" data-remove="${esc(x)}">×</button></span>`
+        ).join("");
         return `
-          <div class="settings-section">
-            <div class="settings-section-title">${label}${inheritChip}${modeSelect}</div>
-            <div class="settings-desc">${desc}</div>
-            <div class="agent-tags-area" data-agent-tags-area="${kind}" data-agent-name="${esc(name)}" style="display:none">
-              <div class="settings-row" style="margin:6px 0;gap:8px">
-                <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="${kind}" data-agent-name="${esc(name)}" style="padding:3px 10px">${i18n.t("settings.selectAll")}</button>
-                <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="${kind}" data-agent-name="${esc(name)}" style="padding:3px 10px">${i18n.t("settings.clear")}</button>
+          <div class="agent-dim" data-kind="${kind}">
+            <div class="agent-dim-header">
+              <span class="agent-dim-label">${label}</span>
+              <select class="settings-select agent-mode-select" data-agent-mode="${kind}" data-agent-name="${esc(name)}" style="flex:none;width:auto;font-size:12px;padding:3px 8px">${modeOpts}</select>
+            </div>
+            <div class="agent-dim-tags" data-agent-tags-area="${kind}" data-agent-name="${esc(name)}" style="display:${isCustom ? "block" : "none"}">
+              <div class="agent-selected-box" data-agent-box-${kind}="${esc(name)}">${tags}</div>
+              <div class="settings-row" style="margin-top:6px;gap:8px">
+                <select class="settings-select agent-${kind}-select" data-agent-select-${kind}="${esc(name)}" style="flex:1">
+                  <option value="">${addKindLabel(kind)}</option>${options}
+                </select>
+                <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="${kind}" data-agent-name="${esc(name)}" style="padding:3px 10px;white-space:nowrap">${i18n.t("settings.selectAll")}</button>
+                <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="${kind}" data-agent-name="${esc(name)}" style="padding:3px 10px;white-space:nowrap">${i18n.t("settings.clear")}</button>
               </div>
-              ${tagSelect}
-              ${tagBox}
             </div>
           </div>`;
       };
@@ -210,58 +191,32 @@ export async function openSettingsModal() {
             <label class="agent-bg-label"><input type="checkbox" data-agent-bg="${esc(name)}" ${background ? "checked" : ""} /> ${i18n.t("settings.background")}</label>
             <button class="settings-hook-remove" data-agent-remove="${esc(name)}" title="${i18n.t("settings.removeAgent")}">×</button>
           </div>
-          <div class="settings-section">
+          <div class="settings-section" style="margin-bottom:10px">
             <div class="settings-section-title">${i18n.t("settings.agentDescription") || "Description"}</div>
-            <div class="settings-desc">${i18n.t("settings.agentDescriptionHint") || "One-line summary shown to the parent agent in the spawn_agent tool description."}</div>
-            <input class="settings-input settings-agent-description" data-agent-description="${esc(name)}" value="${esc(description)}" placeholder="${i18n.t("settings.agentDescriptionPlaceholder") || "e.g. Read-only investigation agent"}" />
+            <textarea class="settings-input settings-agent-description" data-agent-description="${esc(name)}" placeholder="${i18n.t("settings.agentDescriptionPlaceholder") || "e.g. Read-only investigation agent"}">${esc(description)}</textarea>
           </div>
-          <div class="settings-section">
+          <div class="settings-section" style="margin-bottom:10px">
             <div class="settings-section-title">${i18n.t("settings.instructions")}</div>
-            <textarea class="settings-input settings-agent-instructions" data-agent-instructions="${esc(name)}" rows="8" placeholder="${i18n.t("settings.instructionsPlaceholder")}">${esc(instructions)}</textarea>
+            <textarea class="settings-input settings-agent-instructions" data-agent-instructions="${esc(name)}" placeholder="${i18n.t("settings.instructionsPlaceholder")}">${esc(instructions)}</textarea>
           </div>
-          ${buildDimension("tools", i18n.t("settings.tools"), i18n.t("settings.toolsDesc"), allToolNames, agentTools, toolMode)}
-          ${buildDimension("skills", i18n.t("settings.skills"), i18n.t("settings.skillsDesc"), allSkillNames, agentSkills, skillMode)}
-          ${buildDimension("hooks", i18n.t("settings.hooks"), i18n.t("settings.agentHooksDesc"), hookTypes, agentHooks, hookMode)}
+          <div class="agent-dims">
+            ${buildDimension("tools", i18n.t("settings.tools"), allToolNames, agentTools, toolMode)}
+            ${buildDimension("skills", i18n.t("settings.skills"), allSkillNames, agentSkills, skillMode)}
+            ${buildDimension("hooks", i18n.t("settings.hooks"), hookTypes, agentHooks, hookMode)}
+          </div>
         </div>`;
     }).join("");
+    }
+    const agentsHtml = renderAgentsList(agents);
 
     // Wire the dropdown + removable tag UX for a single agent card.
     function wireAgentSelections(card: HTMLElement, name: string) {
-      // Customize button: swap the chip for the dropdown + tag picker.
-      // If the saved config already had a non-inherit mode, preserve
-      // that mode in the dropdown; otherwise default to "allow".
-      card.querySelectorAll<HTMLElement>(".agent-customize-btn").forEach(btn => {
-        btn.addEventListener("click", () => {
-          const kind = btn.dataset.customizeKind!;
-          const chip = card.querySelector(`.agent-restrict-chip[data-kind="${kind}"][data-agent-name="${name}"]`) as HTMLElement | null;
-          const dropdown = card.querySelector(`select.agent-mode-select[data-agent-mode="${kind}"][data-agent-name="${name}"]`) as HTMLSelectElement | null;
-          const area = card.querySelector(`[data-agent-tags-area="${kind}"][data-agent-name="${name}"]`) as HTMLElement | null;
-          if (!chip || !dropdown) return;
-          // If the dropdown still shows "inherit" (no saved config),
-          // default to "allow" so the picker shows the full pool of
-          // options the user can grant.
-          if (dropdown.value === "inherit") dropdown.value = "allow";
-          chip.style.display = "none";
-          dropdown.style.display = "inline-block";
-          if (area) area.style.display = "block";
-        });
-      });
-      // Mode change: show/hide the tag selector area, and toggle the
-      // chip back in if the user reverts to "inherit".
+      // Mode change: show/hide the tag picker area.
       card.querySelectorAll<HTMLSelectElement>(".agent-mode-select").forEach(modeSel => {
         modeSel.addEventListener("change", () => {
           const kind = modeSel.dataset.agentMode!;
-          const chip = card.querySelector(`.agent-restrict-chip[data-kind="${kind}"][data-agent-name="${name}"]`) as HTMLElement | null;
           const area = card.querySelector(`[data-agent-tags-area="${kind}"][data-agent-name="${name}"]`) as HTMLElement | null;
-          if (modeSel.value === "inherit") {
-            // Back to the static chip — no restrictions.
-            if (chip) chip.style.display = "inline-flex";
-            modeSel.style.display = "none";
-            if (area) area.style.display = "none";
-          } else {
-            if (chip) chip.style.display = "none";
-            if (area) area.style.display = "block";
-          }
+          if (area) area.style.display = modeSel.value === "inherit" ? "none" : "block";
         });
       });
       const addTag = (kind: string, value: string) => {
@@ -680,34 +635,29 @@ export async function openSettingsModal() {
           { v: "allow", l: i18n.t("settings.modeAllow") || "Allow specific" },
           { v: "deny", l: i18n.t("settings.modeDeny") || "Deny specific" },
         ].map(o => `<option value="${o.v}">${o.l}</option>`).join("");
-        const buildNewDim = (kind: string, label: string, desc: string, all: Array<string | { id: string; label: string }>) => {
+        const buildNewDim = (kind: string, label: string, all: Array<string | { id: string; label: string }>) => {
           const valueOf = (x: string | { id: string; label: string }) => typeof x === "string" ? x : x.id;
           const labelOf = (x: string | { id: string; label: string }) => typeof x === "string" ? x : x.label;
           const options = all.map((x) => `<option value="${esc(valueOf(x))}">${esc(labelOf(x))}</option>`).join("");
-          // Mirror buildDimension: always start with the static
-          // "Inherit all" chip. Customize reveals the dropdown + tag
-          // picker.
-          const chip = `
-            <span class="agent-restrict-chip" data-kind="${kind}" data-agent-name="${esc(n)}"
-                  style="display:inline-flex;align-items:center;gap:6px;margin-left:8px;font-size:11px;color:var(--muted);background:var(--surface-alt);padding:3px 8px;border-radius:4px">
-              <span style="font-weight:500">${i18n.t("settings.modeInherit") || "Inherit all"}</span>
-              <button type="button" class="agent-customize-btn" data-customize-kind="${kind}" data-agent-name="${esc(n)}"
-                      style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:11px;padding:0;text-decoration:underline">
-                ${i18n.t("settings.customize") || "Customize…"}
-              </button>
-            </span>`;
-          const modeSelect = `<select class="settings-select agent-mode-select" data-agent-mode="${kind}" data-agent-name="${esc(n)}" style="display:none;margin-left:8px;font-size:11px;width:auto;padding:2px 6px"><option value="inherit" selected>${i18n.t("settings.modeInherit") || "Inherit all"}</option><option value="allow">${i18n.t("settings.modeAllow") || "Allow specific"}</option><option value="deny">${i18n.t("settings.modeDeny") || "Deny specific"}</option></select>`;
           return `
-            <div class="settings-section">
-              <div class="settings-section-title">${label}${chip}${modeSelect}</div>
-              <div class="settings-desc">${desc}</div>
-              <div class="agent-tags-area" data-agent-tags-area="${kind}" data-agent-name="${esc(n)}" style="display:none">
-                <div class="settings-row" style="margin:6px 0;gap:8px">
-                  <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="${kind}" data-agent-name="${esc(n)}" style="padding:3px 10px">${i18n.t("settings.selectAll")}</button>
-                  <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="${kind}" data-agent-name="${esc(n)}" style="padding:3px 10px">${i18n.t("settings.clear")}</button>
-                </div>
-                <select class="settings-select agent-${kind}-select" data-agent-select-${kind}="${esc(n)}"><option value="">${addKindLabel(kind)}</option>${options}</select>
+            <div class="agent-dim" data-kind="${kind}">
+              <div class="agent-dim-header">
+                <span class="agent-dim-label">${label}</span>
+                <select class="settings-select agent-mode-select" data-agent-mode="${kind}" data-agent-name="${esc(n)}" style="flex:none;width:auto;font-size:12px;padding:3px 8px">
+                  <option value="inherit" selected>${i18n.t("settings.modeInherit") || "Inherit all"}</option>
+                  <option value="allow">${i18n.t("settings.modeAllow") || "Allow specific"}</option>
+                  <option value="deny">${i18n.t("settings.modeDeny") || "Deny specific"}</option>
+                </select>
+              </div>
+              <div class="agent-dim-tags" data-agent-tags-area="${kind}" data-agent-name="${esc(n)}" style="display:none">
                 <div class="agent-selected-box" data-agent-box-${kind}="${esc(n)}"></div>
+                <div class="settings-row" style="margin-top:6px;gap:8px">
+                  <select class="settings-select agent-${kind}-select" data-agent-select-${kind}="${esc(n)}" style="flex:1">
+                    <option value="">${addKindLabel(kind)}</option>${options}
+                  </select>
+                  <button type="button" class="settings-add-btn agent-select-all" data-agent-select-all="${kind}" data-agent-name="${esc(n)}" style="padding:3px 10px;white-space:nowrap">${i18n.t("settings.selectAll")}</button>
+                  <button type="button" class="settings-add-btn agent-clear-all" data-agent-clear-all="${kind}" data-agent-name="${esc(n)}" style="padding:3px 10px;white-space:nowrap">${i18n.t("settings.clear")}</button>
+                </div>
               </div>
             </div>`;
         };
@@ -720,18 +670,19 @@ export async function openSettingsModal() {
             <label class="agent-bg-label"><input type="checkbox" data-agent-bg="${esc(n)}" /> ${i18n.t("settings.background")}</label>
             <button class="settings-hook-remove" data-agent-remove="${esc(n)}" title="${i18n.t("settings.removeAgent")}">×</button>
           </div>
-          <div class="settings-section">
+          <div class="settings-section" style="margin-bottom:10px">
             <div class="settings-section-title">${i18n.t("settings.agentDescription") || "Description"}</div>
-            <div class="settings-desc">${i18n.t("settings.agentDescriptionHint") || "One-line summary shown to the parent agent in the spawn_agent tool description."}</div>
-            <input class="settings-input settings-agent-description" data-agent-description="${esc(n)}" value="" placeholder="${i18n.t("settings.agentDescriptionPlaceholder") || "e.g. Read-only investigation agent"}" />
+            <textarea class="settings-input settings-agent-description" data-agent-description="${esc(n)}" placeholder="${i18n.t("settings.agentDescriptionPlaceholder") || "e.g. Read-only investigation agent"}"></textarea>
           </div>
-          <div class="settings-section">
+          <div class="settings-section" style="margin-bottom:10px">
             <div class="settings-section-title">${i18n.t("settings.instructions")}</div>
-            <textarea class="settings-input settings-agent-instructions" data-agent-instructions="${esc(n)}" rows="8" placeholder="${i18n.t("settings.instructionsPlaceholder")}"></textarea>
+            <textarea class="settings-input settings-agent-instructions" data-agent-instructions="${esc(n)}" rows="6" placeholder="${i18n.t("settings.instructionsPlaceholder")}"></textarea>
           </div>
-          ${buildNewDim("tools", i18n.t("settings.tools"), i18n.t("settings.toolsDesc"), allToolNames)}
-          ${buildNewDim("skills", i18n.t("settings.skills"), i18n.t("settings.skillsDesc"), allSkillNames)}
-          ${buildNewDim("hooks", i18n.t("settings.hooks"), i18n.t("settings.agentHooksDesc"), hookTypes)}
+          <div class="agent-dims">
+            ${buildNewDim("tools", i18n.t("settings.tools"), allToolNames)}
+            ${buildNewDim("skills", i18n.t("settings.skills"), allSkillNames)}
+            ${buildNewDim("hooks", i18n.t("settings.hooks"), hookTypes)}
+          </div>
         `;
         // Wire the new card's remove button and selections
         const removeBtn = card.querySelector("[data-agent-remove]") as HTMLButtonElement;
@@ -953,25 +904,22 @@ export async function openSettingsModal() {
           // it from disk; otherwise stale allow/deny lists would silently round
           // trip back from disk the next time the modal opens.
           //
-          // Edge case: "allow" with an empty selection means "use no tools"
-          // at runtime, which is catastrophic (sub-agent is locked out of
-          // everything, including read_file). Treat it as inherit so the
-          // user's intent ("I clicked Customize but didn't pick anything")
-          // matches the actual config on disk.
+          // ``null``  = inherit (key deleted from disk by deep-merge).
+          // ``[]``    = allow zero (sub-agent gets nothing for this dimension).
+          // ``[a,b]`` = allow specific.
           for (const kind of ["tools", "skills", "hooks"] as const) {
             const modeSel = card.querySelector(`select.agent-mode-select[data-agent-mode="${kind}"]`) as HTMLSelectElement | null;
             const mode = modeSel?.value || "inherit";
             const selected = Array.from(card.querySelectorAll<HTMLElement>(`.agent-selected-tag[data-kind="${kind}"]`)).map(c => c.dataset.value!);
             const denyKey = kind === "tools" ? "deny_tools" : kind === "skills" ? "deny_skills" : "deny_hooks";
-            if (mode === "allow" && selected.length > 0) {
-              agentObj[kind] = selected;
+            if (mode === "allow") {
+              agentObj[kind] = selected;  // [] = allow zero, [a,b] = allow specific
               agentObj[denyKey] = null;
-            } else if (mode === "deny" && selected.length > 0) {
+            } else if (mode === "deny") {
               agentObj[denyKey] = selected;
               agentObj[kind] = null;
             } else {
-              // inherit (or allow/deny with nothing picked): explicitly
-              // delete both keys from disk
+              // inherit: explicitly delete both keys from disk
               agentObj[kind] = null;
               agentObj[denyKey] = null;
             }
@@ -994,6 +942,17 @@ export async function openSettingsModal() {
 
         await api.saveConfigJson(updated);
         await _refreshConfig();
+        // Re-render agents list from fresh config so the UI reflects
+        // saved mode changes (e.g. switching from allow → inherit).
+        const freshAgents = ((await api.getConfigJson()).agents || {}) as Record<string, any>;
+        const agentsListEl = backdrop.querySelector("#agentsList") as HTMLElement | null;
+        if (agentsListEl) {
+          agentsListEl.innerHTML = renderAgentsList(freshAgents) || `<div style="color:var(--muted);font-size:12px;padding:12px 0">${i18n.t("settings.noAgents")}</div>`;
+          agentsListEl.querySelectorAll<HTMLElement>(".settings-agent-card").forEach(card => {
+            const n = card.dataset.agentName!;
+            if (n) wireAgentSelections(card, n);
+          });
+        }
         renderSessions();
         btn.textContent = i18n.t("settings.saved");
         setTimeout(() => { btn.textContent = i18n.t("settings.save"); btn.removeAttribute("disabled"); }, 1500);

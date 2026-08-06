@@ -2710,9 +2710,17 @@ textarea.settings-input, .settings-agent-instructions, .settings-agent-descripti
 .settings-add-btn:hover { border-color: var(--accent); color: var(--accent); }
 .settings-agent-instructions {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  min-height: 120px;
-  resize: vertical;
+  field-sizing: content; min-height: 80px; resize: vertical;
 }
+.settings-agent-description {
+  field-sizing: content; min-height: 36px; resize: vertical;
+}
+/* Agent dimension rows — compact label + mode dropdown, tag picker below */
+.agent-dims { display: flex; flex-direction: column; gap: 10px; }
+.agent-dim { border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; }
+.agent-dim-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.agent-dim-label { font-size: 13px; font-weight: 600; color: var(--ink); }
+.agent-dim-tags { margin-top: 8px; }
 .settings-desc { font-size: 12px; color: var(--muted); margin: 4px 0 12px; }
 .fullpage-inner-topbar {
   position: sticky; top: 0;

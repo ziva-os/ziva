@@ -139,47 +139,52 @@ class SpawnAgentTool:
             rec.instance.spec()["name"]
             for rec in runtime.registry.list_kind("tool")
         }
-        has_tools_key = "tools" in agent_def
-        has_deny_tools_key = "deny_tools" in agent_def
-        if has_tools_key:
-            configured = set(agent_def.get("tools") or [])
-            resolved = {_TOOL_ALIASES.get(t, t) for t in configured}
+        tools_val = agent_def.get("tools")
+        deny_tools_val = agent_def.get("deny_tools")
+        if tools_val is not None:
+            # Allow-list (may be empty [] = "allow zero tools").
+            resolved = {_TOOL_ALIASES.get(t, t) for t in tools_val}
             _allowed_tools = resolved - BLOCKED_TOOLS
-        elif has_deny_tools_key:
-            denied = set(agent_def.get("deny_tools") or [])
-            resolved_denied = {_TOOL_ALIASES.get(t, t) for t in denied}
+        elif deny_tools_val is not None:
+            resolved_denied = {_TOOL_ALIASES.get(t, t) for t in deny_tools_val}
             _allowed_tools = all_tool_names - resolved_denied - BLOCKED_TOOLS
         else:
             _allowed_tools = None  # inherit all
 
         # ---- skills ----
-        has_skills_key = "skills" in agent_def
-        has_deny_skills_key = "deny_skills" in agent_def
-        if has_skills_key:
-            _allowed_skills = set(agent_def.get("skills") or [])
-        elif has_deny_skills_key:
+        skills_val = agent_def.get("skills")
+        deny_skills_val = agent_def.get("deny_skills")
+        if skills_val is not None:
+            # Allow-list (may be empty [] = "allow zero skills").
+            _allowed_skills = set(skills_val)
+        elif deny_skills_val is not None:
             _all_skill_ids = {rec.id for rec in runtime.registry.list_kind("skill")}
             _all_skill_ids |= {rec.id.replace("skill.", "") for rec in runtime.registry.list_kind("skill")}
-            _allowed_skills = _all_skill_ids - set(agent_def.get("deny_skills") or [])
+            _allowed_skills = _all_skill_ids - set(deny_skills_val)
         else:
             _allowed_skills = None
 
         # ---- hooks (by registered hook id) ----
-        # Sub-agents now select which *specific* hooks may run, rather
+        # Sub-agents select which *specific* hooks may run, rather
         # than filtering by lifecycle event. ``hooks: [...]`` /
         # ``deny_hooks: [...]`` carry hook ids (e.g. ``hook.image_guard``);
         # the runtime matches each registered hook's ``id`` against these
         # sets. deny-mode blocks individual hooks (not whole event phases)
         # so the user can e.g. keep ``plan_reminder`` but block
         # ``image_guard`` on a specific sub-agent.
+        #
+        # ``None`` / key-absent = inherit (run all hooks).
+        # ``[]``  = allow zero hooks (run none).
         _allowed_hooks: set[str] | None
         _denied_hooks: set[str] | None
-        if "hooks" in agent_def:
-            _allowed_hooks = set(agent_def.get("hooks") or [])
+        hooks_val = agent_def.get("hooks")
+        deny_hooks_val = agent_def.get("deny_hooks")
+        if hooks_val is not None:
+            _allowed_hooks = set(hooks_val)
             _denied_hooks = None
-        elif "deny_hooks" in agent_def:
+        elif deny_hooks_val is not None:
             _allowed_hooks = None
-            _denied_hooks = set(agent_def.get("deny_hooks") or [])
+            _denied_hooks = set(deny_hooks_val)
         else:
             _allowed_hooks = None
             _denied_hooks = None

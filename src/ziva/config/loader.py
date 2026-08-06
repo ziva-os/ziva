@@ -264,32 +264,22 @@ def validate_config(config: Dict[str, Any]) -> None:
         _expect_type(definition, "deny_skills", list, f"agents.{name}")
         if "deny_skills" in definition and not all(isinstance(s, str) for s in definition["deny_skills"]):
             raise ValueError(f"agents.{name}.deny_skills must be a list of strings")
-        # Hook types this sub-agent triggers. Each value must be one
-        # of the supported hook types the runtime recognises
-        # (matches cfg.hooks keys). Empty list = inherit all hook
-        # types from the parent.
+        # Hook ids this sub-agent is allowed (or denied) to trigger.
+        # ``hooks: null`` / key-absent = inherit all from parent.
+        # ``hooks: []``  = allow zero hooks (sub-agent runs no hooks).
+        # ``hooks: [id, ...]`` = only these hooks run.
+        # Values are hook ids (e.g. ``hook.image_guard``), validated only
+        # as strings — the registry resolves them at runtime.
         _expect_type(definition, "hooks", list, f"agents.{name}")
         if "hooks" in definition:
-            valid_hook_types = {"before_turn", "after_turn", "before_tool", "after_tool"}
             for hk in definition["hooks"]:
                 if not isinstance(hk, str):
                     raise ValueError(f"agents.{name}.hooks must be a list of strings")
-                if hk not in valid_hook_types:
-                    raise ValueError(
-                        f"agents.{name}.hooks contains unknown type '{hk}'. "
-                        f"Valid types: {sorted(valid_hook_types)}"
-                    )
         _expect_type(definition, "deny_hooks", list, f"agents.{name}")
         if "deny_hooks" in definition:
-            valid_hook_types = {"before_turn", "after_turn", "before_tool", "after_tool"}
             for hk in definition["deny_hooks"]:
                 if not isinstance(hk, str):
                     raise ValueError(f"agents.{name}.deny_hooks must be a list of strings")
-                if hk not in valid_hook_types:
-                    raise ValueError(
-                        f"agents.{name}.deny_hooks contains unknown type '{hk}'. "
-                        f"Valid types: {sorted(valid_hook_types)}"
-                    )
 
 
 def load_effective_config(
