@@ -2117,15 +2117,13 @@ class Runtime:
         elif approval_policy == "suggest":
             perm_manager = self.permission_manager
 
-            # Auto-allow read-only operations
-            needs_approval = any(
-                p not in ("fs:read", "network:http") for p in tool_perms
-            )
+            # Auto-allow read-only and agent-meta operations
+            AUTO_ALLOW = ("fs:read", "network:http", "agent:ask", "agent:spawn", "agent:read")
+            needs_approval = any(p not in AUTO_ALLOW for p in tool_perms)
             if not needs_approval:
-                pass  # read-only tool, no approval needed
+                pass  # read-only / meta tool, no approval needed
             else:
                 patterns = []
-                permissions = []
                 metadata = {"tool": call.name, "arguments": call.arguments}
 
                 if "fs:read" in tool_perms or "fs:write" in tool_perms:
@@ -2134,14 +2132,11 @@ class Runtime:
                     if "path" in call.arguments:
                         patterns.append(call.arguments["path"])
 
-                for perm in tool_perms:
-                    if perm in ("fs:read", "fs:write", "shell:execute", "network:http"):
-                        permissions.append(perm)
-                    elif perm.startswith("agent:"):
-                        permissions.append(perm)
-
                 if not patterns:
                     patterns = ["*"]
+
+                # Only ask for permissions that actually need approval
+                ask_perms = [p for p in tool_perms if p not in AUTO_ALLOW]
 
                 perm_config = self.config.get("permissions", {})
                 ruleset = from_config(perm_config) if perm_config else []
@@ -2163,14 +2158,14 @@ class Runtime:
                             except Exception:
                                 pass
 
-                    for perm in permissions:
+                    for perm in ask_perms:
                         await perm_manager.ask(
                             sessionID=ctx.session_id,
                             permission=perm,
                             patterns=patterns,
                             ruleset=ruleset,
                             metadata=metadata,
-                            requestID=request_id,
+                            requestID=f"{request_id}:{perm}",
                             tool={"name": call.name, "arguments": call.arguments},
                             event_callback=emit_permission_event,
                         )
