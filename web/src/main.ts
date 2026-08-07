@@ -1080,9 +1080,10 @@ function _autosizeSelect(sel: HTMLSelectElement): void {
   probe.style.cssText = "visibility:hidden;position:absolute;font-size:11px;font-family:inherit;white-space:nowrap;";
   probe.textContent = text;
   document.body.appendChild(probe);
-  const w = probe.offsetWidth + 12; /* padding + arrow room */
+  const w = probe.offsetWidth + 24; /* padding (8px) + breathing room */
   probe.remove();
   sel.style.width = w + "px";
+  sel.style.maxWidth = "none";
 }
 function composerPreviewsEl(sid: string): HTMLElement | null {
   return document.querySelector(`.pane-previews[data-sid="${sid}"]`) as HTMLElement | null;

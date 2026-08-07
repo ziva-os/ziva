@@ -487,11 +487,11 @@ class IMBridge:
         if cmd == "/approval":
             _MODES = {"auto": "suggest", "full-access": "full-auto",
                       "suggest": "suggest", "full-auto": "full-auto"}
-            try:
-                cfg = self.runtime.config
-            except Exception:
-                cfg = {}
-            current = cfg.get("approval", {}).get("policy", "full-auto")
+            sid = self.config.route_for(msg.route_key)
+            # Read current: per-session override > global config
+            sess = self.runtime._sessions.get(sid) if sid else None
+            current = (sess.approval_policy if sess else None) or \
+                self.runtime.config.get("approval", {}).get("policy", "full-auto")
             if not arg:
                 _label = {"suggest": "Auto", "full-auto": "Full Access"}.get(current, current)
                 return f"当前审批模式: {_label}\n选项: Auto（写操作和命令需确认） / Full Access（全自动）\n用法: /approval <auto|full-access>"
@@ -499,7 +499,15 @@ class IMBridge:
             if key not in _MODES:
                 return f"未知模式: {arg}\n选项: auto, full-access"
             new_policy = _MODES[key]
-            self.runtime.config.setdefault("approval", {})["policy"] = new_policy
+            # Set per-session, not global
+            if sid:
+                FileStorage.update_session(self.runtime.project_id, sid, {"approval_policy": new_policy})
+                if sess:
+                    sess.approval_policy = new_policy
+                else:
+                    # Load session into memory if not yet loaded
+                    loaded = self.runtime._get_session(sid)
+                    loaded.approval_policy = new_policy
             _label = {"suggest": "Auto", "full-auto": "Full Access"}.get(new_policy, new_policy)
             return f"已将审批模式切换为 {_label}。"
 
