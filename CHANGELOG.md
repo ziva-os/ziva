@@ -7,27 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.6] - 2026-08-07
+
+### Changed
+- **长期记忆简化为单文件 MEMORY.md** — 删除 memory 插件（inmemory/markdown）和 backend 选择逻辑，设置页「记忆」改为「上下文」。系统提示词引导 AI 用文件工具直接管理 `~/.ziva/memories/MEMORY.md`。
+- **审批机制重构** — 精简为 **Auto**（读操作自动放行，写操作和 shell 需确认）和 **Full Access**（全自动）两种模式。审批选项简化为 once/always/reject。策略改为 per-session 保存。
+- **IM 新增 `/approval` 命令** — IM 中切换审批模式，权限请求转发到 IM 聊天，回复 y/a/n 审批。
+- **Sub-agent 设置 UI 优化** — 三态权限模型修复，inherit 模式正确持久化，mode 下拉隐藏到「自定义…」后面，配置中 Strip None 值。
+- **Hooks 面板增强** — 单 hook 启用/禁用开关，区分内置/用户来源，始终显示 restrict chip。
+- **web_fetch 支持系统代理** — `aiohttp.ClientSession(trust_env=True)`。
+
 ### Fixed
-- **Sub-agent permission UI persistence** — Switching an agent's tool/skill/
-  hook selector between inherit / allow / deny now round-trips cleanly.
-  Previously, switching from "allow specific" to "inherit all" would
-  silently leave the old allow-list on disk, so re-opening the modal
-  would show the selector snapping back to "allow". The deep-merge now
-  treats an explicit `null` overlay value as a key deletion; the UI
-  sends `null` for whichever side of the pair (`tools` ↔ `deny_tools`)
-  is inactive for the current mode.
-- **Hooks selector uses registered hook IDs, not event names** — The
-  per-agent hooks dimension in Settings now lists each *registered* hook
-  by its ID (e.g. `hook.image_guard`) with a label like
-  `image_guard · before_tool`. The runtime filters sub-agent hooks by
-  hook id first, falling back to event name for backwards compatibility
-  with older configs. deny-mode now blocks specific hook ids instead of
-  whole event phases.
-- **Agent description input full width** — The "Description" field on
-  the per-agent card was rendering at ~300px (the browser's default
-  `<input>` width) because it lived inside a block-level
-  `.settings-section` where `flex: 1` is a no-op. It now spans the full
-  card width like the adjacent Instructions textarea.
+- **审批权限名格式不匹配** — manifest 声明 `{fs: [read, write]}`，代码检查 `"fs:read"` 字符串，导致 Auto 模式审批从未触发。
+- **审批"总是允许"不生效** — 原按文件路径存储规则，编辑另一个文件就失效。改为按权限类型通配放行。
+- **composer 下拉切换 approval 无效** — `update_session` 未处理 `approval_policy` 字段。
+- **IM `/approval` 串扰** — 原写全局 config，`/new` 后新会话继承旧设置。改为 per-session。
+- **Sub-agent TDZ ReferenceError** — `isCustom` 声明顺序修复。
 
 ## [1.1.5] - 2026-08-04
 

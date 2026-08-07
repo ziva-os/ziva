@@ -1,31 +1,13 @@
 import asyncio
 import os
-import re
 import shutil
 import signal
 
 from ziva.shared_types import ToolResult, resolve_tool_path
 
 
-# ANSI escape code pattern - improved to handle OSC 133 sequences
-ANSI_ESCAPE = re.compile(r'\x1b\[[0-9;]*[mGKHfABCDnsu]')
-OSC_ESCAPE = re.compile(r'\x1b\].*?[\x07\x1b\\]')
-OSC_133 = re.compile(r'\x1b\]133;[A-Z][^\x07\x1b]*?[\x07\x1b\\]')
-
-
-def strip_ansi(text: str) -> str:
-    """Strip ANSI escape codes from text, including OSC 133 sequences."""
-    # Remove OSC 133 sequences
-    text = OSC_133.sub('', text)
-    # Remove other OSC sequences
-    text = OSC_ESCAPE.sub('', text)
-    # Remove standard ANSI escape codes
-    text = ANSI_ESCAPE.sub('', text)
-    return text
-
-
 class ShellTool:
-    """Enhanced shell tool with workdir, ANSI stripping, and unified truncation."""
+    """Shell tool with workdir support and process-group cleanup."""
 
     MAX_TIMEOUT = 600  # seconds (increased to 10 minutes)
 
@@ -76,6 +58,8 @@ class ShellTool:
         try:
             # Load .env if exists
             env = self._load_env_vars(workdir)
+            env["LANG"] = env.get("LANG") or "en_US.UTF-8"
+            env["LC_ALL"] = env.get("LC_ALL") or "en_US.UTF-8"
 
             # Use zsh if available, otherwise bash, fallback to /bin/sh
             shell_bin = shutil.which("zsh") or shutil.which("bash")
@@ -86,24 +70,15 @@ class ShellTool:
                 shell_bin, "-c", command,
                 cwd=workdir,
                 env=env,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,  # Separate stderr
-                # Make the child a new session/process-group leader so on
-                # cancel we can kill the ENTIRE group: `zsh -c "<cmd>"`
-                # forks the real command as a grandchild, and killing only
-                # the shell leaves the actual long-running command (dev
-                # server, build, ...) orphaned and still running — which is
-                # why "stop" felt slow.
+                stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
             )
 
             try:
                 stdout, stderr = await proc.communicate()
-                exit_code = proc.returncode if proc.returncode is not None else 0
             except asyncio.CancelledError:
-                # User clicked stop / executor timeout. Kill the WHOLE
-                # process group so grandchildren (the real command the
-                # shell forked) die with the shell, not just the shell.
                 try:
                     os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                 except (ProcessLookupError, PermissionError):
@@ -117,20 +92,12 @@ class ShellTool:
                     pass
                 raise
 
-            # Decode and clean stdout
             stdout_text = stdout.decode('utf-8', errors='replace') if stdout else ""
-            stdout_text = strip_ansi(stdout_text)
-
-            # Decode and clean stderr
             stderr_text = stderr.decode('utf-8', errors='replace') if stderr else ""
-            stderr_text = strip_ansi(stderr_text)
-
-            # Normalize line endings
-            stdout_text = stdout_text.replace('\r\n', '\n').replace('\r', '\n')
-            stderr_text = stderr_text.replace('\r\n', '\n').replace('\r', '\n')
-
             stdout_text = stdout_text.strip()
             stderr_text = stderr_text.strip()
+
+            exit_code = proc.returncode if proc.returncode is not None else 0
 
             if exit_code == 0:
                 display_text = stdout_text if stdout_text else "(Command executed successfully with no output)"

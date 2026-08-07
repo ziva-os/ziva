@@ -571,7 +571,7 @@ function bindComposerEvents() {
       const sel = target as HTMLSelectElement;
       const sid = sel.dataset.sid || "";
       const policy = sel.value;
-      _autosizeSelect(sel);
+      fitSelectWidth(sel);
       if (sid) {
         const { sessions } = store.get();
         const s = sessions.find(x => x.id === sid);
@@ -582,7 +582,7 @@ function bindComposerEvents() {
         } catch (err: any) {
           if (s && prevPolicy !== undefined) (s as any).approval_policy = prevPolicy;
           sel.value = prevPolicy ?? sel.value;
-          _autosizeSelect(sel);
+          fitSelectWidth(sel);
           appendError(i18n.t("toast.approvalChangeFailed", { err: err?.message || err }));
           console.error("updateSession(approval_policy) failed:", err);
         }
@@ -1073,18 +1073,6 @@ function composerApprovalSelect(sid: string): HTMLSelectElement | null {
   return document.querySelector(`.pane-approval[data-sid="${sid}"]`) as HTMLSelectElement | null;
 }
 
-/** Shrink a <select> to fit its selected option's text width. */
-function _autosizeSelect(sel: HTMLSelectElement): void {
-  const text = sel.selectedOptions[0]?.textContent || sel.value;
-  const probe = document.createElement("span");
-  probe.style.cssText = "visibility:hidden;position:absolute;font-size:11px;font-family:inherit;white-space:nowrap;";
-  probe.textContent = text;
-  document.body.appendChild(probe);
-  const w = probe.offsetWidth + 24; /* padding (8px) + breathing room */
-  probe.remove();
-  sel.style.width = w + "px";
-  sel.style.maxWidth = "none";
-}
 function composerPreviewsEl(sid: string): HTMLElement | null {
   return document.querySelector(`.pane-previews[data-sid="${sid}"]`) as HTMLElement | null;
 }
@@ -4867,7 +4855,6 @@ function hydrateComposer(sid: string) {
   }
   if (approvalSel) {
     approvalSel.value = (s as any)?.approval_policy || "full-auto";
-    _autosizeSelect(approvalSel);
   }
   const ta = composerTextarea(sid);
   if (ta) {
@@ -4893,8 +4880,9 @@ function hydrateComposer(sid: string) {
   renderComposerPending(sid);
   // Size the model + effort selects to their current labels so short names
   // don't stretch to the width of the longest option in the list.
-  fitSelectWidth(modelSel);
-  fitSelectWidth(document.querySelector(`.pane-effort[data-sid="${sid}"]`) as HTMLSelectElement | null);
+   fitSelectWidth(modelSel);
+   fitSelectWidth(approvalSel);
+   fitSelectWidth(document.querySelector(`.pane-effort[data-sid="${sid}"]`) as HTMLSelectElement | null);
 }
 
 // Mount the unified composer template into `host` for `sid`. Re-mounts only
