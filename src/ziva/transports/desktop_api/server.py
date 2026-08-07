@@ -1853,6 +1853,12 @@ class DesktopAPIServer:
             updates["provider_name"] = payload["provider_name"]
         if "thinking_mode" in payload:
             updates["thinking_mode"] = payload["thinking_mode"]
+        # Approval policy: mirror onto runtime config so the next tool
+        # call picks it up immediately. Stored globally (not per-session)
+        # — same semantics as CLI's /approval command.
+        if "approval_policy" in payload:
+            new_policy = payload["approval_policy"]
+            self.runtime.config.setdefault("approval", {})["policy"] = new_policy
         # Resolve the project_id the session actually lives in. Sessions
         # can belong to any of the known workspaces (active + recently
         # visited); using the runtime's current project_id here would
@@ -2187,7 +2193,7 @@ class DesktopAPIServer:
             "model": model.get("name", "unknown"),
             "workspace": str(self.runtime.workspace_root),
             "tools": [t["name"] for t in self.runtime.list_tools()],
-            "approval_policy": self.runtime.config.get("approval", {}).get("policy", "suggest"),
+            "approval_policy": self.runtime.config.get("approval", {}).get("policy", "full-auto"),
             "context_window": int(self.runtime.config.get("memory", {}).get("context_window_tokens", 200000) or 200000),
         })
 

@@ -47,8 +47,8 @@ export const dict: Partial<Dict> = {
   "composer.modelTitle": "模型",
   "composer.contextTitle": "上下文用量",
   "composer.removePreview": "移除",
-  "composer.modeSuggest": "需确认",
-  "composer.modeFullAuto": "全自动",
+  "composer.modeSuggest": "确认",
+  "composer.modeFullAuto": "自动",
 
   // ---- messages ----
   "msg.empty": "暂无消息",
