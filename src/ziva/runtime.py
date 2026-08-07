@@ -2170,6 +2170,7 @@ class Runtime:
                             sessionID=ctx.session_id,
                             permission=perm,
                             patterns=patterns,
+                            always=["*"],
                             ruleset=ruleset,
                             metadata=metadata,
                             requestID=f"{request_id}:{perm}",
