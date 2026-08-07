@@ -483,6 +483,26 @@ class IMBridge:
                 await self.runtime._emit(sid, {"type": "model_changed", "thinking_mode": arg})
             return f"已将 effort 切换为 {arg}。"
 
+        # --- /approval: list or switch approval policy ----------------------
+        if cmd == "/approval":
+            _MODES = {"auto": "suggest", "full-access": "full-auto",
+                      "suggest": "suggest", "full-auto": "full-auto"}
+            try:
+                cfg = self.runtime.config
+            except Exception:
+                cfg = {}
+            current = cfg.get("approval", {}).get("policy", "full-auto")
+            if not arg:
+                _label = {"suggest": "Auto", "full-auto": "Full Access"}.get(current, current)
+                return f"当前审批模式: {_label}\n选项: Auto（写操作和命令需确认） / Full Access（全自动）\n用法: /approval <auto|full-access>"
+            key = arg.lower().replace("_", "-")
+            if key not in _MODES:
+                return f"未知模式: {arg}\n选项: auto, full-access"
+            new_policy = _MODES[key]
+            self.runtime.config.setdefault("approval", {})["policy"] = new_policy
+            _label = {"suggest": "Auto", "full-auto": "Full Access"}.get(new_policy, new_policy)
+            return f"已将审批模式切换为 {_label}。"
+
         # --- /compact: trim the IM session's history ------------------------
         if cmd == "/compact" or cmd == "/prune":
             sid = self.config.route_for(msg.route_key)
