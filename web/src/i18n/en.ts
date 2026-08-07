@@ -48,8 +48,8 @@ export const dict = {
   "composer.modelTitle": "Model",
   "composer.contextTitle": "Context usage",
   "composer.removePreview": "Remove",
-  "composer.modeSuggest": "Confirm",
-  "composer.modeFullAuto": "Full Auto",
+  "composer.modeSuggest": "Auto",
+  "composer.modeFullAuto": "Full Access",
 
   // ---- messages ----
   "msg.empty": "No messages yet",
