@@ -2785,7 +2785,7 @@ function appendApprovalCard(requestId: string, toolName: string, args: Record<st
     card.remove();
   };
   (card.querySelector(".approve-always") as HTMLElement).onclick = async () => {
-    await api.replyPermission(requestId, "always_session");
+    await api.replyPermission(requestId, "always");
     card.remove();
   };
   (card.querySelector(".deny") as HTMLElement).onclick = async () => {

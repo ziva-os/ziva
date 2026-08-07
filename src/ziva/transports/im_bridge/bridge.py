@@ -162,7 +162,7 @@ class IMBridge:
             self._pending_permissions.pop(perm_id, None)
             answer = (msg.text or "").strip().lower()
             if answer in ("a", "always", "总是", "全部允许"):
-                reply_action = "always_session"
+                reply_action = "always"
             elif answer in ("y", "yes", "允许", "是", "ok", "好"):
                 reply_action = "once"
             else:
@@ -915,7 +915,7 @@ class IMBridge:
         text = f"🔧 `{tool_name}`"
         if arg_str:
             text += f"({arg_str})"
-        text += "\n回复 `y` 允许一次 · `a` 总是允许 · `n` 拒绝"
+        text += "\n回复 `y` 允许一次 · `a` 本会话总是允许 · `n` 拒绝"
         asyncio.create_task(self._send_permission_prompt(adapter, chat_id, text, channel))
 
     async def _send_permission_prompt(self, adapter: Any, chat_id: str, text: str, channel: str) -> None:

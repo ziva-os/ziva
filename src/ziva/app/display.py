@@ -83,11 +83,11 @@ class CLIDisplay:
         self.console.print(Panel(detail, title="Approval Required", border_style="yellow"))
 
         try:
-            reply = input("  [y]es once / [a]lways / [s]ession / [n]o > ").strip().lower()
+            reply = input("  [y]es once / [a]lways / [n]o > ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             return "n"
 
-        return {"y": "once", "a": "always", "s": "always_session"}.get(reply, "reject")
+        return {"y": "once", "a": "always"}.get(reply, "reject")
 
     @contextmanager
     def print_spinner(self, message: str = "") -> Generator[None, None, None]:

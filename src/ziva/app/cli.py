@@ -154,7 +154,7 @@ async def _run_streaming(runtime: Runtime, messages: list[ChatMessage], session_
         perm_manager = get_permission_manager()
 
         def _on_pending(req):
-            perm_manager.reply(req.id, "always_session")
+            perm_manager.reply(req.id, "always")
 
         perm_manager.on_pending(_on_pending)
     except Exception:
@@ -241,10 +241,10 @@ async def _repl_loop(runtime: Runtime, approval_policy: str, session_id: str | N
                 ka = _key_arg(args)
                 console.print(f"\n[yellow]Allow [bold]{escape(tool_name)}[/bold]?[/yellow]" + (f" [dim]{escape(ka)}[/dim]" if ka else ""))
                 try:
-                    reply = input("  (y)es / (a)lways / (s)ession / [n]o > ").strip().lower()
+                    reply = input("  (y)es / (a)lways / [n]o > ").strip().lower()
                 except (EOFError, KeyboardInterrupt):
                     reply = "n"
-                result = {"y": "once", "a": "always", "s": "always_session"}.get(reply, "reject")
+                result = {"y": "once", "a": "always"}.get(reply, "reject")
                 perm_manager.reply(req.id, result)
 
             perm_manager.on_pending(_on_pending)

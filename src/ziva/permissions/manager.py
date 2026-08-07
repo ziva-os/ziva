@@ -23,7 +23,6 @@ class PermissionAction:
 class PermissionReply:
     ONCE = "once"
     ALWAYS = "always"
-    ALWAYS_SESSION = "always_session"
     REJECT = "reject"
 
 
@@ -226,16 +225,7 @@ class PermissionManager:
             return
 
         if reply == "always":
-            # Add to global approved rules
-            for pattern in req_info.always:
-                state["approved"].append(
-                    Rule(permission=req_info.permission, pattern=pattern, action="allow")
-                )
-
-            if not future.done():
-                future.set_result(None)
-
-        if reply == "always_session":
+            # Add to session-approved rules (scoped to this session)
             if req_info.sessionID not in state["session_approved"]:
                 state["session_approved"][req_info.sessionID] = []
 
@@ -254,7 +244,7 @@ class PermissionManager:
 
                 s_rules = state["session_approved"].get(req_info.sessionID, [])
                 ok = all(
-                    evaluate(entry["info"].permission, pattern, state["approved"], s_rules).action == "allow"
+                    evaluate(entry["info"].permission, pattern, s_rules).action == "allow"
                     for pattern in entry["info"].patterns
                 )
                 if not ok:
