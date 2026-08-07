@@ -556,6 +556,9 @@ class Runtime:
                 saved_effort = meta.get("thinking_mode")
                 if isinstance(saved_effort, str) and saved_effort:
                     sess.thinking_mode = saved_effort
+                saved_approval = meta.get("approval_policy")
+                if isinstance(saved_approval, str) and saved_approval:
+                    sess.approval_policy = saved_approval
                 saved_ws = meta.get("workspace_root")
                 if isinstance(saved_ws, str) and saved_ws:
                     sess.workspace_root = saved_ws
@@ -2092,8 +2095,12 @@ class Runtime:
             if allowed_tools is not None and call.name not in allowed_tools:
                 return ToolResult(text=f"Error: tool_blocked\nTool '{call.name}' is not available in this sub-agent", error=True)
 
-        # Check approval policy
-        approval_policy: ApprovalPolicy = self.config.get("approval", {}).get("policy", "full-auto")
+        # Check approval policy: per-session override > global config
+        session = self._sessions.get(ctx.session_id)
+        approval_policy: ApprovalPolicy = (
+            (session.approval_policy if session else None)
+            or self.config.get("approval", {}).get("policy", "full-auto")
+        )
         request_id = str(uuid.uuid4())
 
         # Expand manifest permissions {fs: [read, write]} → ["fs:read", "fs:write"]

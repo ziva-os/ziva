@@ -764,6 +764,7 @@ class DesktopAPIServer:
                         "name": s.get("name"),
                         "model_name": s.get("model_name"),
                         "channel": s.get("channel"),
+                        "approval_policy": s.get("approval_policy"),
                     })
             except Exception:
                 # Skip workspaces that are unreadable / missing storage
@@ -799,6 +800,7 @@ class DesktopAPIServer:
             "model_name": meta.get("model_name") or (meta.get("model_cfg", {}).get("name") if isinstance(meta.get("model_cfg"), dict) else None),
             "provider_name": meta.get("provider_name"),
             "thinking_mode": meta.get("thinking_mode"),
+            "approval_policy": meta.get("approval_policy"),
         })
 
     async def get_turns(self, request: web.Request) -> web.Response:
@@ -1853,12 +1855,9 @@ class DesktopAPIServer:
             updates["provider_name"] = payload["provider_name"]
         if "thinking_mode" in payload:
             updates["thinking_mode"] = payload["thinking_mode"]
-        # Approval policy: mirror onto runtime config so the next tool
-        # call picks it up immediately. Stored globally (not per-session)
-        # — same semantics as CLI's /approval command.
+        # Approval policy: save per-session + mirror onto SessionState.
         if "approval_policy" in payload:
-            new_policy = payload["approval_policy"]
-            self.runtime.config.setdefault("approval", {})["policy"] = new_policy
+            updates["approval_policy"] = payload["approval_policy"]
         # Resolve the project_id the session actually lives in. Sessions
         # can belong to any of the known workspaces (active + recently
         # visited); using the runtime's current project_id here would
@@ -1883,7 +1882,7 @@ class DesktopAPIServer:
         # disk reload on the next _get_session. Only the active
         # project's sessions live in memory; sessions from other
         # projects will be populated from disk when they're loaded.
-        if "model_name" in updates or "provider_name" in updates or "thinking_mode" in updates:
+        if "model_name" in updates or "provider_name" in updates or "thinking_mode" in updates or "approval_policy" in updates:
             sess = self.runtime._sessions.get(sid)
             if sess is not None:
                 if "model_name" in updates:
@@ -1892,6 +1891,8 @@ class DesktopAPIServer:
                     sess.provider_name = updates["provider_name"]
                 if "thinking_mode" in updates:
                     sess.thinking_mode = updates["thinking_mode"]
+                if "approval_policy" in updates:
+                    sess.approval_policy = updates["approval_policy"]
             # Broadcast so split panes / IM-initiated changes stay in sync
             # even when the PATCH itself didn't originate in the current UI.
             changed: dict = {"type": "model_changed"}

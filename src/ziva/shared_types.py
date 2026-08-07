@@ -203,6 +203,9 @@ class SessionState:
     # Per-session reasoning effort override (low/medium/high/disabled).
     # None = use the global config.model.thinking_mode. Persisted + restored.
     thinking_mode: str | None = None
+    # Per-session approval policy override (suggest/full-auto).
+    # None = use the global config.approval.policy. Persisted + restored.
+    approval_policy: str | None = None
     # When the session is driven from the IM bridge, which channel it's on
     # (e.g. "feishu"/"telegram"). Surfaced to the model via the system prompt
     # so it knows `send_file` delivers to this chat. None for desktop sessions.
