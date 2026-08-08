@@ -47,7 +47,7 @@ def _child_turn(runtime, parent_session_id: str):
         ``runtime._run_model_tool_loop(... model_cfg=..., model_adapter=...)``.
 
     Resolution order matches chat() / chat_streaming():
-        1. Parent session's pinned model_name (if any)
+        1. Parent session's pinned model_name + provider_name (if any)
         2. Runtime global config["model"] (the active default)
     """
     from ziva.runtime import _create_adapter
@@ -56,6 +56,8 @@ def _child_turn(runtime, parent_session_id: str):
     model_cfg = dict(runtime.config.get("model", {}))
     if parent.model_name:
         model_cfg["name"] = parent.model_name
+    if parent.provider_name:
+        model_cfg["provider_name"] = parent.provider_name
     turn_config = dict(runtime.config)
     turn_config["model"] = model_cfg
     return model_cfg, _create_adapter(turn_config)
