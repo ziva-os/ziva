@@ -57,6 +57,7 @@ export interface Status {
 export interface Config {
   model: { current: string; available: string[] };
   approval: { current: string; options: string[] };
+  context_window?: number;
 }
 
 const JSON_HEADERS = { "Content-Type": "application/json" };

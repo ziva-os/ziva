@@ -682,6 +682,27 @@ ipcMain.handle("browser-close-tab", (_e, id: string) => {
   destroyBrowserTab(id);
   return true;
 });
+// Snapshot every live web tab so the renderer can rebuild its tabstrip after
+// a reload. The main process keeps the WebContentsViews alive across reloads
+// (chrome-devtools-mcp still sees them over CDP), but the renderer's in-memory
+// `tabs` array is reset — without this fetch the shell would go empty while
+// the underlying pages are still open. ``active`` marks the previously
+// focused tab so the renderer can re-select it on recovery.
+function listBrowserTabs(): Array<{ id: string; url?: string; title?: string; active?: boolean }> {
+  const out: Array<{ id: string; url?: string; title?: string; active?: boolean }> = [];
+  for (const [id, view] of browserViews) {
+    out.push({
+      id,
+      url: view.webContents.getURL(),
+      title: view.webContents.getTitle(),
+      active: id === activeBrowserTab,
+    });
+  }
+  return out;
+}
+ipcMain.handle("browser-list-tabs", (): Array<{ id: string; url?: string; title?: string; active?: boolean }> => {
+  return listBrowserTabs();
+});
 
 // A web tab's selection-to-Ziva button fired. Find which tab the message
 // came from (by webContents), grab the real URL server-side (don't trust

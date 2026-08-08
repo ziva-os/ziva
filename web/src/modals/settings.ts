@@ -66,13 +66,15 @@ export async function openSettingsModal() {
       agents: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="7" r="3"/><circle cx="17" cy="7" r="2.5"/><path d="M3 21v-1a6 6 0 0 1 12 0v1"/><path d="M14 14a5 5 0 0 1 7 4v1"/></svg>`,
     };
 
-    // Build MCP servers HTML
-    let mcpServersHtml = "";
-    const mcpServerNames = Object.keys(mcpServers);
-    for (const sname of mcpServerNames) {
-      const srv = mcpServers[sname] as any;
-      const cmd = Array.isArray(srv.command) ? srv.command.join(" ") : (srv.command || "");
-      mcpServersHtml += `
+    // Build MCP servers HTML. Extracted so the save handler can rebuild the
+    // list after writing to disk (the modal is still mounted, so we need
+    // fresh innerHTML for any panel whose data changed).
+    const renderMcpServersHtml = (servers: Record<string, any>): string => {
+      let html = "";
+      for (const sname of Object.keys(servers)) {
+        const srv = servers[sname] as any;
+        const cmd = Array.isArray(srv.command) ? srv.command.join(" ") : (srv.command || "");
+        html += `
         <div class="settings-mcp-card" data-mcp-server="${esc(sname)}">
           <div class="settings-mcp-card-header">
             <input class="settings-input settings-mcp-name" data-mcp-name="${esc(sname)}" value="${esc(sname)}" placeholder="${i18n.t("settings.serverName")}" style="font-weight:600;font-size:13px" />
@@ -92,7 +94,10 @@ export async function openSettingsModal() {
             </select>
           </div>
         </div>`;
-    }
+      }
+      return html;
+    };
+    const mcpServersHtml = renderMcpServersHtml(mcpServers);
 
     // Build hooks HTML — fetch registered hooks from backend + folder register input
     // Hook options for the per-agent dimension selector come from the registry,
@@ -289,33 +294,57 @@ export async function openSettingsModal() {
       });
     }
 
-    // Build providers HTML for Model tab
-    const rawProviders = (cfg.providers || []) as any[];
-    const defaultModelName = (cfg.model || {}).name || "";
-    let providersHtml = "";
-    const normProviders = rawProviders.map((p: any) => ({
-      name: p.name || "",
-      api_type: p.api_type || "openai_compatible",
-      api_key: p.api_key || "",
-      base_url: p.base_url || "",
-      models: (p.models || []).map((m2: any) => ({ name: m2.name || "", capabilities: { vision: m2.capabilities?.vision ?? true, ...(Array.isArray(m2.capabilities?.effort_levels) ? { effort_levels: m2.capabilities.effort_levels } : {}) } })),
-    }));
-    for (let pi = 0; pi < normProviders.length; pi++) {
-      const p = normProviders[pi];
-      const isOpenAI = p.api_type !== "anthropic";
-      let modelRows = "";
-      for (const model of p.models) {
-        const supportsImage = model.capabilities?.vision ?? true;  // default True = vision-capable
-        modelRows += `
+    // Build providers HTML for Model tab. Extracted so the save handler can
+    // rebuild the list after writing to disk (the modal is still mounted,
+    // so we need fresh innerHTML for any panel whose data changed).
+    //
+    // ``defaultModelName`` + ``defaultProviderName`` together pin the default
+    // — passing just the model name is ambiguous when two providers expose
+    // the same model (e.g. MiniMax-M3 in both MiniMax and minimax-anthropic).
+    // When ``defaultProviderName`` is empty (legacy config without provider
+    // tracking) we fall back to the first match so behaviour stays the same.
+    const renderProvidersHtml = (rawProviders: any[], defaultModelName: string, defaultProviderName: string): string => {
+      let html = "";
+      const normProviders = rawProviders.map((p: any) => ({
+        name: p.name || "",
+        api_type: p.api_type || "openai_compatible",
+        api_key: p.api_key || "",
+        base_url: p.base_url || "",
+        models: (p.models || []).map((m2: any) => ({ name: m2.name || "", capabilities: { vision: m2.capabilities?.vision ?? true, ...(Array.isArray(m2.capabilities?.effort_levels) ? { effort_levels: m2.capabilities.effort_levels } : {}) } })),
+      }));
+      // Find the first (provider, model) pair that matches the default model
+      // name. Used as the legacy fallback when no provider_name was saved.
+      let legacyMatchKey: string | null = null;
+      if (defaultModelName && !defaultProviderName) {
+        for (const p of normProviders) {
+          for (const m of p.models) {
+            if (m.name === defaultModelName) {
+              legacyMatchKey = `${p.name}|${m.name}`;
+              break;
+            }
+          }
+          if (legacyMatchKey) break;
+        }
+      }
+      for (let pi = 0; pi < normProviders.length; pi++) {
+        const p = normProviders[pi];
+        const isOpenAI = p.api_type !== "anthropic";
+        let modelRows = "";
+        for (const model of p.models) {
+          const supportsImage = model.capabilities?.vision ?? true;  // default True = vision-capable
+          const isDefault = defaultModelName
+            && ((defaultProviderName && p.name === defaultProviderName && model.name === defaultModelName)
+              || (!defaultProviderName && legacyMatchKey === `${p.name}|${model.name}`));
+          modelRows += `
           <div class="settings-model-row">
             <input class="settings-input s-model-name" value="${esc(model.name)}" placeholder="${i18n.t("settings.modelName")}" style="flex:1" />
             <label class="settings-model-check" title="${i18n.t("settings.visionTitle")}"><input type="checkbox" class="s-model-image" ${supportsImage ? "checked" : ""} /> ${i18n.t("settings.vision")}</label>
-            <label class="settings-model-check" title="${i18n.t("settings.defaultModelTitle")}"><input type="radio" name="modelDefault" class="s-model-default" ${model.name === defaultModelName ? "checked" : ""} /> ${i18n.t("settings.default")}</label>
+            <label class="settings-model-check" title="${i18n.t("settings.defaultModelTitle")}"><input type="radio" name="modelDefault" class="s-model-default" data-default-provider="${esc(p.name)}" ${isDefault ? "checked" : ""} /> ${i18n.t("settings.default")}</label>
             <select class="settings-input s-model-effort" title="Highest effort this model supports (default = max)">${(() => { const lv = model.capabilities?.effort_levels || []; const top = lv.length ? lv[lv.length - 1] : "max"; return ["low", "medium", "high", "xhigh", "max"].map(o => `<option value="${o}" ${o === top ? "selected" : ""}>${o}</option>`).join(""); })()}</select>
             <button class="settings-hook-remove s-model-remove" title="${i18n.t("common.remove")}">×</button>
           </div>`;
-      }
-      providersHtml += `
+        }
+        html += `
         <div class="settings-provider-card" data-provider-idx="${pi}">
           <div class="settings-provider-card-header">
             <input class="settings-input settings-provider-name" data-field="provider_name" value="${esc(p.name)}" placeholder="${i18n.t("settings.providerName")}" />
@@ -333,7 +362,13 @@ export async function openSettingsModal() {
           <div class="settings-provider-models">${modelRows}</div>
           <button class="settings-add-btn s-add-model-btn">${i18n.t("settings.addModel")}</button>
         </div>`;
-    }
+      }
+      return html;
+    };
+    const rawProviders = (cfg.providers || []) as any[];
+    const defaultModelName = (cfg.model || {}).name || "";
+    const defaultProviderName = (cfg.model || {}).provider_name || "";
+    const providersHtml = renderProvidersHtml(rawProviders, defaultModelName, defaultProviderName);
 
     body.innerHTML = `
       <div class="settings-layout">
@@ -717,10 +752,15 @@ export async function openSettingsModal() {
           const modelsDiv = card.querySelector(".settings-provider-models")!;
           const row = document.createElement("div");
           row.className = "settings-model-row";
+          // Provider name is tracked alongside the model name so we can
+          // round-trip (provider, model) pairs the same way as the loaded
+          // providers — without it, a newly added model can't be saved as
+          // the default without losing provider context.
+          const provName = (card.querySelector("[data-field='provider_name']") as HTMLInputElement)?.value || "";
           row.innerHTML = `
             <input class="settings-input s-model-name" value="" placeholder="${i18n.t("settings.modelName")}" style="flex:1" />
             <label class="settings-model-check"><input type="checkbox" class="s-model-image" /> ${i18n.t("settings.image")}</label>
-            <label class="settings-model-check"><input type="radio" name="modelDefault" class="s-model-default" /> ${i18n.t("settings.default")}</label>
+            <label class="settings-model-check"><input type="radio" name="modelDefault" class="s-model-default" data-default-provider="${esc(provName)}" /> ${i18n.t("settings.default")}</label>
             <select class="settings-input s-model-effort" title="Highest effort this model supports (default = max)">${["low", "medium", "high", "xhigh", "max"].map(o => `<option value="${o}" ${o === "max" ? "selected" : ""}>${o}</option>`).join("")}</select>
             <button class="settings-hook-remove s-model-remove" title="${i18n.t("common.remove")}">×</button>`;
           (row.querySelector(".s-model-remove") as HTMLElement).onclick = () => row.remove();
@@ -810,9 +850,15 @@ export async function openSettingsModal() {
       try {
         const updated = { ...cfg };
 
-        // Model — collect from provider cards
+        // Model — collect from provider cards. Track the selected provider
+        // alongside the model name so the same model name under multiple
+        // providers (e.g. MiniMax-M3 in both MiniMax and minimax-anthropic)
+        // round-trips correctly — without provider_name the backend falls
+        // back to the first match and the user sees "default model didn't
+        // change" after pick/save.
         const newProviders: any[] = [];
         let defaultName = "";
+        let defaultProvider = "";
         backdrop.querySelectorAll(".settings-provider-card").forEach(card => {
           const pName = (card.querySelector("[data-field='provider_name']") as HTMLInputElement)?.value.trim() || "";
           const apiType = (card.querySelector("[data-field='api_type']") as HTMLSelectElement)?.value || "openai_compatible";
@@ -828,23 +874,38 @@ export async function openSettingsModal() {
             const ORDER = ["low", "medium", "high", "xhigh", "max"];
             // max is the default — leave effort_levels unset so the runtime
             // default (full list) applies and the config stays minimal. Only
-            // persist an explicit cap for models that cap below max.
+            // persist an explicit cap for models that cap below that level.
             if (effortTop !== "max" && ORDER.includes(effortTop)) {
               caps.effort_levels = ORDER.slice(0, ORDER.indexOf(effortTop) + 1);
             }
             models.push({ name, capabilities: caps });
-            if ((row.querySelector(".s-model-default") as HTMLInputElement)?.checked) defaultName = name;
+            if ((row.querySelector(".s-model-default") as HTMLInputElement)?.checked) {
+              defaultName = name;
+              defaultProvider = pName;
+            }
           });
           if (models.length > 0) {
             newProviders.push({ name: pName, api_type: apiType, api_key: apiKey, base_url: baseUrl, models });
           }
         });
-        if (!defaultName && newProviders.length > 0 && newProviders[0].models.length > 0) {
+        // Only auto-pick a default model when the saved config never had one
+        // (first-time setup). Once the user has a default, leave it alone —
+        // adding a new provider must not silently steal the default.
+        if (!defaultName && !cfg.model?.name && newProviders.length > 0 && newProviders[0].models.length > 0) {
           defaultName = newProviders[0].models[0].name;
+          defaultProvider = newProviders[0].name;
         }
         updated.providers = newProviders;
         const tm = (backdrop.querySelector("#s_thinking_mode") as HTMLSelectElement)?.value || "disabled";
-        updated.model = { name: defaultName || "", thinking_mode: tm };
+        // Preserve the existing thinking_mode/max_tokens/thinking_budget_tokens
+        // when no change is made — writers below only modify the fields the
+        // user explicitly touches in the modal.
+        updated.model = {
+          ...updated.model,
+          name: defaultName || "",
+          provider_name: defaultProvider || undefined,
+          thinking_mode: tm,
+        };
 
         // Approval
         updated.approval = { ...updated.approval, policy: (backdrop.querySelector("#s_approval_policy") as HTMLSelectElement).value };
@@ -937,9 +998,53 @@ export async function openSettingsModal() {
 
         await api.saveConfigJson(updated);
         await _refreshConfig();
-        // Re-render agents list from fresh config so the UI reflects
-        // saved mode changes (e.g. switching from allow → inherit).
-        const freshAgents = ((await api.getConfigJson()).agents || {}) as Record<string, any>;
+        const fresh = await api.getConfigJson();
+
+        // Detect which top-level keys changed between the snapshot we took
+        // when opening the modal and the value we just wrote, so only the
+        // affected panels get rebuilt. ``model`` and ``providers`` are
+        // always rebuilt from the living DOM, so they're always "changed"
+        // for the purpose of the model panel — treat them as such.
+        const changed = new Set<string>();
+        const sameVal = (a: any, b: any) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+        for (const key of Object.keys(updated)) {
+          if (!sameVal(updated[key], cfg[key])) changed.add(key);
+        }
+        // Pure inputs that the modal edits inline (no DOM rebuild needed).
+        const setVal = (id: string, val: any) => {
+          const el = backdrop.querySelector(`#${id}`) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null;
+          if (el) el.value = val == null ? "" : String(val);
+        };
+        if (changed.has("approval")) setVal("s_approval_policy", (fresh.approval || {}).policy || "suggest");
+        if (changed.has("memory")) setVal("s_memory_tokens", (fresh.memory || {}).context_window_tokens || 200000);
+        if (changed.has("tool")) setVal("s_tool_max_rounds", (fresh.tool || {}).max_rounds || 0);
+        if (changed.has("sandbox")) setVal("s_sandbox_mode", (fresh.sandbox || {}).mode || "off");
+        if (changed.has("prompt")) setVal("s_prompt_system_prompt", (fresh.prompt || {}).system_prompt || "");
+
+        // Panels with dynamic innerHTML that needs rebuilding.
+        if (changed.has("providers") || changed.has("model")) {
+          const tmSel = backdrop.querySelector("#s_thinking_mode") as HTMLSelectElement | null;
+          if (tmSel) tmSel.value = (fresh.model || {}).thinking_mode || "disabled";
+          const list = backdrop.querySelector("#sProvidersList") as HTMLElement | null;
+          if (list) {
+            list.innerHTML = renderProvidersHtml((fresh.providers || []) as any[], (fresh.model || {}).name || "", (fresh.model || {}).provider_name || "");
+            list.querySelectorAll<HTMLElement>(".settings-provider-card").forEach(card => wireProviderCardEvents(card));
+          }
+        }
+        if (changed.has("mcp")) {
+          setVal("s_mcp_enabled", String((fresh.mcp || {}).enabled !== false));
+          const list = backdrop.querySelector("#mcpServersList") as HTMLElement | null;
+          if (list) {
+            list.innerHTML = renderMcpServersHtml((fresh.mcp || {}).servers || {});
+          }
+        }
+        if (changed.has("hooks")) {
+          await renderHooksPanel();
+        }
+
+        // Re-fetch and re-render agents list from fresh config so the UI
+        // reflects saved mode changes (e.g. switching from allow → inherit).
+        const freshAgents = (fresh.agents || {}) as Record<string, any>;
         const agentsListEl = backdrop.querySelector("#agentsList") as HTMLElement | null;
         if (agentsListEl) {
           agentsListEl.innerHTML = renderAgentsList(freshAgents) || `<div style="color:var(--muted);font-size:12px;padding:12px 0">${i18n.t("settings.noAgents")}</div>`;

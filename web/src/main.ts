@@ -1358,7 +1358,7 @@ async function refreshConfig() {
   try {
     const cfg = await api.getConfig();
     const modelDetails = (cfg.model as any).models || (cfg.model.available || []).map((m: string) => ({ name: m, capabilities: { vision: true } }));
-    store.set({ config: { ...store.get().config, model: cfg.model.current, models: cfg.model.available, modelDetails, approval: cfg.approval.current } });
+    store.set({ config: { ...store.get().config, model: cfg.model.current, models: cfg.model.available, modelDetails, approval: cfg.approval.current, contextWindow: cfg.context_window || 200000 } });
     // Mount/hydrate the full-screen composer with the freshly-loaded model
     // list + current selection. (Pane composers are hydrated by renderSplitPanes.)
     renderComposers();
@@ -4866,7 +4866,7 @@ function hydrateComposer(sid: string) {
     }
   }
   if (approvalSel) {
-    approvalSel.value = (s as any)?.approval_policy || "full-auto";
+    approvalSel.value = (s as any)?.approval_policy || config.approval || "full-auto";
   }
   const ta = composerTextarea(sid);
   if (ta) {

@@ -1989,6 +1989,10 @@ class DesktopAPIServer:
                 "options": ["suggest", "full-auto"],
             },
             "agents": self.runtime.config.get("agents", {}),
+            # Expose memory context_window so the frontend store can pick up
+            # changes made via the settings modal without a separate
+            # refreshStatus round-trip.
+            "context_window": int(self.runtime.config.get("memory", {}).get("context_window_tokens", 200000) or 200000),
         })
 
     @property

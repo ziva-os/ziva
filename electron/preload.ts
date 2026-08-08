@@ -89,6 +89,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   browserNavigate: (id: string, url: string) => ipcRenderer.invoke("browser-navigate", id, url),
   browserNav: (id: string, kind: "back" | "forward" | "reload") => ipcRenderer.invoke("browser-nav", id, kind),
   browserCloseTab: (id: string) => ipcRenderer.invoke("browser-close-tab", id),
+  // Snapshot live web tabs so the renderer can rebuild its tab strip after
+  // a reload — main-process WebContentsViews survive the reload but the
+  // renderer's in-memory tab list doesn't.
+  browserListTabs: (): Promise<Array<{ id: string; url?: string; title?: string; active?: boolean }>> =>
+    ipcRenderer.invoke("browser-list-tabs"),
   // Reload the desktop (Electron + python backend) so newly added plugins
   // or skill changes take effect. Triggered by the renderer's `/restart`
   // slash command — same UX as the IM bridge's `/restart`.

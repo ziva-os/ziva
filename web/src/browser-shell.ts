@@ -25,6 +25,11 @@ export interface BrowserTab {
 import * as i18n from "./i18n";
 
 const ZIVA_TAB_ID = "ziva";
+// localStorage key for the active web tab's main-process id. Survives renderer
+// reloads (Cmd+R) and window close→reopen on macOS, so recovery can restore the
+// exact tab the user had focused — instead of relying on the main process's
+// ``activeBrowserTab`` which may be stale after a close.
+const ACTIVE_MAINID_KEY = "ziva:browserActiveMainId";
 let tabs: BrowserTab[] = [{ id: ZIVA_TAB_ID, type: "ziva", title: "Ziva" }];
 let activeTabId = ZIVA_TAB_ID;
 let _seq = 0;
@@ -41,13 +46,18 @@ const ea: any = (window as any).electronAPI;
 function nextId(): string { _seq += 1; return "web_" + _seq; }
 
 /** Add a tab created by the main process (CDP Target.createTarget) to the shell UI. */
-function addMainProcessTab(e: { id: string; url?: string; targetId?: string }) {
+function addMainProcessTab(e: { id: string; url?: string; targetId?: string; title?: string }) {
   if (!strip) {
     // Shell not initialized yet; buffer until initBrowserShell finishes.
     pendingTabCreated.push(e);
     return;
   }
-  const tab: BrowserTab = { id: nextId(), type: "web", url: e.url, title: e.url ? prettyHost(e.url) : i18n.t("browser.newTab") };
+  const tab: BrowserTab = {
+    id: nextId(),
+    type: "web",
+    url: e.url,
+    title: e.title || (e.url ? prettyHost(e.url) : i18n.t("browser.newTab")),
+  };
   (tab as any).mainId = e.id;
   tabs.push(tab);
   if (activeTabId === ZIVA_TAB_ID) {
@@ -89,6 +99,44 @@ export function initBrowserShell(): void {
   renderTabstrip();
   renderOmnibox();
   applyActive();
+
+  // Reload recovery: the main process keeps every WebContentsView alive across
+  // renderer reloads (so chrome-devtools-mcp still sees them over CDP), but the
+  // renderer's `tabs` array is reset and the tab strip would otherwise be
+  // empty. Pull the live tab list from the main process and re-register them.
+  //
+  // Done after applyActive() so the shell DOM is ready, and after the event
+  // listeners are wired so subsequent nav/title events still bind to the
+  // rebuilt tabs.
+  //
+  // We bypass ``addMainProcessTab`` here on purpose. That function auto-
+  // focuses a newly-added tab when the user is on the Ziva tab — fine for a
+  // live createTarget event, but during recovery it would land focus on the
+  // first web tab in the list even if the user was on the Ziva tab when they
+  // reloaded. Inlining here lets us honour the last active tab (persisted in
+  // localStorage, which survives reloads and window close/reopen) and leave
+  // the Ziva tab alone when that's what the user had focused.
+  ea?.browserListTabs?.().then((existing: Array<{ id: string; url?: string; title?: string; active?: boolean }>) => {
+    if (!existing?.length) return;
+    const lastActiveMainId = localStorage.getItem(ACTIVE_MAINID_KEY);
+    let activated = false;
+    for (const t of existing) {
+      const tab: BrowserTab = {
+        id: nextId(),
+        type: "web",
+        url: t.url,
+        title: t.title || (t.url ? prettyHost(t.url) : i18n.t("browser.newTab")),
+      };
+      (tab as any).mainId = t.id;
+      tabs.push(tab);
+      if (t.id === lastActiveMainId && !activated) {
+        activateTab(tab.id);
+        activated = true;
+      }
+    }
+    renderTabstrip();
+    reportBrowserArea();
+  });
 
   if (typeof ResizeObserver !== "undefined") {
     const ro = new ResizeObserver(reportBrowserArea);
@@ -179,9 +227,13 @@ function createWebTab(url?: string): void {
 
 function activateTab(id: string): void {
   activeTabId = id;
+  const t = tabs.find(x => x.id === id);
+  // Persist the active tab so reload/close-reopen recovery can restore it.
+  // Store the main-process id for web tabs; clear it for the Ziva tab.
+  const mainId = t && (t as any).mainId;
+  if (t?.type === "web" && mainId) localStorage.setItem(ACTIVE_MAINID_KEY, mainId);
+  else localStorage.removeItem(ACTIVE_MAINID_KEY);
   if (isElectron) {
-    const t = tabs.find(x => x.id === id);
-    const mainId = t && (t as any).mainId;
     if (t?.type === "web" && mainId && ea?.browserShowTab) ea.browserShowTab(mainId);
     else if (t?.type === "ziva" && ea?.browserHideTabs) ea.browserHideTabs();
   } else {
