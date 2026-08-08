@@ -75,6 +75,7 @@ export interface AppState {
   questionPending: boolean;
   config: {
     model: string;
+    providerName: string;
     models: string[];
     modelDetails: Array<{ name: string; capabilities?: { vision?: boolean; thinking?: boolean; tools?: boolean } }>;
     approval: string;
@@ -138,7 +139,7 @@ export const store = new Store<AppState>({
   compactingSessions: {},
   currentPlanSteps: {},
   questionPending: false,
-  config: { model: "unknown", models: [], modelDetails: [], approval: "suggest", workspace: "", tools: [], contextWindow: 200000 },
+  config: { model: "unknown", providerName: "", models: [], modelDetails: [], approval: "suggest", workspace: "", tools: [], contextWindow: 200000 },
   recentWorkspaces: [],
   connected: false,
   tokenUsage: null,

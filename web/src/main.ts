@@ -1358,7 +1358,7 @@ async function refreshConfig() {
   try {
     const cfg = await api.getConfig();
     const modelDetails = (cfg.model as any).models || (cfg.model.available || []).map((m: string) => ({ name: m, capabilities: { vision: true } }));
-    store.set({ config: { ...store.get().config, model: cfg.model.current, models: cfg.model.available, modelDetails, approval: cfg.approval.current, contextWindow: cfg.context_window || 200000 } });
+    store.set({ config: { ...store.get().config, model: cfg.model.current, providerName: (cfg.model as any).provider_name || "", models: cfg.model.available, modelDetails, approval: cfg.approval.current, contextWindow: cfg.context_window || 200000 } });
     // Mount/hydrate the full-screen composer with the freshly-loaded model
     // list + current selection. (Pane composers are hydrated by renderSplitPanes.)
     renderComposers();
@@ -1694,7 +1694,17 @@ async function createSession() {
   const { config } = store.get();
   const models = (config as any).modelDetails || [];
   const modelName = (config as any).model || (models[0] && models[0].name);
-  const id = await api.createSession(modelName);
+  // Resolve provider_name so the backend pins the right provider when the
+  // same model name exists under multiple providers (e.g. MiniMax-M3 under
+  // both "MiniMax" and "minimax-anthropic"). Prefer the config-level
+  // providerName set by refreshConfig from get_config; fall back to the
+  // matching modelDetails entry's "provider" field.
+  let providerName = (config as any).providerName || "";
+  if (!providerName && modelName) {
+    const detail = models.find((m: any) => m.name === modelName);
+    if (detail && detail.provider) providerName = detail.provider;
+  }
+  const id = await api.createSession(modelName, providerName || undefined);
   // New sessions always belong to the active workspace, so tag them here
   // so they show up in the right project group without waiting for the
   // next /sessions refresh.

@@ -98,8 +98,10 @@ export async function listSessions(): Promise<Session[]> {
   return data.sessions || [];
 }
 
-export async function createSession(modelName?: string): Promise<string> {
-  const body = modelName ? { model_name: modelName } : {};
+export async function createSession(modelName?: string, providerName?: string): Promise<string> {
+  const body: Record<string, string> = {};
+  if (modelName) body.model_name = modelName;
+  if (providerName) body.provider_name = providerName;
   const data = await api<{ id: string }>("POST", "/sessions", body);
   return data.id;
 }

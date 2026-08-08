@@ -672,11 +672,13 @@ class DesktopAPIServer:
         return web.Response(text=html, content_type="text/html")
 
     async def create_session(self, request: web.Request) -> web.Response:
-        # Optional initial model_name so the caller can pin the session
-        # to a specific model at creation time (the alternative is to
-        # create the session and then immediately PATCH /sessions/{sid}
-        # with model_name; both paths persist to disk via FileStorage).
+        # Optional initial model_name + provider_name so the caller can pin
+        # the session to a specific model at creation time. provider_name is
+        # essential when the same model name appears under multiple providers
+        # (e.g. MiniMax-M3 under both MiniMax and minimax-anthropic); without
+        # it the runtime falls back to first-match and may pick the wrong one.
         model_name: str | None = None
+        provider_name: str | None = None
         if request.body_exists:
             try:
                 payload = await request.json()
@@ -686,6 +688,9 @@ class DesktopAPIServer:
                 raw = payload.get("model_name")
                 if isinstance(raw, str) and raw:
                     model_name = raw
+                raw_pn = payload.get("provider_name")
+                if isinstance(raw_pn, str) and raw_pn:
+                    provider_name = raw_pn
         sid = self.store.create()
         updates: dict[str, Any] = {
             # Persist the workspace where the session was created so that
@@ -695,8 +700,10 @@ class DesktopAPIServer:
         }
         if model_name is not None:
             updates["model_name"] = model_name
+        if provider_name is not None:
+            updates["provider_name"] = provider_name
         FileStorage.update_session(self.runtime.project_id, sid, updates)
-        return web.json_response({"id": sid, "model_name": model_name})
+        return web.json_response({"id": sid, "model_name": model_name, "provider_name": provider_name})
 
     @staticmethod
     def _read_recent_workspaces() -> List[str]:
@@ -1980,6 +1987,7 @@ class DesktopAPIServer:
         return web.json_response({
             "model": {
                 "current": model_cfg.get("name", "unknown"),
+                "provider_name": model_cfg.get("provider_name", ""),
                 "available": available,
                 "models": models_list,
             },
