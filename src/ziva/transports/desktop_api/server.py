@@ -1145,6 +1145,7 @@ class DesktopAPIServer:
             summary_list = await compact_messages(
                 llm_visible, context_window, model_name, model_adapter,
                 keep_last_assistant_turns=keep_last,
+                lang=self.runtime.config.get("ui", {}).get("lang", "zh"),
             )
         except Exception as exc:
             return web.json_response({"error": "compact_failed", "message": str(exc)}, status=500)
@@ -2019,6 +2020,9 @@ class DesktopAPIServer:
         if "approval" in payload:
             fresh.setdefault("approval", {}).update(payload["approval"])
             self.runtime.config.setdefault("approval", {}).update(payload["approval"])
+        if "ui" in payload:
+            fresh.setdefault("ui", {}).update(payload["ui"])
+            self.runtime.config.setdefault("ui", {}).update(payload["ui"])
 
         # Persist the merged config and keep the runtime in sync.
         config_path.parent.mkdir(parents=True, exist_ok=True)

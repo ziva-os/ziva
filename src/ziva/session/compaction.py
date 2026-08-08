@@ -32,10 +32,12 @@ class CompactAgent:
         messages: List[ChatMessage],
         model_name: str,
         model_adapter: Any,
+        lang: str = "zh",
     ) -> str:
         """Generate a compaction summary for the given message history."""
         history_text = _format_history(messages)
-        prompt = f"{history_text}\n\n{COMPACTION_TEMPLATE}"
+        template = COMPACTION_TEMPLATE if lang != "en" else COMPACTION_TEMPLATE_EN
+        prompt = f"{history_text}\n\n{template}"
         summary_result = await model_adapter.chat(
             [ChatMessage(role="user", content=prompt)],
             model=model_name,
@@ -68,6 +70,33 @@ COMPACTION_TEMPLATE = """请根据上方对话内容生成一份详细的摘要�
 ## 相关文件 / 目录
 
 [列出对话中读取、编辑或创建的相关文件。如果某个目录下的所有文件都相关，列出目录路径即可。]
+---"""
+
+COMPACTION_TEMPLATE_EN = """Based on the conversation above, generate a detailed summary for continuing the work later.
+Focus on: what was done, what is in progress, which files are involved, and what to do next.
+
+Organize the summary using the following template:
+---
+## Goal
+
+[What does the user want to achieve?]
+
+## Instructions
+
+- [Important instructions from the user]
+- [If there is a plan or approach, include relevant info for continuity]
+
+## Findings
+
+[Important information discovered during the conversation]
+
+## Completed
+
+[What work is done, what is in progress, what has not started yet?]
+
+## Related Files / Directories
+
+[List files that were read, edited, or created. If all files in a directory are relevant, listing the directory path is sufficient.]
 ---"""
 
 
@@ -238,6 +267,7 @@ async def compact_messages(
     model_name: str,
     model_adapter: Any,
     keep_last_assistant_turns: int = 5,
+    lang: str = "zh",
 ) -> List[ChatMessage]:
     """Compact message history into a summary, keeping the last K model-call
     cycles verbatim.
@@ -288,7 +318,7 @@ async def compact_messages(
 
     try:
         agent = CompactAgent()
-        summary = await agent.run(to_summarize, model_name, model_adapter)
+        summary = await agent.run(to_summarize, model_name, model_adapter, lang=lang)
     except Exception:
         return _simple_compact_split(to_summarize, to_keep)
 
@@ -296,7 +326,7 @@ async def compact_messages(
         return _simple_compact_split(to_summarize, to_keep)
 
     summary_msg = ChatMessage(
-        role="assistant",
+        role="user",
         content=summary,
         _compaction_summary=True,
     )
@@ -321,7 +351,7 @@ def _simple_compact_split(
 
     summary = "[Earlier conversation summary]\n" + "\n".join(summary_parts)
     return [ChatMessage(
-        role="assistant",
+        role="user",
         content=summary,
         _compaction_summary=True,
     )] + to_keep

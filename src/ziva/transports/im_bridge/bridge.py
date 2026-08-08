@@ -560,6 +560,7 @@ class IMBridge:
                 summary_list = await compact_messages(
                     llm_visible, context_window, model_cfg.get("name", ""), adapter,
                     keep_last_assistant_turns=AUTO_COMPACT_KEEP_LAST_ASSISTANT_TURNS,
+                    lang=self.runtime.config.get("ui", {}).get("lang", "zh"),
                 )
                 if not summary_list or summary_list is llm_visible:
                     return "当前上下文已经很短，无需压缩。"

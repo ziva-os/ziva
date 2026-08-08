@@ -96,8 +96,10 @@ export function getLang(): Lang {
   return lang;
 }
 
-/** Persist the choice and reload so every imperative template re-runs `t()`. */
-export function setLang(l: Lang): void {
+/** Persist the choice, sync to backend, then reload so every imperative
+ * template re-runs `t()`.  The backend sync is awaited so the language
+ * is consistent server-side (e.g. compaction prompt) before reload. */
+export async function setLang(l: Lang): Promise<void> {
   lang = l;
   table = merge(l);
   try {
@@ -106,5 +108,15 @@ export function setLang(l: Lang): void {
     /* ignore */
   }
   if (typeof document !== "undefined") document.documentElement.setAttribute("lang", l);
+  // Sync to backend config so server-side features use the right language.
+  try {
+    await fetch("/config", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ui: { lang: l } }),
+    });
+  } catch {
+    /* best-effort — reload anyway */
+  }
   if (typeof location !== "undefined") location.reload();
 }

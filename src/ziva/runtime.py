@@ -1449,7 +1449,8 @@ class Runtime:
             _last_user_text = " ".join(p.get("text", "") for p in _last_user_text if isinstance(p, dict) and p.get("type") == "text")
         if _last_user_text.strip() == "/compact":
             summary_list = await compact_messages(
-                working, context_window, model_cfg["name"], model_adapter
+                working, context_window, model_cfg["name"], model_adapter,
+                lang=self.config.get("ui", {}).get("lang", "zh"),
             )
             working = summary_list
             had_summary = any(m._compaction_summary for m in working)
@@ -1502,6 +1503,7 @@ class Runtime:
                     summary_list = await compact_messages(
                         working, context_window, model_cfg["name"], model_adapter,
                         keep_last_assistant_turns=AUTO_COMPACT_KEEP_LAST_ASSISTANT_TURNS,
+                        lang=self.config.get("ui", {}).get("lang", "zh"),
                     )
 
                     if summary_list and summary_list is not working:
@@ -1516,6 +1518,10 @@ class Runtime:
                         event = {"type": "context_compacted", "round": round_idx}
                         yield _flag(event)
                         await self._emit(session_id, event)
+                        # Give the UI time to finish loadHistoryInto() before
+                        # the next round's streaming (thinking) starts —
+                        # otherwise thinking renders before the summary.
+                        await asyncio.sleep(0.2)
 
             round_start = time.perf_counter()
             base_prompt = self.config.get("prompt", {}).get("system_prompt") or ""
@@ -1588,6 +1594,25 @@ class Runtime:
                 "Write down durable knowledge worth remembering across sessions: user preferences, "
                 "project conventions, important decisions. Do not store ephemeral task details."
             )
+
+            # Background agents: remind the model about running background
+            # work it spawned.  Without this, compaction can summarise away
+            # the original spawn_agent tool call, leaving the model unaware
+            # that it has outstanding background tasks.
+            _running = [
+                a for a in self._background_agents.values()
+                if a.get("session_id") == session_id
+                and a.get("status") == "running"
+            ]
+            if _running:
+                _lines = ["\n\n## Running Background Agents"]
+                for a in _running:
+                    _lines.append(
+                        f"- `{a['agent_id']}`: \"{a.get('task_desc', '')}\" "
+                        f"(running, {a.get('tools_used', 0)} tools used). "
+                        f"Use `get_agent_result` to check its status."
+                    )
+                effective_prompt += "\n".join(_lines)
 
             thinking_config = None
             # Capability lookup is parameterized on this turn's model

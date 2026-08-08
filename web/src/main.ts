@@ -163,6 +163,14 @@ function clearPaneEmptyPlaceholder(target: HTMLElement) {
 
 // ---- DOM Bootstrap — Ziva layout ----
 function init() {
+  // Sync UI language to backend so server-side features (compaction, etc.)
+  // use the correct language. Fire-and-forget — the first compaction won't
+  // happen until many turns in, so latency here is irrelevant.
+  fetch("/config", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ui: { lang: i18n.getLang() } }),
+  }).catch(() => {});
   // Inject main.ts dependencies into the extracted modal modules. Done here
   // (not at module top) because `store` is a `const` defined below — calling
   // these at module-load would hit the temporal dead zone and crash init.
@@ -2085,7 +2093,11 @@ function renderMessages(target: HTMLElement, msgs: any[], offset: number = 0, wi
     const m = msgs[mi];
     const isSub = (m as any)._subagent === true;
 
-    if (m.role === "user") {
+    // Compaction summary has role="user" (for API alternation) but should
+    // render as an assistant-style context block, not a user chat bubble.
+    const isCompactionSummary = (m as any)._compaction_summary === true;
+
+    if (m.role === "user" && !isCompactionSummary) {
       if ((m as any)._hidden) {
         // Attach hidden image messages to the matching tool card via tool_call_id.
         // This is robust to parallel tool calls where proximity would mis-associate.
@@ -2098,7 +2110,7 @@ function renderMessages(target: HTMLElement, msgs: any[], offset: number = 0, wi
         continue;
       }
       appendUserMsg(m.content, target, withRewind ? offset + mi : undefined);
-    } else if (m.role === "assistant") {
+    } else if (m.role === "assistant" || isCompactionSummary) {
       if (isSub) {
         continue;
       }
@@ -2377,7 +2389,7 @@ async function patchRewindButtons(sid: string): Promise<void> {
   let ui = 0, ti = 0;
   for (let i = startIdx; i < msgs.length; i++) {
     const m = msgs[i];
-    if (m.role === "user" && !m._hidden) {
+    if (m.role === "user" && !m._hidden && !(m as any)._compaction_summary) {
       const el = userEls[ui++];
       if (el && el.dataset.idx == null) {
         el.dataset.idx = String(i);
