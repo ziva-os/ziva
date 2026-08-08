@@ -7,22 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-08
+
+### Changed
+- **Bilingual compaction templates** — Added `COMPACTION_TEMPLATE_EN/ZH` constants; `compact_messages()` now accepts a `lang` parameter driven by runtime/UI config.
+- **Settings panel diff-based refresh** — On save, each section (`approval`/`memory`/`tool`/`sandbox`/`prompt`/`providers`/`mcp`/`hooks`) is diffed individually and surgically updated or rebuilt in place, instead of a coarse full reload. Extracted `renderProvidersHtml` / `renderMcpServersHtml` for reuse.
+- **Precise default-model save** — Frontend radio now carries `data-default-provider`; saving writes `provider_name` alongside the model name, resolving conflicts when multiple providers expose same-named models. Fallback default only triggers on first-ever config.
+- **Browser tab recovery IPC** — `electron/main.ts` exposes `browser-list-tabs` IPC so the renderer can pull live WebContentsViews and rebuild the tab strip after a reload.
+
+### Fixed
+- **Compaction summary role error** — The summary message's role in `compact_messages()` caused Anthropic API errors on adjacent assistant turns. Added a 200ms delay to fix a thinking-display ordering race.
+- **Settings save not reflected in UI** — Backend config updated but frontend DOM not refreshed.
+- **Default model hijacked by new providers** — Previous save logic hard-coded `newProviders[0].models[0]` when no default radio was found, silently overwriting the existing default when a new provider was added.
+- **Tab focus lost on reload / window reopen** — Renderer and main-process `activeBrowserTab` went out of sync, causing recovery to activate the wrong web tab. Now persists the active tab's mainId in localStorage; recovery restores based on renderer-side state.
+- **Duplicate model radio conflict** — Same-named models across providers caused radio rendering conflicts.
+
 ## [1.1.6] - 2026-08-07
 
 ### Changed
-- **长期记忆简化为单文件 MEMORY.md** — 删除 memory 插件（inmemory/markdown）和 backend 选择逻辑，设置页「记忆」改为「上下文」。系统提示词引导 AI 用文件工具直接管理 `~/.ziva/memories/MEMORY.md`。
-- **审批机制重构** — 精简为 **Auto**（读操作自动放行，写操作和 shell 需确认）和 **Full Access**（全自动）两种模式。审批选项简化为 once/always/reject。策略改为 per-session 保存。
-- **IM 新增 `/approval` 命令** — IM 中切换审批模式，权限请求转发到 IM 聊天，回复 y/a/n 审批。
-- **Sub-agent 设置 UI 优化** — 三态权限模型修复，inherit 模式正确持久化，mode 下拉隐藏到「自定义…」后面，配置中 Strip None 值。
-- **Hooks 面板增强** — 单 hook 启用/禁用开关，区分内置/用户来源，始终显示 restrict chip。
-- **web_fetch 支持系统代理** — `aiohttp.ClientSession(trust_env=True)`。
+- **Long-term memory simplified to single-file MEMORY.md** — Removed memory plugins (inmemory/markdown) and backend selection logic; settings page "Memory" renamed to "Context". System prompt now guides the AI to manage `~/.ziva/memories/MEMORY.md` directly via file tools.
+- **Approval mechanism overhaul** — Simplified to **Auto** (read ops auto-allowed, writes and shell require confirmation) and **Full Access** (fully automatic). Approval options reduced to once/always/reject. Policy now saved per-session.
+- **IM `/approval` command** — Switch approval mode from IM; permission requests forwarded to the IM chat, reply y/a/n to approve.
+- **Sub-agent settings UI improvements** — Three-state permission model fixed, inherit mode persists correctly, mode dropdown hidden behind "Custom…", strip None values from config.
+- **Hooks panel enhancements** — Per-hook enable/disable toggle, distinguish built-in vs user sources, always show restrict chip.
+- **web_fetch system proxy support** — `aiohttp.ClientSession(trust_env=True)`.
 
 ### Fixed
-- **审批权限名格式不匹配** — manifest 声明 `{fs: [read, write]}`，代码检查 `"fs:read"` 字符串，导致 Auto 模式审批从未触发。
-- **审批"总是允许"不生效** — 原按文件路径存储规则，编辑另一个文件就失效。改为按权限类型通配放行。
-- **composer 下拉切换 approval 无效** — `update_session` 未处理 `approval_policy` 字段。
-- **IM `/approval` 串扰** — 原写全局 config，`/new` 后新会话继承旧设置。改为 per-session。
-- **Sub-agent TDZ ReferenceError** — `isCustom` 声明顺序修复。
+- **Approval permission name format mismatch** — Manifest declared `{fs: [read, write]}` but code checked `"fs:read"` strings, so Auto-mode approval never triggered.
+- **Approval "always allow" not working** — Previously stored per file path; editing a different file voided the rule. Changed to wildcard by permission type.
+- **Composer dropdown approval switch ineffective** — `update_session` did not handle the `approval_policy` field.
+- **IM `/approval` cross-session leak** — Previously wrote global config; `/new` inherited stale settings. Changed to per-session.
+- **Sub-agent TDZ ReferenceError** — `isCustom` declaration order fixed.
 
 ## [1.1.5] - 2026-08-04
 

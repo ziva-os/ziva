@@ -33,7 +33,7 @@ from ziva.storage import FileStorage, InMemoryStorage, Storage, set_base_dir
 # Extension protocols — imported lazily-free (no heavy deps).
 from ziva.capabilities.interfaces import Hook, MemoryStore, PromptProvider, Skill, Tool
 
-__version__ = "1.1.6"
+__version__ = "1.2.0"
 
 __all__ = [
     "__version__",
