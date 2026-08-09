@@ -411,7 +411,9 @@ class EditFileTool:
         replace_all = bool(input_data.get("replace_all", False))
         
         cwd = str(resolve_tool_path(ctx, input_data.get("cwd")))
-        file_path = Path(cwd) / file_path_str
+        file_path = Path(file_path_str).expanduser()
+        if not file_path.is_absolute():
+            file_path = Path(cwd) / file_path
         
         if not file_path.exists():
             return ToolResult(text=f"Error: File {file_path} not found", error=True)

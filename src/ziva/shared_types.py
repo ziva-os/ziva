@@ -76,14 +76,12 @@ def resolve_tool_path(ctx, path: str | None = None) -> Path:
 
     If ``path`` is missing/empty/relative, it is resolved relative to the
     session's workspace (see ``resolve_workspace_cwd``). Absolute paths are
-    left untouched. This mirrors the behavior of ``read_file`` / ``write_file``
-    so that tools like ``list``, ``glob``, ``grep`` and ``shell`` treat an
-    explicit ``.`` or a relative directory the same as the default workspace.
+    left untouched. ``~`` is expanded via ``Path.expanduser()``.
     """
     base = Path(resolve_workspace_cwd(ctx))
     if not path:
         return base
-    p = Path(path)
+    p = Path(path).expanduser()
     return p if p.is_absolute() else base / p
 
 

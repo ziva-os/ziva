@@ -29,7 +29,7 @@ class WriteFileTool:
             return ToolResult(text="Error: invalid_input\nfile_path is required", error=True)
 
         try:
-            path = Path(file_path)
+            path = Path(file_path).expanduser()
             # Resolve relative paths against the session's workspace, not the
             # backend process's os.getcwd(). Absolute paths are untouched.
             if not path.is_absolute():

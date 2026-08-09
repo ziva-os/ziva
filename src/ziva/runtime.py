@@ -1548,7 +1548,13 @@ class Runtime:
                 if _allowed_skills is not None:
                     skill_index = [s for s in skill_index if s["name"] in _allowed_skills]
                 if skill_index:
-                    skill_lines = ["# Available Skills (use `read_skill` tool to load full details)", ""]
+                    skill_paths = self.config.get("skill", {}).get("extra_paths", [])
+                    skill_lines = [
+                        "# Available Skills (use `read_skill` tool to load full details)",
+                    ]
+                    if skill_paths:
+                        skill_lines.append(f"Skill files live under {', '.join(f'`{p}`' for p in skill_paths)}.")
+                    skill_lines.append("")
                     for s in skill_index:
                         if s["description"]:
                             skill_lines.append(f"- **{s['name']}**: {s['description']}")

@@ -129,7 +129,7 @@ class ReadFileTool:
         if offset < 1:
             return ToolResult(text="Error: invalid_input\noffset must be >= 1", error=True)
 
-        path = Path(file_path)
+        path = Path(file_path).expanduser()
         # Resolve relative paths against the session's workspace, not the
         # backend process's os.getcwd(). Absolute paths are untouched.
         if not path.is_absolute():

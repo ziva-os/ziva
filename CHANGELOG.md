@@ -7,13 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.2.0] - 2026-08-08
+## [1.2.0] - 2026-08-09
 
 ### Changed
 - **Bilingual compaction templates** — Added `COMPACTION_TEMPLATE_EN/ZH` constants; `compact_messages()` now accepts a `lang` parameter driven by runtime/UI config.
 - **Settings panel diff-based refresh** — On save, each section (`approval`/`memory`/`tool`/`sandbox`/`prompt`/`providers`/`mcp`/`hooks`) is diffed individually and surgically updated or rebuilt in place, instead of a coarse full reload. Extracted `renderProvidersHtml` / `renderMcpServersHtml` for reuse.
 - **Precise default-model save** — Frontend radio now carries `data-default-provider`; saving writes `provider_name` alongside the model name, resolving conflicts when multiple providers expose same-named models. Fallback default only triggers on first-ever config.
 - **Browser tab recovery IPC** — `electron/main.ts` exposes `browser-list-tabs` IPC so the renderer can pull live WebContentsViews and rebuild the tab strip after a reload.
+- **Skill path awareness** — System prompt now shows configured skill directories (from `skill.extra_paths`) so the model knows where to find supporting files.
+- **Tool preference guidance** — System prompt now guides the model to prefer dedicated tools over `shell` when applicable.
 
 ### Fixed
 - **Compaction summary role error** — The summary message's role in `compact_messages()` caused Anthropic API errors on adjacent assistant turns. Added a 200ms delay to fix a thinking-display ordering race.
@@ -21,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Default model hijacked by new providers** — Previous save logic hard-coded `newProviders[0].models[0]` when no default radio was found, silently overwriting the existing default when a new provider was added.
 - **Tab focus lost on reload / window reopen** — Renderer and main-process `activeBrowserTab` went out of sync, causing recovery to activate the wrong web tab. Now persists the active tab's mainId in localStorage; recovery restores based on renderer-side state.
 - **Duplicate model radio conflict** — Same-named models across providers caused radio rendering conflicts.
+- **Wrong provider on new session** — `get_config` did not return `provider_name`, so `createSession` could not pin the correct provider. Now passes through the full chain: `get_config` → store → `createSession` → backend.
+- **Sub-agent model resolution failure** — `_child_turn` inherited the parent's `model_name` but not `provider_name`, causing "Model not listed in any provider" errors when the model existed under multiple providers.
+- **`~` paths not expanded** — `Path("~/.ziva/...")` is not absolute in Python; `read_file`, `write_file`, `edit_file`, and `resolve_tool_path` (covering `list`/`grep`/`glob`/`shell`) now call `.expanduser()`.
 
 ## [1.1.6] - 2026-08-07
 
