@@ -13,6 +13,28 @@ const PORT = 4097;
 const CDP_PORT = Number(process.env.ZIVA_CDP_PORT || 9222);
 
 // ---- Restart plumbing ----
+
+function ensureDefaultConfig() {
+  const zivaDir = path.join(app.getPath("home"), ".ziva");
+  const configPath = path.join(zivaDir, "config.yaml");
+  if (fs.existsSync(configPath)) return;
+
+  // Search for the template: packaged app (resources/), then dev (project root)
+  const candidates = [
+    path.join(process.resourcesPath, "config.yaml.example"),
+    path.join(__dirname, "..", "..", ".ziva", "config.yaml.example"),
+  ];
+  const examplePath = candidates.find((p) => fs.existsSync(p));
+  if (!examplePath) return;
+
+  try {
+    fs.mkdirSync(zivaDir, { recursive: true });
+    fs.copyFileSync(examplePath, configPath);
+    console.log("[config] Created default config from template");
+  } catch (err) {
+    console.error("[config] Failed to create default config:", err);
+  }
+}
 // Three entry points all converge on restartApp():
 //   1. macOS top-bar menu item "Restart Ziva" (added below in buildAppMenu)
 //   2. The `restart-ziva` IPC handler — called by the renderer's `/restart`
@@ -906,6 +928,7 @@ app.whenReady().then(async () => {
   // Install the macOS top-bar menu and the CLI restart socket. Both are
   // app-level, so they belong here (not tied to a window).
   if (process.platform === "darwin") buildAppMenu();
+  ensureDefaultConfig();
   startRestartListener();
 });
 

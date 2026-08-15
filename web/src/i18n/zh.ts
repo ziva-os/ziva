@@ -228,8 +228,8 @@ export const dict: Partial<Dict> = {
   "settings.approvalPolicy": "审批策略",
   "settings.approvalPolicyDesc": "控制工具在执行前如何请求授权。",
   "settings.policy": "策略",
-  "settings.policy.suggest": "suggest（写操作和命令需确认）",
-  "settings.policy.fullAuto": "full-auto（全自动）",
+   "settings.policy.suggest": "Auto（写操作和命令需确认）",
+   "settings.policy.fullAuto": "Full Access（全自动）",
 
   // settings: mcp
   "settings.mcp": "MCP",

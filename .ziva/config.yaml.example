@@ -1,68 +1,210 @@
+# =============================================================================
+# Ziva Desktop — Recommended Configuration
+# =============================================================================
+# Copy this file to ~/.ziva/config.yaml and fill in your API keys.
+#
+# Quick start:
+#   cp .ziva/config.yaml.example ~/.ziva/config.yaml
+#   # Edit the file, replace all YOUR_* placeholders
+#
+# On first launch, if ~/.ziva/config.yaml does not exist, Ziva will
+# automatically copy this template there for you.
+# =============================================================================
+
+# ---- Active model (must match a provider + model listed below) ----
 model:
-  provider: openai
-  name: MiniMax-M2.7
-  api_key: "YOUR_API_KEY_HERE"
-  base_url: "https://api.minimaxi.com/v1"
-  options: {}
+  name: YOUR_MODEL_NAME          # e.g. MiniMax-M3, glm-5.2, deepseek-v4-pro
+  provider_name: YOUR_PROVIDER   # e.g. MiniMax, glm, opencode
+  max_tokens: 64000
+  thinking_mode: high            # disabled / low / medium / high / xhigh / max
+  thinking_budget_tokens: 4000
+
+# ---- Model providers ----
+# Each provider needs: name, api_type (openai_compatible | anthropic | openai),
+# api_key, base_url, and a models list.
+# Add or remove providers as needed — only fill in the ones you use.
+providers:
+  # Example: OpenAI-compatible provider (MiniMax, DeepSeek, GLM, etc.)
+  - name: MiniMax
+    api_type: openai_compatible
+    api_key: YOUR_MINIMAX_API_KEY
+    base_url: https://api.minimaxi.com/v1
+    models:
+      - name: MiniMax-M3
+        capabilities:
+          vision: true
+      - name: MiniMax-M2.7
+        capabilities:
+          vision: true
+
+  # Example: Anthropic-compatible provider (Kimi, GLM via anthropic endpoint)
+  - name: Kimi
+    api_type: anthropic
+    api_key: YOUR_KIMI_API_KEY
+    base_url: https://api.kimi.com/coding/
+    models:
+      - name: kimi-k2.6
+        capabilities:
+          vision: true
+      - name: kimi-k2.7-code
+        capabilities:
+          vision: true
+
+  # Example: Another Anthropic-compatible provider
+  - name: glm
+    api_type: anthropic
+    api_key: YOUR_GLM_API_KEY
+    base_url: https://open.bigmodel.cn/api/anthropic
+    models:
+      - name: glm-5.2
+        capabilities:
+          vision: false
+
+  # Example: Aggregator provider (multiple models behind one endpoint)
+  - name: opencode
+    api_type: openai_compatible
+    api_key: YOUR_OPENCODE_API_KEY
+    base_url: https://opencode.ai/zen/go/v1
+    models:
+      - name: deepseek-v4-flash
+        capabilities:
+          vision: false
+      - name: deepseek-v4-pro
+        capabilities:
+          vision: false
+      - name: mimo-v2.5-pro
+        capabilities:
+          vision: true
+          effort_levels: [low, medium, high]
+      - name: qwen3.7-max
+        capabilities:
+          vision: false
+          effort_levels: [low, medium, high, xhigh]
+
+# ---- System prompt ----
 prompt:
-  profile: default
+  system_prompt: |-
+    You are an autonomous coding agent running in Ziva Desktop, a terminal-based coding assistant. You are expected to be precise, safe, and helpful.
+    Your capabilities:
+    - Receive user prompts and context such as files in the workspace. - Use tools to read, write, and edit files, run shell commands, search the web, and control a browser. - Communicate with the user by streaming responses and tool results.
+    # How you work
+    ## Personality
+    Be concise, direct, and collaborative — like a skilled colleague. Communicate in the user's language (Chinese if they write in Chinese). Keep status updates brief (1-2 sentences). Avoid verbose explanations unless the user asks for detail.
+    ## Task Execution
+    You are a coding agent. Keep going until the task is fully resolved before ending your turn. Only stop when you are sure the problem is solved. Do NOT guess or fabricate answers.
+    When using tools, follow these principles:
+    - **Execute, don't describe.** Use tools to perform actions. NEVER claim something is done without having executed the corresponding tool call. - **Never fabricate results.** Only report what tools actually returned. If a tool fails, report the error honestly. - **Don't over-reach.** Don't fix unrelated bugs, add comments, or refactor code unless asked. Be surgical. - **Fix root causes** rather than applying surface-level patches when possible.
+    ## Preamble
+    Before making tool calls, send a brief preamble (1-2 sentences) explaining what you're about to do. Group related actions in one preamble. Keep it short and actionable.
+    ## Ambition vs. Precision
+    - For new tasks with no prior context, be ambitious and demonstrate creativity. - In an existing codebase, do exactly what the user asks with surgical precision. Respect the surrounding code — don't rename variables, change filenames, or refactor unnecessarily. - Use good judgment to deliver the right extras without gold-plating.
+    ## Validating Your Work
+    If the codebase has tests or build commands, consider using them to verify your work. Start with tests closest to what you changed, then broaden. Don't add tests to codebases with no tests.
+    ## Sharing Progress
+    For longer tasks requiring many tool calls, provide brief progress updates at reasonable intervals (1-2 sentences). Before large edits or new file creation, tell the user what you're about to do and why.
+    # Tool Guidelines
+    ## File Operations
+    - Use `read_file` to examine code before making changes. It also supports reading image files (png, jpg, gif, webp, svg). - Use `write_file` for new files or complete rewrites. - Use `edit_file` for targeted edits to existing files.
+    - Use `grep`, `glob`, and `list` to search and explore.
+    ## Tool Preferences
+    - Prefer dedicated tools (`grep`, `glob`, `read_file`, `write_file`, `edit_file`, `list`) over `shell` when a dedicated tool can accomplish the same task — they are faster, safer, and return structured results.
+    - Use `shell` for everything else: running tests, git, builds, installs, etc.
+    ## Web Search
+    - Use `web_search` (via MCP) for real-time information, documentation, and current events.
+    ## Browser (Chrome DevTools MCP)
+    - Use `navigate_page` to open URLs. - Use `take_snapshot` to inspect page structure. - Use `click`, `fill`, `type_text` for interactions. - Use `take_screenshot` to verify visual output.
+    ## Ask User
+    - Use `ask_user` when you need clarification or user input to proceed. - Provide clear questions with options when applicable.
+    # Editing Guidelines
+    - Match existing code style, indentation, and conventions. - Don't add copyright headers, license blocks, or unnecessary comments. - Don't add tests unless asked or the codebase has tests in the same area. - For multi-file changes, make all edits before reporting completion. - After writing or editing files, read back to verify the change was applied correctly.
+    # Multimodal
+    If `supports_image: true` appears in your environment info, you can natively receive and understand images in the conversation. Images provided as inline content (base64 data URLs) are directly visible to you — describe and reason about them without additional tools. When you have a concrete file path to an image (png, jpg, gif, webp), use `read_file` to load it — the tool returns the image as inline content you can see directly. Only reach for specialized image-analysis tools when the built-in file reader doesn't cover the format or the task needs OCR-style extraction.
+    # Final Output
+    Your final message should read like an update from a concise teammate. Use plain sentences for simple results. For larger changes, use brief structured output (headers, bullets) to organize findings.
+    - Reference files as `path/to/file:line`. - Use backticks for commands, file paths, and code identifiers. - Keep it short — no more than a few lines unless detail is genuinely needed. - Don't re-output file contents you've already written; just reference the path. 
   variables: {}
+  profile: default
+
+
+# ---- Tools ----
 tool:
-  allow: []
+  allow: []                      # empty = all tools allowed
   deny: []
-  max_rounds: 0
+  max_rounds: 0                  # 0 = unlimited
+
+# ---- Skills ----
 skill:
   enabled: []
+  extra_paths:
+    - ~/.ziva/skills
+    - ~/.agents/skills
+
+# ---- Hooks ----
 hooks:
   before_turn: []
   after_turn: []
   before_tool: []
   after_tool: []
+  disabled: []
+
+# ---- Memory ----
 memory:
-  backend: inmemory
+  backend: markdown              # markdown (single-file MEMORY.md)
   context_window_tokens: 200000
+
+# ---- Plugins ----
 plugin:
   paths:
     - ./plugins
+    - ~/.ziva/plugins
   trust:
     unsigned: low
+
+# ---- Approval ----
+# full-auto: read ops auto-allowed, writes/shell require confirmation
+# auto:      everything automatic, no confirmation
 approval:
   policy: full-auto
   allow_without_prompt: []
+
+# ---- Sandbox ----
 sandbox:
-  mode: "off"
+  mode: 'off'                    # off / docker / chroot
   writable_dirs: []
   blocked_commands: []
+
+# ---- MCP servers ----
+# Chrome DevTools MCP is strongly recommended for browser automation.
+# Install Chrome first, then enable chrome-devtools below.
 mcp:
   enabled: true
   servers:
-    MiniMax:
-      type: local
-      command:
-        - uvx
-        - minimax-coding-plan-mcp
-        - "-y"
-      environment:
-        MINIMAX_API_KEY: "YOUR_API_KEY_HERE"
-        MINIMAX_API_HOST: "https://api.minimaxi.com"
-      enabled: true
     chrome-devtools:
       type: local
-      command:
-        - npx
-        - "-y"
-        - chrome-devtools-mcp@latest
-        - "--autoConnect"
+      command: npx -y chrome-devtools-mcp --browserUrl http://127.0.0.1:9222
       environment: {}
       enabled: true
-  extra_skill_paths:
-    - "~/.ziva/skills"
-    - "~/.agents/skills"
+    # MiniMax MCP: provides web search + image understanding
+    # Requires: pip install minimax-coding-plan-mcp
+    MiniMax:
+      type: local
+      command: uvx --with "mcp[cli]<2.0" minimax-coding-plan-mcp
+      environment:
+        MINIMAX_API_KEY: YOUR_MINIMAX_API_KEY
+        MINIMAX_API_HOST: https://api.minimaxi.com
+      enabled: true
+  extra_skill_paths: []
 
-# Sub-agents: named agent profiles that the main agent can spawn via
-# the spawn_agent tool. Each entry provides defaults for instructions,
-# the tool whitelist, and whether the agent runs in the background.
-# The main agent passes `agent: "explore"` to spawn_agent to use one.
+# ---- Speech-to-text ----
+stt:
+  model: mlx-community/whisper-small-mlx
+
+# ---- Sub-agent spawning ----
+spawn:
+  max_concurrency: 20
+  max_history: 50
+
+# ---- Sub-agent definitions ----
 agents:
   explore:
     instructions: |
@@ -70,34 +212,42 @@ agents:
       codebase: file structure, key types/functions, conventions, and
       dependencies. Use the read-only tools (list, grep, glob, read_file,
       read_skill) — do NOT edit files or run shell commands that change
-      state. Return a concise summary with file:line references the
-      parent agent can act on.
-    tools:
-      - list
-      - grep
-      - glob
-      - read_file
-      - read_skill
+      state. Return a concise summary with file:line references.
+    tools: [list, grep, glob, read_file, read_skill]
+    skills: []
     background: false
+    description: Read-only search agent for broad fan-out searches.
+
   plan:
     instructions: |
-      You are a planning agent. Read the relevant code (list, grep, glob,
-      read_file, read_skill) and produce a concrete step-by-step plan:
-      which files to change, what to change in each, in what order, and
-      what to verify. Do not edit any files. Return only the plan; the
-      parent agent will execute it.
+      You are a planning agent. Read the relevant code and produce a
+      concrete step-by-step plan: which files to change, what to change,
+      in what order, and what to verify. Do not edit any files.
+    tools: [list, grep, glob, read_file, read_skill]
+    skills: []
+    background: false
+    description: Software architect agent for designing implementation plans.
+
+  general-purpose:
+    instructions: |
+      You are a general-purpose agent for researching complex questions,
+      searching for code, and executing multi-step tasks. You have access
+      to all tools — read, write, edit, run shell commands — except
+      spawning further sub-agents. Work autonomously and report what you did.
     tools:
-      - list
+      - read_file
+      - write_file
+      - edit_file
       - grep
       - glob
-      - read_file
+      - list
+      - shell
+      - web_fetch
       - read_skill
+      - web_search
     background: false
-  worker:
-    instructions: |
-      You are a focused implementation agent. Take a single concrete task
-      (e.g. "add function X to file Y", "refactor module Z to use the new
-      interface") and complete it end-to-end: read context, edit, verify.
-      Return a short summary of what you changed and the verification
-      you ran. Default to foreground unless told otherwise.
-    background: false
+    description: General-purpose agent for multi-step tasks.
+
+# ---- UI ----
+ui:
+  lang: zh                       # zh / en

@@ -42,6 +42,10 @@
       {
         "from": "dist/ziva-backend",
         "to": "ziva-backend"
+      },
+      {
+        "from": "../.ziva/config.yaml.example",
+        "to": "config.yaml.example"
       }
     ]
   }

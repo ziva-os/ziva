@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
+import random
 import re
 from typing import Any, AsyncIterator, Iterable, Protocol
 
-from ziva.adapters.retry import call_with_retry
+import httpx
+
+from ziva.adapters.retry import call_with_retry, MAX_RETRIES, BASE_DELAY_MS, MAX_DELAY_MS
 from ziva.shared_types import ChatMessage, ChatResult, StreamDelta, ToolCallItem
+
+logger = logging.getLogger(__name__)
 
 
 def _is_minimax_m3(base_url: str | None, model: str) -> bool:
@@ -547,74 +554,98 @@ class OpenAIChatAdapter:
             if is_openai_reasoning_model:
                 kwargs["reasoning_effort"] = thinking_config.get("mode", "medium")
 
-        response = await call_with_retry(self._client.chat.completions.create, **kwargs)
-
         tool_calls_acc: dict[int, dict] = {}
+        stream_started = False
 
-        async for chunk in response:
-            # OpenAI sends usage in a final chunk with empty choices
-            if not chunk.choices:
-                if hasattr(chunk, "usage") and chunk.usage:
-                    u = _usage_from_openai(chunk.usage)
-                    if u:
-                        yield StreamDelta(
-                            content="",
-                            finish_reason=None,
-                            tool_calls=[],
-                            usage=u,
-                        )
-                continue
+        for _attempt in range(MAX_RETRIES + 1):
+            try:
+                response = await call_with_retry(
+                    self._client.chat.completions.create, **kwargs,
+                )
+                tool_calls_acc.clear()
 
-            choice = chunk.choices[0]
-            delta = choice.delta
-            finish_reason = choice.finish_reason
+                async for chunk in response:
+                    stream_started = True
+                    # OpenAI sends usage in a final chunk with empty choices
+                    if not chunk.choices:
+                        if hasattr(chunk, "usage") and chunk.usage:
+                            u = _usage_from_openai(chunk.usage)
+                            if u:
+                                yield StreamDelta(
+                                    content="",
+                                    finish_reason=None,
+                                    tool_calls=[],
+                                    usage=u,
+                                )
+                        continue
 
-            reasoning = _normalize_reasoning(delta)
-            content = delta.content or ""
+                    choice = chunk.choices[0]
+                    delta = choice.delta
+                    finish_reason = choice.finish_reason
 
-            # Streamed refusal delta (some OpenAI-compatible proxies emit
-            # ``delta.refusal`` instead of ``delta.content`` for safety blocks).
-            refusal = getattr(delta, "refusal", None)
-            if refusal is None and hasattr(delta, "model_extra"):
-                refusal = (delta.model_extra or {}).get("refusal")
-            if isinstance(refusal, str) and refusal.strip() and not content and not delta.tool_calls:
-                content = refusal
-                finish_reason = "content_filter"
+                    reasoning = _normalize_reasoning(delta)
+                    content = delta.content or ""
 
-            if delta.tool_calls:
-                for tc_delta in delta.tool_calls:
-                    idx = tc_delta.index
-                    if idx not in tool_calls_acc:
-                        tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
-                    if tc_delta.id:
-                        tool_calls_acc[idx]["id"] = tc_delta.id
-                    if tc_delta.function:
-                        if tc_delta.function.name:
-                            tool_calls_acc[idx]["name"] = tc_delta.function.name
-                        if tc_delta.function.arguments:
-                            tool_calls_acc[idx]["arguments"] += tc_delta.function.arguments
+                    # Streamed refusal delta (some OpenAI-compatible proxies emit
+                    # ``delta.refusal`` instead of ``delta.content`` for safety blocks).
+                    refusal = getattr(delta, "refusal", None)
+                    if refusal is None and hasattr(delta, "model_extra"):
+                        refusal = (delta.model_extra or {}).get("refusal")
+                    if isinstance(refusal, str) and refusal.strip() and not content and not delta.tool_calls:
+                        content = refusal
+                        finish_reason = "content_filter"
 
-            final_tool_calls: list[ToolCallItem] = []
-            if finish_reason == "tool_calls" and tool_calls_acc:
-                for idx in sorted(tool_calls_acc):
-                    tc = tool_calls_acc[idx]
-                    try:
-                        args = json.loads(tc["arguments"])
-                    except (json.JSONDecodeError, TypeError):
-                        args = {"raw": tc["arguments"]}
-                    final_tool_calls.append(ToolCallItem(
-                        id=tc["id"], name=tc["name"], arguments=args,
-                    ))
+                    if delta.tool_calls:
+                        for tc_delta in delta.tool_calls:
+                            idx = tc_delta.index
+                            if idx not in tool_calls_acc:
+                                tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
+                            if tc_delta.id:
+                                tool_calls_acc[idx]["id"] = tc_delta.id
+                            if tc_delta.function:
+                                if tc_delta.function.name:
+                                    tool_calls_acc[idx]["name"] = tc_delta.function.name
+                                if tc_delta.function.arguments:
+                                    tool_calls_acc[idx]["arguments"] += tc_delta.function.arguments
 
-            usage_dict = _usage_from_openai(getattr(chunk, "usage", None))
+                    final_tool_calls: list[ToolCallItem] = []
+                    if finish_reason == "tool_calls" and tool_calls_acc:
+                        for idx in sorted(tool_calls_acc):
+                            tc = tool_calls_acc[idx]
+                            try:
+                                args = json.loads(tc["arguments"])
+                            except (json.JSONDecodeError, TypeError):
+                                args = {"raw": tc["arguments"]}
+                            final_tool_calls.append(ToolCallItem(
+                                id=tc["id"], name=tc["name"], arguments=args,
+                            ))
 
-            yield StreamDelta(
-                content=content,
-                reasoning_content=reasoning,
-                finish_reason=finish_reason,
-                tool_calls=final_tool_calls,
-                usage=usage_dict,
-            )
+                    usage_dict = _usage_from_openai(getattr(chunk, "usage", None))
+
+                    yield StreamDelta(
+                        content=content,
+                        reasoning_content=reasoning,
+                        finish_reason=finish_reason,
+                        tool_calls=final_tool_calls,
+                        usage=usage_dict,
+                    )
+
+                return  # stream completed normally
+
+            except (httpx.RemoteProtocolError, httpx.ReadError) as exc:
+                if stream_started:
+                    # Already yielded partial content — can't retry safely
+                    # (retrying would duplicate the output already shown to user)
+                    logger.warning("Stream interrupted mid-flight (%s) — using partial response", exc)
+                    return
+                if _attempt < MAX_RETRIES:
+                    delay = min(random.uniform(0.8, 1.2) * BASE_DELAY_MS * (2 ** _attempt) / 1000.0,
+                                MAX_DELAY_MS / 1000.0)
+                    logger.warning("Stream interrupted before any data (%s) — retry %d/%d in %.1fs",
+                                   exc, _attempt + 1, MAX_RETRIES, delay)
+                    await asyncio.sleep(delay)
+                else:
+                    raise
 
 
 OpenAIAgentsAdapter = OpenAIChatAdapter

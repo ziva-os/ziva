@@ -229,8 +229,8 @@ export const dict = {
   "settings.approvalPolicy": "Approval Policy",
   "settings.approvalPolicyDesc": "Controls how tools request permission before execution.",
   "settings.policy": "Policy",
-  "settings.policy.suggest": "suggest (writes & shell need approval)",
-  "settings.policy.fullAuto": "full-auto (no prompts)",
+   "settings.policy.suggest": "Auto (writes & shell need approval)",
+   "settings.policy.fullAuto": "Full Access (no prompts)",
 
   // settings: mcp
   "settings.mcp": "MCP",

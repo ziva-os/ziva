@@ -364,11 +364,12 @@ function renderOmnibox(): void {
   const goBtn = document.createElement("button"); goBtn.className = "bt-go"; goBtn.textContent = i18n.t("browser.go");
   omnibox.append(back, fwd, reload, input, goBtn);
 
-  const go = () => {
+    const go = () => {
     let v = (input.value || "").trim();
     if (!v) return;
-    if (!/^https?:\/\//i.test(v) && !/^[\w-]+(\.[\w-]+)+/.test(v)) v = "https://www.google.com/search?q=" + encodeURIComponent(v);
-    else if (!/^https?:\/\//i.test(v)) v = "https://" + v;
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(v)) { navigateActive(v); return; }
+    if (!/^[\w-]+(\.[\w-]+)+/.test(v)) v = "https://www.google.com/search?q=" + encodeURIComponent(v);
+    else v = "https://" + v;
     navigateActive(v);
   };
   goBtn.onclick = go;
