@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ziva"
-version = "1.2.0"
+version = "1.2.1"
 description = "Ziva: a customizable LLM agent runtime and SDK (core library + optional desktop/CLI transports)"
 readme = "README.md"
 license = { text = "MIT" }
