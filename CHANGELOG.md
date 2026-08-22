@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-08-22
+
+### Fixed
+- **Stream interruption no longer fails the turn** — When a provider (observed with DeepSeek on long outputs) closes the connection mid-stream, the OpenAI-compatible adapter now retries automatically if no data was received yet (up to 2 retries with exponential backoff), and gracefully preserves partial output otherwise, instead of raising `peer closed connection without sending complete message body`.
+- **`file://` URLs open correctly in the built-in browser** — The omnibox previously treated any non-`http(s)` input as a search query; all scheme-prefixed URLs (`file://`, `ftp://`, …) now pass through as-is.
+- **Approval options label alignment** — The settings panel now shows "Auto" / "Full Access", consistent with the composer mode selector and the IM bridge.
+
+### Added
+- **First-launch config bootstrap** — On first launch, Ziva automatically creates `~/.ziva/config.yaml` from a recommended template (providers, MCP servers, agents, full system prompt). New users only need to fill in API keys.
+- **Recommended config template** — `.ziva/config.yaml.example` rewritten to the current schema (`providers` list + `provider_name`), sanitized, with the full system prompt.
+- **GitHub Wiki documentation** — Prerequisites & installation, configuration guide, browser automation setup, recommended skills, and FAQ (see `.wiki/`).
+
+### Tests
+- 6 new unit tests covering stream-interruption retry behavior (partial-interrupt, no-data retry, retry exhaustion, `ReadError`, usage-chunk edge case).
+
 ## [1.2.0] - 2026-08-09
 
 ### Changed
