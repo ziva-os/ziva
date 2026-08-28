@@ -68,9 +68,26 @@ public final class ProotBootstrap {
         return cmd;
     }
 
+    /**
+     * Real write probe. File.canWrite() misreports on some OEM FUSE layers
+     * (HyperOS: mkdirs succeeds, canWrite() is true, then the actual write
+     * throws AccessDenied) — and binding such a directory into the guest as
+     * /root/.ziva kills the backend on its first write. So: create a temp
+     * file, write, delete.
+     */
     static boolean dataDirCanWrite(File d) {
-        if (!d.exists() && !d.mkdirs()) return false;
-        return d.canWrite();
+        File probe = new File(d, ".write-probe");
+        try {
+            if (!d.exists() && !d.mkdirs()) return false;
+            try (java.io.FileOutputStream fos = new java.io.FileOutputStream(probe)) {
+                fos.write(0x2a);
+            }
+            probe.delete();
+            return true;
+        } catch (Exception e) {
+            probe.delete();
+            return false;
+        }
     }
 
     private static File ensure(File d) {

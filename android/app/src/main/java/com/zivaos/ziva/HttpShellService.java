@@ -193,14 +193,40 @@ public class HttpShellService {
         // or the guest agent could never read the token.
         File privateFallback = new File(new File(ctx.getFilesDir(), "ziva-data"), ".bridge_token");
         File target = ProotBootstrap.dataDirCanWrite(dir) ? tokenFile : privateFallback;
-        if (target.exists()) {
-            byte[] b = java.nio.file.Files.readAllBytes(target.toPath());
-            String t = new String(b, StandardCharsets.UTF_8).trim();
-            if (!t.isEmpty()) return t;
-        }
+        String existing = readTokenFile(target);
+        if (existing != null) return existing;
         String t = java.util.UUID.randomUUID().toString().replace("-", "");
-        target.getParentFile().mkdirs();
-        java.nio.file.Files.write(target.toPath(), t.getBytes(StandardCharsets.UTF_8));
+        // Classic IO + a second fallback: even a directory that passed the
+        // write probe can still refuse this particular file (OEM quirks).
+        try {
+            writeTokenFile(target, t);
+        } catch (Exception publicRefused) {
+            writeTokenFile(privateFallback, t);
+        }
         return t;
+    }
+
+    private static String readTokenFile(File f) {
+        try {
+            if (!f.isFile()) return null;
+            byte[] b = new byte[(int) f.length()];
+            try (java.io.FileInputStream fin = new java.io.FileInputStream(f)) {
+                int off = 0, n;
+                while (off < b.length && (n = fin.read(b, off, b.length - off)) > 0) off += n;
+            }
+            String t = new String(b, StandardCharsets.UTF_8).trim();
+            return t.isEmpty() ? null : t;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static void writeTokenFile(File f, String t) throws Exception {
+        File parent = f.getParentFile();
+        if (parent != null && !parent.exists()) parent.mkdirs();
+        try (java.io.FileOutputStream fos = new java.io.FileOutputStream(f)) {
+            fos.write(t.getBytes(StandardCharsets.UTF_8));
+            fos.getFD().sync();
+        }
     }
 }
