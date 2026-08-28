@@ -19,15 +19,14 @@ public final class ProotBootstrap {
     /** Full argv for starting the backend. Caller spawns this via ProcessBuilder. */
     public static List<String> backendCommand(Context ctx) {
         File rootfs = Constants.rootfsDir(ctx);
-        File loader = new File(Constants.nativeLibDir(ctx), "libloader.so");
         File proot = new File(Constants.nativeLibDir(ctx), "libproot.so");
         File dataDir = ensure(Constants.publicDataDir());
         File workspace = ensure(Constants.workspaceDir());
         File appPrivateData = ensure(new File(ctx.getFilesDir(), "ziva-data"));
-        // PROOT_L2S_DIR is interpreted by proot on the HOST side (it runs
-        // outside the guest), so it must be an app-writable host path — the
-        // device root ("/.l2s") is not.
-        File l2s = ensure(new File(ctx.getFilesDir(), "linux/l2s"));
+        // proot's l2s dir must be an app-writable host path — the device root
+        // ("/.l2s") is not. Created here; the env var is set host-side in
+        // ZivaController.startBackend.
+        ensure(new File(ctx.getFilesDir(), "linux/l2s"));
 
         List<String> cmd = new ArrayList<>();
         cmd.add(proot.getAbsolutePath());
@@ -58,8 +57,8 @@ public final class ProotBootstrap {
         // python3.12) that may not survive extraction on every device; the
         // interpreter itself and site-packages are plain files.
         cmd.add("PYTHONPATH=" + Constants.GUEST_ZIVA_SRC + "/src:" + Constants.GUEST_VENV_SITE_PACKAGES);
-        cmd.add("PROOT_L2S_DIR=" + l2s.getAbsolutePath());
-        cmd.add("PROOT_LOADER=" + loader.getAbsolutePath());
+        // PROOT_TMP_DIR / PROOT_L2S_DIR / PROOT_LOADER are injected by
+        // ZivaController into proot's HOST environment — see startBackend.
         cmd.add("/bin/bash");
         cmd.add("-c");
         cmd.add("exec /usr/bin/python3 -m ziva.app.cli desktop serve"

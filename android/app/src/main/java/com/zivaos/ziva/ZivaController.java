@@ -70,6 +70,17 @@ public final class ZivaController {
             env.put("LD_LIBRARY_PATH",
                     Constants.nativeLibDir(ctx).getAbsolutePath()
                             + ":" + env.getOrDefault("LD_LIBRARY_PATH", ""));
+            // PROOT_TMP_DIR / PROOT_L2S_DIR / PROOT_LOADER are read by proot
+            // itself on the HOST side (from its own environ), NOT from the
+            // guest's `env -i`. The Termux fork defaults PROOT_TMP_DIR to
+            // /data/data/com.termux/... which doesn't exist in our app —
+            // without this proot can't build its glue rootfs and dies before
+            // exec'ing anything (verified on device, HyperOS).
+            File prootTmp = new File(ctx.getFilesDir(), "linux/tmp");
+            if (!prootTmp.exists()) prootTmp.mkdirs();
+            env.put("PROOT_TMP_DIR", prootTmp.getAbsolutePath());
+            env.put("PROOT_L2S_DIR", new File(ctx.getFilesDir(), "linux/l2s").getAbsolutePath());
+            env.put("PROOT_LOADER", new File(Constants.nativeLibDir(ctx), "libloader.so").getAbsolutePath());
             backendProc = pb.start();
             startedAt = System.currentTimeMillis();
             lastError = "";
