@@ -30,6 +30,12 @@ dependencies = [
   "openai>=1.30.0",
   "mcp>=1.0.0",
   "anthropic>=0.30.0",
+  # Direct imports, not transitive: openai>=3.x depends on httpx2, so a fresh
+  # env no longer brings httpx along (adapters/openai/provider.py imports it
+  # at module top level); app/cli.py + app/display.py import rich unconditionally
+  # and the `ziva` entry script routes through them.
+  "httpx>=0.27.0",
+  "rich>=13.0.0",
 ]
 
 [project.urls]
@@ -54,9 +60,10 @@ desktop = [
   # without it; only needed when the feishu channel is started.
   "lark-oapi>=1.4.0",
 ]
-# CLI / interactive REPL.
+# CLI / interactive REPL. (rich moved to core deps — cli.py/display.py import
+# it unconditionally. prompt_toolkit stays optional: lazy import with a bare
+# input() fallback.)
 cli = [
-  "rich>=13.0.0",
   "prompt_toolkit>=3.0.0",
 ]
 # Everything (the desktop app build installs this).
