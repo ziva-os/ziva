@@ -7,7 +7,6 @@ import java.util.zip.GZIPInputStream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import java.util.Enumeration;
-
 /**
  * Pure-Java tar / tar.gz extraction used to lay down the offline rootfs.
  * - Locates the bundle by enumerating the APK zip: aapt mangles large asset
@@ -26,20 +25,35 @@ public final class TarGzipExtractor {
 
     private TarGzipExtractor() {}
 
-    /** Find the offline bundle stream from the installed APK. */
+    /** Find the offline bundle stream from the installed APK. The returned
+     *  stream owns the ZipFile: closing it closes the ZipFile too — the entry
+     *  stream reads through the ZipFile's file handle and dies with
+     *  "Stream closed" the moment the ZipFile is closed first (which is
+     *  exactly what a try-with-resources around the lookup used to do). */
     public static InputStream openOfflineBundle(Context ctx) throws IOException {
-        try (ZipFile apk = new ZipFile(ctx.getPackageCodePath())) {
+        ZipFile apk = new ZipFile(ctx.getPackageCodePath());
+        boolean handedOff = false;
+        try {
             Enumeration<? extends ZipEntry> en = apk.entries();
             while (en.hasMoreElements()) {
                 ZipEntry e = en.nextElement();
                 String n = e.getName();
                 if (n.startsWith("assets/offline-rootfs.") &&
                         (n.endsWith(".bin") || n.endsWith(".tar") || n.endsWith(".tar.gz") || n.endsWith(".tgz"))) {
-                    return apk.getInputStream(e);
+                    final ZipFile owner = apk;
+                    InputStream in = new FilterInputStream(apk.getInputStream(e)) {
+                        @Override public void close() throws IOException {
+                            try { super.close(); } finally { owner.close(); }
+                        }
+                    };
+                    handedOff = true;
+                    return in;
                 }
             }
+            return null;
+        } finally {
+            if (!handedOff) apk.close();
         }
-        return null;
     }
 
     public static void extractAuto(InputStream in, File destDir, Progress cb) throws IOException {
