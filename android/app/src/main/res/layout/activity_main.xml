@@ -8,6 +8,14 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <!-- Browser-shell web tabs: real Chromium WebViews positioned over the
+         Ziva UI by the renderer's browserSetArea rect (WebTabManager). -->
+    <FrameLayout
+        android:id="@+id/webContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
+
     <TextView
         android:id="@+id/bootStatus"
         android:layout_width="wrap_content" android:layout_height="wrap_content"
