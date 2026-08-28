@@ -38,6 +38,8 @@ jobs:
   apk:
     needs: rootfs
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -84,3 +86,16 @@ jobs:
         with:
           name: ziva-apk
           path: android/app/build/outputs/apk/release/*.apk
+
+      # Runner-side publish to a draft release: machine-room bandwidth up,
+      # and downloaders can use any GitHub mirror for the asset.
+      - name: Publish APK to draft release (android-latest)
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete android-latest --cleanup-tag -y || true
+          gh release create android-latest \
+            --draft --title "Android build (auto)" \
+            --notes "Automated build from $GITHUB_SHA. Debug-signed unless release secrets are configured." \
+            android/app/build/outputs/apk/release/*.apk
