@@ -218,7 +218,15 @@ exe = EXE(
     strip=False,
     upx=True,
     upx_exclude=[],
-    runtime_tmpdir=None,
+    # Extract onefile resources under ~/.ziva/tmp instead of the default
+    # system temp dir. macOS's dirhelper periodically purges
+    # /var/folders/.../T of files not accessed for ~3 days — the extraction
+    # is read once at startup, so a backend left running for days silently
+    # loses its _MEIPASS and every later disk access fails with
+    # "[Errno 2] No such file or directory" (static 500s, broken lazy
+    # loads). ~/.ziva is never purged by the system. Absolute path required
+    # — the bootloader does not expand `~`.
+    runtime_tmpdir=str(Path.home() / '.ziva' / 'tmp'),
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,

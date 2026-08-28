@@ -276,7 +276,13 @@ function getBackendCommand(): { cmd: string; args: string[]; env: NodeJS.Process
 // Detect a leftover backend from a previous crashed session and reuse it if
 // it is still healthy. This prevents the "address already in use" startup
 // failure and also makes second-instance launches attach to the running one.
-function checkBackendHealth(): Promise<boolean> {
+//
+// deep=true additionally verifies the backend can still serve its bundled UI.
+// A stale orphan whose PyInstaller `_MEIPASS` extraction dir was cleaned up
+// answers /status fine (pure in-memory JSON) but 500s on `/` — and every
+// turn fails too, since bundled plugin/prompt resources are gone as well.
+// Only a deep-passing backend is safe to reuse.
+function checkBackendHealth(deep = false): Promise<boolean> {
   return new Promise((resolve) => {
     const req = http.get(`http://127.0.0.1:${PORT}/status`, { timeout: 2000 }, (res) => {
       let body = "";
@@ -285,7 +291,14 @@ function checkBackendHealth(): Promise<boolean> {
         try {
           const data = JSON.parse(body);
           // /status returns { model, workspace, tools, approval_policy, context_window }
-          resolve(data && typeof data.workspace === "string");
+          const statusOk = data && typeof data.workspace === "string";
+          if (!statusOk) { resolve(false); return; }
+          if (!deep) { resolve(true); return; }
+          const ui = http.get(`http://127.0.0.1:${PORT}/`, { timeout: 2000 }, (res2) => {
+            resolve(res2.statusCode === 200);
+          });
+          ui.on("error", () => resolve(false));
+          ui.on("timeout", () => { ui.destroy(); resolve(false); });
         } catch {
           resolve(false);
         }
@@ -758,10 +771,18 @@ ipcMain.on("ziva:page-selection", async (_event, payload: { text: string; rect: 
 let backendStarting = false;
 
 async function ensureBackendReady(): Promise<void> {
-  const alreadyRunning = await checkBackendHealth();
+  const alreadyRunning = await checkBackendHealth(true);
   if (alreadyRunning) {
     console.log("[backend] reusing existing backend on port", PORT);
     return;
+  }
+  // /status answered but the UI probe failed → half-dead stale backend
+  // (its _MEIPASS was cleaned up). Kill whoever owns the port so the fresh
+  // spawn below can actually bind, instead of failing with "address in use".
+  if (await checkBackendHealth(false)) {
+    console.warn("[backend] stale backend on :", PORT, "(UI broken) — killing it");
+    killBackendTree();
+    await waitForBackendGone();
   }
   if (backendStarting) {
     // Wait for the in-flight startup to finish instead of spawning a second process.
