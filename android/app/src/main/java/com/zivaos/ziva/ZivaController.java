@@ -44,7 +44,7 @@ public final class ZivaController {
         if (rootfs.exists()) deleteTree(rootfs);
         try (InputStream in = TarGzipExtractor.openOfflineBundle(ctx)) {
             if (in == null) throw new IllegalStateException("APK 内未找到 offline-rootfs 包（本地构建请先运行 scripts/build-android-rootfs.sh 并放入 assets）");
-            new TarGzipExtractor().extractAuto(in, rootfs, cb);
+            TarGzipExtractor.extractAuto(in, rootfs, cb);
         }
         Constants.markerFile(ctx).getParentFile().mkdirs();
         if (!Constants.markerFile(ctx).createNewFile())

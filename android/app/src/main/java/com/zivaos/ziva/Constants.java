@@ -19,8 +19,8 @@ public final class Constants {
 
     /** Marker files — the extraction marker embeds ROOTFS_VERSION so an
      *  upgraded APK whose bundled rootfs changed re-extracts over the old one. */
-    public static final String MARKER_EXTRACTED = ".offline-extracted.v" + ROOTFS_VERSION;
     public static final int ROOTFS_VERSION = 1;
+    public static final String MARKER_EXTRACTED = ".offline-extracted.v" + ROOTFS_VERSION;
 
     public static File rootfsDir(Context ctx) {
         return new File(ctx.getFilesDir(), "linux/ubuntu");
