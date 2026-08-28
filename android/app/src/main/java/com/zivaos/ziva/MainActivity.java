@@ -50,6 +50,7 @@ public class MainActivity extends Activity {
         findViewById(R.id.menuButton).setOnClickListener(v -> showMenu());
         webTabs = new WebTabManager(this, findViewById(R.id.webContainer), webview);
         setupWebview();
+        requestNotifPermissionIfNeeded();
 
         Intent svc = new Intent(this, ZivaService.class);
         if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(svc);
@@ -137,8 +138,19 @@ public class MainActivity extends Activity {
         }).start();
     }
 
+    /** API 33+: without the grant the foreground-service and bridge
+     *  notifications silently never show. */
+    private void requestNotifPermissionIfNeeded() {
+        if (android.os.Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                        != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1001);
+        }
+    }
+
     private void showMenu() {
-        String[] items = {"重启后端", "运行自检", "备份数据"};
+        String[] items = {getString(R.string.menu_restart_backend),
+                getString(R.string.menu_diagnostics), getString(R.string.menu_backup)};
         new android.app.AlertDialog.Builder(this)
                 .setItems(items, (dialog, which) -> {
                     if (which == 0) {

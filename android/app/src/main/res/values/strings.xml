@@ -10,5 +10,4 @@
     <string name="menu_restart_backend">重启后端</string>
     <string name="menu_diagnostics">自检</string>
     <string name="menu_backup">备份数据</string>
-    <string name="menu_copy_lan_url">复制局域网地址</string>
 </resources>

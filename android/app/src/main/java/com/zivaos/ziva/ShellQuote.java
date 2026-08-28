@@ -1,7 +1,7 @@
 package com.zivaos.ziva;
 
 /**
- * POSIX single-quote escaping — the only shell-quoking implementation in the
+ * POSIX single-quote escaping — the only shell-quoting implementation in the
  * tree. Any value interpolated into a `bash -c` string must go through here
  * so spaces, quotes and `$` in user-controlled paths cannot break out.
  */

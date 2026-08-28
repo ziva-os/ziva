@@ -24,6 +24,10 @@ public final class ProotBootstrap {
         File dataDir = ensure(Constants.publicDataDir());
         File workspace = ensure(Constants.workspaceDir());
         File appPrivateData = ensure(new File(ctx.getFilesDir(), "ziva-data"));
+        // PROOT_L2S_DIR is interpreted by proot on the HOST side (it runs
+        // outside the guest), so it must be an app-writable host path — the
+        // device root ("/.l2s") is not.
+        File l2s = ensure(new File(ctx.getFilesDir(), "linux/l2s"));
 
         List<String> cmd = new ArrayList<>();
         cmd.add(proot.getAbsolutePath());
@@ -48,7 +52,7 @@ public final class ProotBootstrap {
         cmd.add("TERM=xterm-256color");
         cmd.add("LANG=C.UTF-8");
         cmd.add("PYTHONUNBUFFERED=1");
-        cmd.add("PROOT_L2S_DIR=/.l2s");
+        cmd.add("PROOT_L2S_DIR=" + l2s.getAbsolutePath());
         cmd.add("PROOT_LOADER=" + loader.getAbsolutePath());
         cmd.add("/bin/bash");
         cmd.add("-c");
@@ -76,7 +80,10 @@ public final class ProotBootstrap {
         File rootfs = Constants.rootfsDir(ctx);
         if (!proot.exists() || !proot.canExecute()) issues.add("proot 二进制缺失或不可执行: " + proot);
         if (!loader.exists()) issues.add("proot loader 缺失: " + loader);
-        if (!new File(rootfs, "bin/bash").exists()) issues.add("rootfs 不完整（缺 bin/bash）: " + rootfs);
+        // Check the real file, not /bin/bash — /bin is a symlink into usr/bin
+        // (as is /lib, /sbin on merged-usr Ubuntu), so this also implicitly
+        // verifies that symlink extraction worked.
+        if (!new File(rootfs, "usr/bin/bash").exists()) issues.add("rootfs 不完整（缺 usr/bin/bash）: " + rootfs);
         if (!new File(rootfs, Constants.GUEST_VENV_PY.substring(1)).exists())
             issues.add("rootfs 缺 Python venv: " + Constants.GUEST_VENV_PY);
         return issues;

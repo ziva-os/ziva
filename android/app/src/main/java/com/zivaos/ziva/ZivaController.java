@@ -5,6 +5,7 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.util.List;
 
 /**
  * Business core: extract → verify → start/stop backend → health.
@@ -32,7 +33,7 @@ public final class ZivaController {
 
     public boolean isExtracted(Context ctx) {
         return Constants.markerFile(ctx).exists()
-                && new File(Constants.rootfsDir(ctx), "bin/bash").exists();
+                && new File(Constants.rootfsDir(ctx), "usr/bin/bash").exists();
     }
 
     /** Extract the offline rootfs bundle. Blocking — call from a worker thread. */
@@ -60,7 +61,7 @@ public final class ZivaController {
             backendProc = pb.start();
             startedAt = System.currentTimeMillis();
             lastError = "";
-            pumpLogs(backendProc);
+            pumpLogs(backendProc, ctx);
             return true;
         } catch (Exception e) {
             lastError = "启动失败: " + e;
@@ -72,10 +73,10 @@ public final class ZivaController {
         Process p = backendProc;
         backendProc = null;
         if (p == null) return;
-        // proot --kill-on-exit tears the guest down with it; still sweep children via pgid below.
-        try {
-            android.os.Process.sendSignal(p.pid() , android.os.Process.SIGNAL_KILL);
-        } catch (Throwable ignored) {}
+        // destroy() signals the direct child (proot); its --kill-on-exit then
+        // tears the whole guest process tree down with it. Note: we cannot
+        // use java.lang.Process.pid() here — that API only exists from
+        // Android 15 (API 35), we support down to 26.
         p.destroy();
         try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
             while (r.readLine() != null) { /* drain */ }
@@ -101,12 +102,19 @@ public final class ZivaController {
         }
     }
 
-    private void pumpLogs(Process proc) {
+    private void pumpLogs(Process proc, Context ctx) {
         logPump = new Thread(() -> {
+            File fallback = new File(ctx.getFilesDir(), "ziva-android.log");
             try (BufferedReader r = new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
                 String line;
-                File log = logFile();
-                java.io.FileWriter fw = new java.io.FileWriter(log, true);
+                java.io.FileWriter fw;
+                try {
+                    File log = logFile();
+                    if (log.getParentFile() != null) log.getParentFile().mkdirs();
+                    fw = new java.io.FileWriter(log, true);          // public dir (no grant → throws)
+                } catch (Exception noPublic) {
+                    fw = new java.io.FileWriter(fallback, true);     // app-private fallback
+                }
                 try (java.io.BufferedWriter bw = new java.io.BufferedWriter(fw)) {
                     while ((line = r.readLine()) != null) {
                         bw.write(line);
@@ -119,6 +127,7 @@ public final class ZivaController {
         logPump.start();
     }
 
+    /** Public log path (needs "All files access"); shown in Diagnostics. */
     public static File logFile() {
         return new File("/sdcard/Documents/zivadata/ziva-android.log");
     }

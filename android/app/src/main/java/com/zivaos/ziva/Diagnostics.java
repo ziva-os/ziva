@@ -35,8 +35,9 @@ public final class Diagnostics {
         out.add((dirOk ? "✓" : "✗") + " 数据目录可写: " + data.getAbsolutePath());
 
         // 3. proot + rootfs integrity.
-        for (String issue : ProotBootstrap.probe(activity)) out.add("✗ " + issue);
-        if (ProotBootstrap.probe(activity).isEmpty()) out.add("✓ proot 与 rootfs 完整");
+        List<String> probe = ProotBootstrap.probe(activity);
+        if (probe.isEmpty()) out.add("✓ proot 与 rootfs 完整");
+        else for (String issue : probe) out.add("✗ " + issue);
 
         // 4. Backend process + HTTP surface.
         out.add((ctl.isAlive() ? "✓" : "✗") + " 后端进程" + (ctl.isAlive() ? "运行中 (pid 存活)" : "未运行"));

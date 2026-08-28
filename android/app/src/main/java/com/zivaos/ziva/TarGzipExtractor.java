@@ -1,6 +1,7 @@
 package com.zivaos.ziva;
 
 import android.content.Context;
+import android.system.Os;
 import java.io.*;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.ZipEntry;
@@ -12,8 +13,13 @@ import java.util.Enumeration;
  * - Locates the bundle by enumerating the APK zip: aapt mangles large asset
  *   entries and AssetManager.open() cannot stream 300MB+, so the bundle is
  *   packaged as assets/offline-rootfs.bin and read straight out of the APK.
- * - extractLenient() skips suspicious entries instead of aborting (counted in
- *   lastSkipped) so one odd file cannot brick first-run setup.
+ * - Handles plain files, directories, symlinks (type 2, via Os.symlink —
+ *   SELinux permits symlinks in app storage, unlike hard links) and hard
+ *   links (type 1, materialised as file copies for the same reason), plus
+ *   GNU LongLink ("L") and pax ("x") path overrides — venv paths regularly
+ *   exceed the 100-char ustar name field.
+ * - extractLenient() skips suspicious entries instead of aborting (counted
+ *   in lastSkipped) so one odd file cannot brick first-run setup.
  */
 public final class TarGzipExtractor {
     public int lastSkipped = 0;
@@ -52,6 +58,7 @@ public final class TarGzipExtractor {
         DataInputStream din = new DataInputStream(new BufferedInputStream(tarStream, 128 * 1024));
         byte[] header = new byte[512];
         long total = 0;
+        String pendingName = null; // from a preceding "L"/"x" entry
         while (true) {
             if (!readFully(din, header)) break;
             boolean allZero = true;
@@ -63,26 +70,78 @@ public final class TarGzipExtractor {
             long size;
             try { size = sizeStr.isEmpty() ? 0 : Long.parseLong(sizeStr, 8); }
             catch (NumberFormatException nfe) { size = 0; }
-            // Skip pax/GNU extended headers; we only need plain files and dirs.
-            if (name.startsWith("./") ) name = name.substring(2);
-            name = name.replace("#", "_");
+            if (name.startsWith("./")) name = name.substring(2);
+
+            // GNU LongLink: the entry body is the next header's real path.
+            if ("L".equals(type)) {
+                byte[] buf = new byte[(int) size];
+                readFully(din, buf);
+                int end = 0; while (end < buf.length && buf[end] != 0) end++;
+                pendingName = new String(buf, 0, end, java.nio.charset.StandardCharsets.UTF_8);
+                skipPadding(din, size);
+                continue;
+            }
+            // pax extended header: keep only the path override, skip the rest.
+            if ("x".equals(type)) {
+                byte[] buf = new byte[(int) size];
+                readFully(din, buf);
+                String s = new String(buf, java.nio.charset.StandardCharsets.UTF_8);
+                java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\d+ path=([^\\n]+)").matcher(s);
+                if (m.find()) pendingName = m.group(1);
+                skipPadding(din, size);
+                continue;
+            }
+            if (pendingName != null) {
+                if (pendingName.startsWith("./")) pendingName = pendingName.substring(2);
+                name = pendingName;
+                pendingName = null;
+            }
+
             File out = safeChild(destDir, name);
             if (out == null) { skip(din, size); lastSkipped++; continue; }
             total += size;
             if (cb != null) cb.onProgress(name, total);
             if ("5".equals(type) || name.endsWith("/")) { out.mkdirs(); continue; }
-            if ("0".equals(type) || type.equals("\0") || type.isEmpty() || "x".equals(type) || "L".equals(type)) {
-                if ("x".equals(type) || "L".equals(type)) { skip(din, size); continue; }
+            if ("2".equals(type)) {
+                // Symlink: link target lives in the linkname field (157..257).
+                String target = parseString(header, 157, 100);
+                File parent = out.getParentFile();
+                if (parent != null) parent.mkdirs();
+                try { Os.symlink(target, out.getAbsolutePath()); }
+                catch (Exception e) { lastSkipped++; }
+                skip(din, size); skipPadding(din, size); // normally 0; defensive
+                continue;
+            }
+            if ("1".equals(type)) {
+                // Hard link: materialise as a copy (SELinux forbids link(2) in
+                // app storage — that limitation is exactly what proot's
+                // --link2symlink papers over inside the guest, not out here).
+                String target = parseString(header, 157, 100);
+                File src = safeChild(destDir, target);
+                if (src != null && src.isFile()) {
+                    File parent = out.getParentFile();
+                    if (parent != null) parent.mkdirs();
+                    try (InputStream fin = new FileInputStream(src); OutputStream fout = new FileOutputStream(out)) {
+                        copyN(fin, fout, src.length());
+                    } catch (Exception e) { lastSkipped++; }
+                } else lastSkipped++;
+                skip(din, size); skipPadding(din, size); // normally 0; defensive
+                continue;
+            }
+            if ("0".equals(type) || type.equals("\0") || type.isEmpty()) {
                 File parent = out.getParentFile();
                 if (parent != null) parent.mkdirs();
                 try (OutputStream fout = new FileOutputStream(out)) {
                     copyN(din, fout, size);
                 }
+                skipPadding(din, size);
                 // Preserve the executable bit for interpreter/venv binaries.
                 String modeStr = parseString(header, 100, 8).trim();
-                try { int mode = Integer.parseInt(modeStr, 8); chmod(out, mode); } catch (Exception ignore) {}
+                try { int mode = Integer.parseInt(modeStr, 8); Os.chmod(out.getAbsolutePath(), mode & 0777); }
+                catch (Exception ignore) {}
             } else {
                 skip(din, size);
+                skipPadding(din, size);
                 lastSkipped++;
             }
         }
@@ -91,7 +150,7 @@ public final class TarGzipExtractor {
     public interface Progress { void onProgress(String entry, long totalBytes); }
 
     private static File safeChild(File destDir, String name) throws IOException {
-        if (name.contains("..")) return null;
+        if (name.isEmpty() || name.contains("..")) return null;
         File f = new File(destDir, name);
         String canon = f.getCanonicalPath();
         if (!canon.startsWith(destDir.getCanonicalPath() + File.separator)
@@ -109,10 +168,16 @@ public final class TarGzipExtractor {
         int off = 0;
         while (off < buf.length) {
             int n = in.read(buf, off, buf.length - off);
-            if (n < 0) return off == 0 ? false : true; // truncated tail: stop
+            if (n < 0) return off == 0; // truncated tail: stop
             off += n;
         }
         return true;
+    }
+
+    /** tar records are padded to 512-byte boundaries. */
+    private static void skipPadding(DataInputStream in, long size) throws IOException {
+        int pad = (int) ((512 - (size % 512)) % 512);
+        if (pad > 0) in.readFully(new byte[pad]);
     }
 
     private static void copyN(InputStream in, OutputStream out, long n) throws IOException {
@@ -133,13 +198,5 @@ public final class TarGzipExtractor {
             if (s <= 0) { if (in.read() < 0) break; left--; }
             else left -= s;
         }
-    }
-
-    private static void chmod(File f, int mode) {
-        try {
-            String path = f.getAbsolutePath();
-            Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/chmod", Integer.toOctalString(mode), path});
-            p.waitFor();
-        } catch (Exception ignore) {}
     }
 }

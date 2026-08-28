@@ -1,6 +1,7 @@
 package com.zivaos.ziva;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.os.Bundle;
 import android.widget.ProgressBar;
 import android.widget.TextView;
@@ -10,6 +11,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** First-run offline extraction screen. Mandatory gate before the main UI. */
 public class ExtractActivity extends Activity {
     private final AtomicBoolean running = new AtomicBoolean(false);
+    /** Rough uncompressed size of the bundled rootfs — the bar is an estimate,
+     *  the "MB extracted" text is exact. */
+    private static final long ESTIMATED_TOTAL_MB = 700;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -32,10 +36,11 @@ public class ExtractActivity extends Activity {
                     if (now - lastReport[0] < 200) return; // throttle UI updates
                     lastReport[0] = now;
                     runOnUiThread(() -> {
-                        // Indeterminate-ish: we don't know total size up front,
-                        // so show downloaded MB.
+                        // Indeterminate-ish: exact total is unknown up front,
+                        // scale against an estimate and show exact MB text.
                         bar.setIndeterminate(false);
-                        bar.setProgress((int) Math.min(100, total / (1024 * 1024)));
+                        long mb = total / (1024 * 1024);
+                        bar.setProgress((int) Math.min(100, mb * 100 / ESTIMATED_TOTAL_MB));
                         detail.setText(String.format("%.0f MB 已解压 · %s", total / 1048576.0, shortName(entry)));
                     });
                 });

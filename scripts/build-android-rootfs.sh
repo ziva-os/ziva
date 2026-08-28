@@ -80,6 +80,11 @@ done
 echo "smoke FAILED"; kill \$SRV 2>/dev/null; pkill -9 -f ziva.app.cli 2>/dev/null; exit 1
 CHROOT
 
+# The smoke run leaves session state in the rootfs' /root/.ziva — drop it so
+# the shipped bundle carries no test data (on-device, that path is a bind
+# mount over the user's real data dir anyway).
+rm -rf "$ROOTFS/root/.ziva" "$ROOTFS/root/workspace"
+
 echo "==> packaging"
 # --numeric-owner: the archive is extracted as the app's uid on Android.
 tar -C "$ROOTFS" --numeric-owner -czf "$WORK/offline-rootfs.tar.gz" .

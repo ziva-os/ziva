@@ -70,7 +70,8 @@ public class HttpShellService {
 
     private void handle(Socket s) {
         Thread t = new Thread(() -> {
-            try (s; BufferedReader in = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.US_ASCII))) {
+            try (Socket sock = s; BufferedReader in = new BufferedReader(
+                    new InputStreamReader(sock.getInputStream(), StandardCharsets.US_ASCII))) {
                 String requestLine = in.readLine();
                 if (requestLine == null) return;
                 String[] parts = requestLine.split(" ");
@@ -85,37 +86,37 @@ public class HttpShellService {
                 while ((line = in.readLine()) != null && !line.isEmpty()) { /* skip */ }
 
                 if (!query.contains("token=" + token)) {
-                    respond(s, 401, "{\"result\":\"unauthorized\"}");
+                    respond(sock, 401, "{\"result\":\"unauthorized\"}");
                     return;
                 }
                 switch (path) {
                     case "/app/notify": {
                         notifyUser(getParam(query, "title", "Ziva"), getParam(query, "text", ""));
-                        respond(s, 200, "{\"result\":\"notified\"}");
+                        respond(sock, 200, "{\"result\":\"notified\"}");
                         break;
                     }
                     case "/app/clip": {
                         String text = getParam(query, "text", null);
-                        if (text == null) respond(s, 200, "{\"result\":\"" + escapeJson(getClipboard()) + "\"}");
-                        else { setClipboard(text); respond(s, 200, "{\"result\":\"copied\"}"); }
+                        if (text == null) respond(sock, 200, "{\"result\":\"" + escapeJson(getClipboard()) + "\"}");
+                        else { setClipboard(text); respond(sock, 200, "{\"result\":\"copied\"}"); }
                         break;
                     }
                     case "/app/vibrate": {
                         android.os.Vibrator v = (android.os.Vibrator) appContext.getSystemService(Context.VIBRATOR_SERVICE);
                         if (v != null) v.vibrate(120);
-                        respond(s, 200, "{\"result\":\"vibrated\"}");
+                        respond(sock, 200, "{\"result\":\"vibrated\"}");
                         break;
                     }
                     case "/app/device": {
-                        respond(s, 200, "{\"model\":\"" + escapeJson(Build.MODEL) + "\",\"android\":\""
+                        respond(sock, 200, "{\"model\":\"" + escapeJson(Build.MODEL) + "\",\"android\":\""
                                 + Build.VERSION.RELEASE + "\",\"app\":\"ziva-android\"}");
                         break;
                     }
                     case "/health":
-                        respond(s, 200, "{\"result\":\"ok\"}");
+                        respond(sock, 200, "{\"result\":\"ok\"}");
                         break;
                     default:
-                        respond(s, 404, "{\"result\":\"unknown endpoint\"}");
+                        respond(sock, 404, "{\"result\":\"unknown endpoint\"}");
                 }
             } catch (Exception ignored) {
             }
@@ -183,7 +184,10 @@ public class HttpShellService {
     private String readOrCreateToken(Context ctx) throws Exception {
         File dir = Constants.publicDataDir();
         File tokenFile = new File(dir, ".bridge_token");
-        File privateFallback = new File(ctx.getFilesDir(), ".bridge_token");
+        // The fallback must be inside the SAME dir ProotBootstrap binds to
+        // /root/.ziva when the public dir is unwritable (files/ziva-data),
+        // or the guest agent could never read the token.
+        File privateFallback = new File(new File(ctx.getFilesDir(), "ziva-data"), ".bridge_token");
         File target = ProotBootstrap.dataDirCanWrite(dir) ? tokenFile : privateFallback;
         if (target.exists()) {
             byte[] b = java.nio.file.Files.readAllBytes(target.toPath());

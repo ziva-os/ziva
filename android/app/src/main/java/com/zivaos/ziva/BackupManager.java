@@ -23,7 +23,7 @@ public final class BackupManager {
         File data = Constants.publicDataDir();
         if (!data.exists()) throw new IllegalStateException("数据目录不存在：" + data);
         String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date());
-        File out = new File(Environment_Download(), "ziva-backup-" + stamp + ".zip");
+        File out = new File(downloadDir(), "ziva-backup-" + stamp + ".zip");
         try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(out))) {
             zipTree(data, data, zos);
         }
@@ -31,7 +31,7 @@ public final class BackupManager {
         return out;
     }
 
-    private static File Environment_Download() {
+    private static File downloadDir() {
         File dl = new File("/sdcard/Download");
         if (!dl.exists()) dl.mkdirs();
         return dl;
@@ -55,7 +55,7 @@ public final class BackupManager {
     }
 
     private static void pruneOldBackups(int keep) {
-        File[] zips = Environment_Download().listFiles((d, n) -> n.startsWith("ziva-backup-") && n.endsWith(".zip"));
+        File[] zips = downloadDir().listFiles((d, n) -> n.startsWith("ziva-backup-") && n.endsWith(".zip"));
         if (zips == null || zips.length <= keep) return;
         java.util.Arrays.sort(zips, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
         for (int i = keep; i < zips.length; i++) zips[i].delete();
