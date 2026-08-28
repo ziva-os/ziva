@@ -8,7 +8,6 @@ import android.view.View;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
 import android.webkit.WebView;
-import android.webkit.WebViewClient;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -22,17 +21,18 @@ import java.util.List;
 /**
  * Thin shell: boots the backend, then loads its web UI in a WebView.
  *
- * An `electronAPI` compatibility shim is injected so the existing web
- * frontend gets native clipboard/restart/theme without a single frontend
- * change; every Electron API we do not shim stays `undefined` and the
- * frontend's optional-call fallbacks handle it (attachments fall back to
- * HTTP upload, the browser tab falls back to the iframe proxy).
+ * Deliberately NOT impersonating Electron: the frontend checks
+ * `window.electronAPI` to pick its shell mode, and shimming it would route
+ * browser tabs down the WebContentsView path (undefined on Android → blank
+ * tabs). With no shim the frontend runs its web mode — the mobile-adapted
+ * chat UI, browser tabs as iframe + /api/proxy, clipboard via the
+ * execCommand fallback. Native abilities live on the `ZivaAndroid` bridge
+ * (see AndroidBridge) and the ⋮ menu.
  */
 public class MainActivity extends Activity {
     private WebView webview;
     private TextView bootStatus;
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private boolean injected = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -65,9 +65,6 @@ public class MainActivity extends Activity {
         webview.getSettings().setAllowFileAccess(false);
         webview.getSettings().setAllowContentAccess(false);
         webview.setWebChromeClient(new WebChromeClient());
-        webview.setWebViewClient(new WebViewClient() {
-            @Override public void onPageFinished(WebView v, String url) { injectShim(v); }
-        });
         webview.addJavascriptInterface(new AndroidBridge(), "ZivaAndroid");
     }
 
@@ -87,25 +84,6 @@ public class MainActivity extends Activity {
                 }
             });
         }).start();
-    }
-
-    /** Inject the electronAPI shim once per page load (after the page's own scripts may run). */
-    private void injectShim(WebView v) {
-        if (injected) return;
-        injected = true;
-        String shim =
-            "(function(){" +
-            "  if (window.__zivaShimmed) return; window.__zivaShimmed = true;" +
-            "  var br = window.ZivaAndroid || {};" +
-            "  window.electronAPI = {" +
-            "    isElectron: function(){ return Promise.resolve(true); }," +
-            "    copyText: function(t){ return Promise.resolve(br.copyText(String(t))); }," +
-            "    setTheme: function(){}, " +
-            "    restartZiva: function(){ br.restartBackend(); return Promise.resolve(true); }," +
-            "    openExternal: function(u){ br.openExternal(String(u)); return Promise.resolve(true); }" +
-            "  };" +
-            "})();";
-        v.evaluateJavascript(shim, null);
     }
 
     private void showMenu() {
@@ -147,11 +125,10 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        injected = false;
         super.onDestroy();
     }
 
-    /** Bridge surface for the injected shim. All methods fire-and-forget or return primitives. */
+    /** Bridge surface for the ZivaAndroid JS bridge. All methods fire-and-forget or return primitives. */
     public class AndroidBridge {
         @JavascriptInterface
         public boolean copyText(String text) {
