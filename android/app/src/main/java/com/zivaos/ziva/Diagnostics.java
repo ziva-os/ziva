@@ -44,7 +44,9 @@ public final class Diagnostics {
         out.add((ctl.httpHealthy() ? "✓" : "✗") + " HTTP :4097 /status");
 
         // 5. Bridge.
-        out.add((ZivaApp.bridge().isRunning() ? "✓" : "✗") + " 设备桥 :3090");
+        boolean bridgeOk = ZivaApp.bridge().isRunning();
+        String bridgeErr = ZivaApp.bridge().lastError;
+        out.add((bridgeOk ? "✓" : "✗") + " 设备桥 :3090" + (!bridgeOk && bridgeErr != null && !bridgeErr.isEmpty() ? "（" + bridgeErr + "）" : ""));
 
         // 6. Log file reachable.
         out.add((ZivaController.logFile().exists() ? "✓" : "ℹ") + " 日志文件 " + ZivaController.logFile().getAbsolutePath());

@@ -14,6 +14,7 @@ public final class Constants {
     public static final String GUEST_HOME = "/root";
     public static final String GUEST_ZIVA_SRC = "/opt/ziva-src";
     public static final String GUEST_VENV_PY = "/opt/ziva-venv/bin/python";
+    public static final String GUEST_VENV_SITE_PACKAGES = "/opt/ziva-venv/lib/python3.12/site-packages";
     public static final String GUEST_DATA_DIR = "/root/.ziva";
     public static final String GUEST_WORKSPACE = "/root/workspace";
 

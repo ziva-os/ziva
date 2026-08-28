@@ -34,6 +34,8 @@ public class HttpShellService {
     private String token = "";
     private Context appContext;
 
+    public volatile String lastError = "";
+
     public synchronized void start(Context ctx) {
         if (!running.compareAndSet(false, true)) return;
         this.appContext = ctx.getApplicationContext();
@@ -41,10 +43,12 @@ public class HttpShellService {
             token = readOrCreateToken(ctx);
             // Dual-stack: primary IPv4, plus [::1] for clients resolving localhost.
             serverSocket = new ServerSocket(Constants.BRIDGE_PORT, 8, InetAddress.getByName("127.0.0.1"));
+            lastError = "";
             acceptThread = new Thread(this::acceptLoop, "ziva-bridge");
             acceptThread.setDaemon(true);
             acceptThread.start();
         } catch (Exception e) {
+            lastError = String.valueOf(e);
             running.set(false);
         }
     }

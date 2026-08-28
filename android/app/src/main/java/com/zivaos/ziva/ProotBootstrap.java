@@ -52,11 +52,17 @@ public final class ProotBootstrap {
         cmd.add("TERM=xterm-256color");
         cmd.add("LANG=C.UTF-8");
         cmd.add("PYTHONUNBUFFERED=1");
+        // Run the SYSTEM python3 with PYTHONPATH pointing at both the ziva
+        // sources and the venv's site-packages. This deliberately avoids
+        // venv/bin/python, which is a chain of symlinks (python -> python3 ->
+        // python3.12) that may not survive extraction on every device; the
+        // interpreter itself and site-packages are plain files.
+        cmd.add("PYTHONPATH=" + Constants.GUEST_ZIVA_SRC + "/src:" + Constants.GUEST_VENV_SITE_PACKAGES);
         cmd.add("PROOT_L2S_DIR=" + l2s.getAbsolutePath());
         cmd.add("PROOT_LOADER=" + loader.getAbsolutePath());
         cmd.add("/bin/bash");
         cmd.add("-c");
-        cmd.add("exec " + Constants.GUEST_VENV_PY + " -m ziva.app.cli desktop serve"
+        cmd.add("exec /usr/bin/python3 -m ziva.app.cli desktop serve"
                 + " --host 127.0.0.1 --port " + Constants.BACKEND_PORT
                 + " --workspace " + Constants.GUEST_WORKSPACE);
         return cmd;
@@ -80,12 +86,16 @@ public final class ProotBootstrap {
         File rootfs = Constants.rootfsDir(ctx);
         if (!proot.exists() || !proot.canExecute()) issues.add("proot 二进制缺失或不可执行: " + proot);
         if (!loader.exists()) issues.add("proot loader 缺失: " + loader);
-        // Check the real file, not /bin/bash — /bin is a symlink into usr/bin
+        // Check the real files, not /bin/bash — /bin is a symlink into usr/bin
         // (as is /lib, /sbin on merged-usr Ubuntu), so this also implicitly
         // verifies that symlink extraction worked.
         if (!new File(rootfs, "usr/bin/bash").exists()) issues.add("rootfs 不完整（缺 usr/bin/bash）: " + rootfs);
-        if (!new File(rootfs, Constants.GUEST_VENV_PY.substring(1)).exists())
-            issues.add("rootfs 缺 Python venv: " + Constants.GUEST_VENV_PY);
+        if (!new File(rootfs, "usr/bin/python3.12").exists())
+            issues.add("rootfs 缺系统 Python: usr/bin/python3.12");
+        File site = new File(rootfs, Constants.GUEST_VENV_SITE_PACKAGES.substring(1));
+        if (!site.isDirectory()) issues.add("rootfs 缺 venv 依赖目录: " + Constants.GUEST_VENV_SITE_PACKAGES);
+        if (!new File(rootfs, "opt/ziva-src/src/ziva/app/cli.py").exists())
+            issues.add("rootfs 缺 Ziva 源码: opt/ziva-src/src/ziva/app/cli.py");
         return issues;
     }
 }
