@@ -56,6 +56,11 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # The runner's preinstalled Gradle (9.x) is too new for AGP 8.5 — pin 8.7.
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
       - uses: android-actions/setup-android@v3
 
       - name: Decode release keystore (if provided)

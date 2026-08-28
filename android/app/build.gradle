@@ -51,8 +51,13 @@ android {
     buildTypes {
         release {
             minifyEnabled false
-            def ksPath = System.getenv("ZIVA_KEYSTORE")
-            signingConfig (ksPath && file(ksPath).exists()) ? signingConfigs.release : signingConfigs.debug
+            // Groovy parses `signingConfig (x) ? a : b` as `(signingConfig(x)) ? a : b`
+            // — hoist the condition into a local first.
+            def useReleaseSigning = {
+                def ksPath = System.getenv("ZIVA_KEYSTORE")
+                return ksPath && file(ksPath).exists()
+            }()
+            signingConfig useReleaseSigning ? signingConfigs.release : signingConfigs.debug
         }
     }
 
