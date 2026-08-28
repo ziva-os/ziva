@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:background="#0f0f0f">
+
+    <WebView
+        android:id="@+id/webview"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <TextView
+        android:id="@+id/bootStatus"
+        android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:textColor="#8a8a8a" android:textSize="14sp"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/menuButton"
+        android:layout_width="40dp" android:layout_height="40dp"
+        android:layout_gravity="bottom|end"
+        android:layout_margin="16dp"
+        android:gravity="center"
+        android:text="⋮"
+        android:textColor="#8a8a8a" android:textSize="22sp"
+        android:background="#33000000" />
+</FrameLayout>

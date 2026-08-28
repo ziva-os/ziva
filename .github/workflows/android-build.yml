@@ -1,0 +1,81 @@
+name: android-build
+
+# Two-stage pipeline on native arm64 hardware:
+#   stage 1 (ubuntu-24.04-arm): provision the offline Ubuntu arm64 rootfs
+#   stage 2 (ubuntu-latest):    compile the APK against it
+# Rootfs and proot binaries are attached as artifacts so the APK stage does
+# not rebuild anything and no binary is committed to the repo.
+on:
+  workflow_dispatch:
+  workflow_call:
+
+jobs:
+  rootfs:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build offline rootfs
+        run: sudo -E bash scripts/build-android-rootfs.sh "$GITHUB_WORKSPACE"
+
+      - name: Fetch Termux proot (aarch64)
+        run: bash scripts/fetch-proot.sh android/app/src/main/jniLibs/arm64-v8a
+
+      - name: Upload rootfs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-rootfs
+          path: android/app/src/main/assets/offline-rootfs.bin
+          retention-days: 3
+          compression-level: 0
+
+      - name: Upload proot artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: proot-libs
+          path: android/app/src/main/jniLibs/arm64-v8a/
+
+  apk:
+    needs: rootfs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: offline-rootfs
+          path: android/app/src/main/assets/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: proot-libs
+          path: android/app/src/main/jniLibs/arm64-v8a/
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Decode release keystore (if provided)
+        env:
+          ZIVA_KEYSTORE_B64: ${{ secrets.ZIVA_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$ZIVA_KEYSTORE_B64" ]; then
+            echo "$ZIVA_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/ziva-release.jks"
+          fi
+
+      - name: Build APK
+        working-directory: android
+        env:
+          ZIVA_KEYSTORE: ${{ runner.temp }}/ziva-release.jks
+          ZIVA_KEYSTORE_PASSWORD: ${{ secrets.ZIVA_STORE_PASS }}
+          ZIVA_KEY_PASSWORD: ${{ secrets.ZIVA_KEY_PASS }}
+          ZIVA_KEY_ALIAS: ${{ secrets.ZIVA_KEY_ALIAS }}
+        run: gradle :app:assembleRelease --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ziva-apk
+          path: android/app/build/outputs/apk/release/*.apk

@@ -1,0 +1,5 @@
+// Root build file. Ziva Android shell — a thin native container around the
+// Ziva backend (Python, proot'd Ubuntu rootfs) and its web UI.
+plugins {
+    id "com.android.application" version "8.5.2" apply false
+}

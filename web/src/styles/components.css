@@ -3890,6 +3890,20 @@ textarea.settings-input, .settings-agent-instructions, .settings-agent-descripti
   .fullpage-toolbar { padding: 12px 16px; }
 }
 
+/* ============ Mobile / touch adaptations ============ */
+/* Display-cutout safe areas (viewport-fit=cover in index.html). Phones with
+   notches/home bars would otherwise clip the topbar and the composer. */
+@supports (padding: max(0px)) {
+  .fullpage-topbar { padding-top: max(12px, env(safe-area-inset-top)); }
+  .ziva-composer-wrapper { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+  .ziva-sidebar { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+}
+@media (max-width: 480px) {
+  /* Phone-class tweaks beyond the 860px tablet breakpoint. */
+  .fullpage-body { padding: 12px 12px 20px; }
+  .agent-card-result { max-height: 160px; }
+}
+
 /* ============ Agent Card (background sub-agent) ============ */
 .agent-card {
   border: 1px solid var(--line);

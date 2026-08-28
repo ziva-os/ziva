@@ -1,0 +1,84 @@
+plugins {
+    id "com.android.application"
+}
+
+// versionCode must only ever increase — Android refuses to install a lower
+// one over a higher one. Bump versionCode together with versionName.
+def vName = "0.1.0"
+def vCode = 1
+
+android {
+    namespace "com.zivaos.ziva"
+    compileSdk 34
+    ndkVersion "26.3.11579264"
+
+    defaultConfig {
+        applicationId "com.zivaos.ziva"
+        minSdk 26          // Android 8.0+, arm64-v8a only (matches the bundled rootfs/proot)
+        targetSdk 34
+        versionCode vCode
+        versionName vName
+    }
+
+    // The offline rootfs is not committed — CI generates it (see
+    // scripts/build-android-rootfs.sh and .github/workflows/android-build.yml).
+    // Local builds without the bundle still assemble; the app shows a download
+    // hint in that case (Diagnostics flags it).
+    sourceSets {
+        main {
+            if (file("src/main/assets/offline-rootfs.bin").exists()) {
+                assets.srcDirs += ["src/main/assets"]
+            }
+        }
+    }
+
+    signingConfigs {
+        // CI injects a fixed keystore via env (see CI docs in docs/android/BUILD.md).
+        // Falling back to debug keeps local builds installable; do NOT ship a
+        // debug-signed release — signature changes force every user to
+        // uninstall and lose their data.
+        release {
+            def ksPath = System.getenv("ZIVA_KEYSTORE")
+            if (ksPath && file(ksPath).exists()) {
+                storeFile file(ksPath)
+                storePassword System.getenv("ZIVA_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("ZIVA_KEY_ALIAS") ?: "ziva"
+                keyPassword System.getenv("ZIVA_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            def ksPath = System.getenv("ZIVA_KEYSTORE")
+            signingConfig (ksPath && file(ksPath).exists()) ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packagingOptions {
+        // Termux proot + loader ship as executable jniLibs; nothing else needs jniLibs stripping.
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
+    splits {
+        abi {
+            enable true
+            reset()
+            include "arm64-v8a"
+            universalApk false
+        }
+    }
+}
+
+dependencies {
+    implementation "androidx.appcompat:appcompat:1.7.0"
+    implementation "com.google.android.material:material:1.12.0"
+}

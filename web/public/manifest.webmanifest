@@ -1,0 +1,17 @@
+{
+  "name": "Ziva",
+  "short_name": "Ziva",
+  "description": "Ziva agent runtime — chat, sessions, and tools.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f0f0f",
+  "theme_color": "#0f0f0f",
+  "icons": [
+    {
+      "src": "/favicon.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Ziva</string>
+    <string name="notif_channel_name">Ziva 运行状态</string>
+    <string name="notif_channel_desc">Ziva 后端运行中时保持常驻通知，防止系统回收。</string>
+    <string name="notif_running_title">Ziva 运行中</string>
+    <string name="notif_running_text">后端端口 4097 · 点按返回应用</string>
+    <string name="extract_title">正在准备环境</string>
+    <string name="extract_subtitle">解压内置 Ubuntu 环境（仅首次，需要几分钟）</string>
+    <string name="menu_restart_backend">重启后端</string>
+    <string name="menu_diagnostics">自检</string>
+    <string name="menu_backup">备份数据</string>
+    <string name="menu_copy_lan_url">复制局域网地址</string>
+</resources>
