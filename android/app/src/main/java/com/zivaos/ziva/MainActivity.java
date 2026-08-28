@@ -124,15 +124,19 @@ public class MainActivity extends Activity {
         final int maxAttempts = 60; // 60 × 500ms = 30s
         new Thread(() -> {
             boolean ok = ZivaController.instance().httpHealthy();
+            // Early-exit detection fills lastError within ~2.5s of launch;
+            // don't keep polling a backend that already died.
+            boolean failedFast = !ok && !ZivaController.instance().isAlive()
+                    && !ZivaController.instance().lastError.isEmpty();
             handler.post(() -> {
                 if (ok) {
                     bootStatus.setVisibility(View.GONE);
                     webview.loadUrl("http://127.0.0.1:" + Constants.BACKEND_PORT + "/");
-                } else if (attempt < maxAttempts) {
-                    waitForBackend(attempt + 1);
-                } else {
+                } else if (failedFast || attempt >= maxAttempts) {
                     bootStatus.setText("后端启动失败：" + ZivaController.instance().lastError
                             + "\n菜单 → 重启后端 可重试");
+                } else {
+                    waitForBackend(attempt + 1);
                 }
             });
         }).start();

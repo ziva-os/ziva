@@ -5,7 +5,9 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.util.ArrayDeque;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Business core: extract → verify → start/stop backend → health.
@@ -17,6 +19,9 @@ public final class ZivaController {
 
     private Process backendProc;
     private Thread logPump;
+    /** Last ~40 backend log lines, shown on boot failure (the on-disk log is
+     *  often unreachable without the All-files grant). */
+    public final ArrayDeque<String> logTail = new ArrayDeque<>();
     public volatile String lastError = "";
     public volatile long startedAt = 0;
 
@@ -58,10 +63,32 @@ public final class ZivaController {
             List<String> cmd = ProotBootstrap.backendCommand(ctx);
             ProcessBuilder pb = new ProcessBuilder(cmd);
             pb.redirectErrorStream(true);
+            // libproot.so needs libtalloc.so / libandroid-shmem.so from the
+            // app's nativeLibraryDir — a forked child does NOT inherit the app
+            // linker namespace, so point the classic linker at that dir too.
+            Map<String, String> env = pb.environment();
+            env.put("LD_LIBRARY_PATH",
+                    Constants.nativeLibDir(ctx).getAbsolutePath()
+                            + ":" + env.getOrDefault("LD_LIBRARY_PATH", ""));
             backendProc = pb.start();
             startedAt = System.currentTimeMillis();
             lastError = "";
             pumpLogs(backendProc, ctx);
+            // Surface early exits (linker refusals die within ~1s) in
+            // lastError so boot-failure UI on device names the actual cause.
+            Thread check = new Thread(() -> {
+                try { Thread.sleep(2500); } catch (InterruptedException ignored) { return; }
+                Process p = backendProc;
+                if (p != null && !p.isAlive()) {
+                    StringBuilder sb = new StringBuilder("后端进程提前退出 (code=" + p.exitValue() + ")");
+                    synchronized (logTail) {
+                        if (!logTail.isEmpty()) sb.append("\n日志尾部:\n").append(String.join("\n", logTail));
+                    }
+                    lastError = sb.toString();
+                }
+            }, "ziva-exit-check");
+            check.setDaemon(true);
+            check.start();
             return true;
         } catch (Exception e) {
             lastError = "启动失败: " + e;
@@ -119,6 +146,10 @@ public final class ZivaController {
                     while ((line = r.readLine()) != null) {
                         bw.write(line);
                         bw.newLine();
+                        synchronized (logTail) {
+                            logTail.addLast(line);
+                            while (logTail.size() > 40) logTail.removeFirst();
+                        }
                     }
                 }
             } catch (Exception ignored) {}
