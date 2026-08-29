@@ -1217,7 +1217,17 @@ class DesktopAPIServer:
             return resp
         try:
             while True:
-                event = await queue.get()
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    # Heartbeat: a quiet stream (model thinking for tens of
+                    # seconds, no traffic) looks dead to aggressive network
+                    # stacks and gets dropped — the browser then fires
+                    # "connection lost" and events in flight are gone. An
+                    # SSE comment line keeps bytes flowing and EventSource
+                    # ignores it.
+                    await resp.write(b": ping\n\n")
+                    continue
                 payload = await asyncio.to_thread(
                     lambda: f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n".encode("utf-8")
                 )
@@ -1260,7 +1270,12 @@ class DesktopAPIServer:
             return resp
         try:
             while True:
-                event = await queue.get()
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    # Heartbeat — see the per-session events handler.
+                    await resp.write(b": ping\n\n")
+                    continue
                 payload = await asyncio.to_thread(
                     lambda: f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n".encode("utf-8")
                 )

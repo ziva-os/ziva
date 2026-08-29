@@ -20,7 +20,7 @@ public final class Constants {
 
     /** Marker files — the extraction marker embeds ROOTFS_VERSION so an
      *  upgraded APK whose bundled rootfs changed re-extracts over the old one. */
-    public static final int ROOTFS_VERSION = 2;
+    public static final int ROOTFS_VERSION = 3;
     public static final String MARKER_EXTRACTED = ".offline-extracted.v" + ROOTFS_VERSION;
 
     /** Desktop-Chrome UA: sites (Baidu, Weibo...) serve their mobile layout

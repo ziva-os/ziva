@@ -18,7 +18,6 @@ public final class ZivaController {
     private static final Object LOCK = new Object();
 
     private Process backendProc;
-    private Thread logPump;
     /** Last ~40 backend log lines, shown on boot failure (the on-disk log is
      *  often unreachable without the All-files grant). */
     public final ArrayDeque<String> logTail = new ArrayDeque<>();
@@ -74,6 +73,28 @@ public final class ZivaController {
             List<String> cmd = ProotBootstrap.backendCommand(ctx);
             ProcessBuilder pb = new ProcessBuilder(cmd);
             pb.redirectErrorStream(true);
+            // Backend stdout/stderr must land DIRECTLY in a file, not in a
+            // pipe drained by an app thread. When HyperOS kills the app but
+            // the orphaned backend survives, a pipe with no reader fills
+            // (64KB) and the next backend log line blocks the whole event
+            // loop — /status stops answering, SSE drops, and the app's
+            // watchdog keeps restarting it (the r17 "random interruption"
+            // pattern: banners every few minutes, zero [tool] lines on
+            // disk). Redirect.appendTo = O_APPEND via the kernel; the fd
+            // stays valid with the app dead.
+            File logTarget;
+            try {
+                File pub = logFile();
+                if (pub.getParentFile() != null) pub.getParentFile().mkdirs();
+                try (java.io.FileOutputStream t = new java.io.FileOutputStream(pub, true)) {
+                    t.write('\n');
+                }
+                logTarget = pub;
+            } catch (Exception noPublic) {
+                logTarget = new File(ctx.getFilesDir(), "ziva-android.log");
+            }
+            pb.redirectOutput(ProcessBuilder.Redirect.appendTo(logTarget));
+            final File logFileForTail = logTarget;
             // libproot.so needs libtalloc.so / libandroid-shmem.so from the
             // app's nativeLibraryDir — a forked child does NOT inherit the app
             // linker namespace, so point the classic linker at that dir too.
@@ -95,7 +116,8 @@ public final class ZivaController {
             backendProc = pb.start();
             startedAt = System.currentTimeMillis();
             lastError = "";
-            pumpLogs(backendProc, ctx);
+            // Pipe-drain path is gone (see redirect above); the pump thread
+            // only existed to shuttle pipe bytes into the log file.
             // Surface early exits (linker refusals die within ~1s) in
             // lastError so boot-failure UI on device names the actual cause.
             Thread check = new Thread(() -> {
@@ -103,9 +125,8 @@ public final class ZivaController {
                 Process p = backendProc;
                 if (p != null && !p.isAlive()) {
                     StringBuilder sb = new StringBuilder("后端进程提前退出 (code=" + p.exitValue() + ")");
-                    synchronized (logTail) {
-                        if (!logTail.isEmpty()) sb.append("\n日志尾部:\n").append(String.join("\n", logTail));
-                    }
+                    String tail = readLastLines(logFileForTail, 40);
+                    if (!tail.isEmpty()) sb.append("\n日志尾部:\n").append(tail);
                     lastError = sb.toString();
                 }
             }, "ziva-exit-check");
@@ -172,33 +193,21 @@ public final class ZivaController {
         }
     }
 
-    private void pumpLogs(Process proc, Context ctx) {
-        logPump = new Thread(() -> {
-            File fallback = new File(ctx.getFilesDir(), "ziva-android.log");
-            try (BufferedReader r = new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
+    /** Last n lines of the backend log file, for boot-failure surfacing. */
+    private static String readLastLines(File f, int n) {
+        try {
+            java.util.Deque<String> d = new java.util.ArrayDeque<>();
+            try (BufferedReader r = new BufferedReader(new java.io.FileReader(f))) {
                 String line;
-                java.io.FileWriter fw;
-                try {
-                    File log = logFile();
-                    if (log.getParentFile() != null) log.getParentFile().mkdirs();
-                    fw = new java.io.FileWriter(log, true);          // public dir (no grant → throws)
-                } catch (Exception noPublic) {
-                    fw = new java.io.FileWriter(fallback, true);     // app-private fallback
+                while ((line = r.readLine()) != null) {
+                    d.addLast(line);
+                    while (d.size() > n) d.removeFirst();
                 }
-                try (java.io.BufferedWriter bw = new java.io.BufferedWriter(fw)) {
-                    while ((line = r.readLine()) != null) {
-                        bw.write(line);
-                        bw.newLine();
-                        synchronized (logTail) {
-                            logTail.addLast(line);
-                            while (logTail.size() > 40) logTail.removeFirst();
-                        }
-                    }
-                }
-            } catch (Exception ignored) {}
-        }, "ziva-log-pump");
-        logPump.setDaemon(true);
-        logPump.start();
+            }
+            return String.join("\n", d);
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     /** Public log path (needs "All files access"); shown in Diagnostics. */
