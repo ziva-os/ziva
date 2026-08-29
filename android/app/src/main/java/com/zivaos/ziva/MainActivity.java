@@ -121,7 +121,7 @@ public class MainActivity extends Activity {
         "})();";
 
     private void waitForBackend(final int attempt) {
-        final int maxAttempts = 60; // 60 × 500ms = 30s
+        final int maxAttempts = 120; // 120 × 500ms = 60s; proot cold start can be slow
         new Thread(() -> {
             boolean ok = ZivaController.instance().httpHealthy();
             // Early-exit detection fills lastError within ~2.5s of launch;
@@ -210,9 +210,17 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void restartBackend() {
+            // Reset the boot UI and RE-ENTER the wait loop: without this the
+            // failure banner stays forever even after a successful restart
+            // (backend healthy per Diagnostics, but the webview never loads).
+            runOnUiThread(() -> {
+                bootStatus.setVisibility(View.VISIBLE);
+                bootStatus.setText("正在重启 Ziva 后端…");
+            });
             new Thread(() -> {
                 ZivaController.instance().stopBackend();
                 ZivaController.instance().startBackend(MainActivity.this);
+                waitForBackend(0);
             }).start();
             runOnUiThread(() -> Toast.makeText(MainActivity.this, "重启后端…", Toast.LENGTH_SHORT).show());
         }
