@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import fcntl
+import errno
 import uuid
 from pathlib import Path
 from typing import Any, Optional, List, Generator
@@ -111,9 +112,21 @@ class FileStorage:
         with open(lock_file, "w") as f:
             try:
                 fcntl.flock(f.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+            except OSError as e:
+                # flock(2) is ENOSYS on filesystems like Android's
+                # FUSE-backed /sdcard. The runtime is single-process, so
+                # degrade to lock-free there instead of failing every write.
+                if e.errno not in (errno.ENOSYS, errno.EINVAL):
+                    raise
+                yield
+                return
+            try:
                 yield
             finally:
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                try:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
 
     @classmethod
     def read_json(cls, path: Path) -> Any:
