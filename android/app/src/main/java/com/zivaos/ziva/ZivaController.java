@@ -69,6 +69,7 @@ public final class ZivaController {
         // Otherwise the port may be held by a zombie backend from a previous
         // lifetime (holds 4097, never answers): clear it before binding.
         killStrayBackends();
+        installGuestMirrors(ctx);
         try {
             List<String> cmd = ProotBootstrap.backendCommand(ctx);
             ProcessBuilder pb = new ProcessBuilder(cmd);
@@ -190,6 +191,45 @@ public final class ZivaController {
             return code == 200;
         } catch (Exception e) {
             return false;
+        }
+    }
+
+    /**
+     * Domestic PyPI/npm mirrors, written into the EXTRACTED rootfs at every
+     * backend start (idempotent, tiny). Config files — not env vars — because
+     * MCP servers spawned via uvx/npx go through the mcp SDK's
+     * get_default_environment() whitelist, which strips anything we inject
+     * into the guest environ. /etc/uv/uv.toml and /etc/pip.conf are
+     * system-level (read regardless of HOME); npx reads $HOME/.npmrc and
+     * HOME=/root IS on the SDK whitelist. python-preference=system keeps uvx
+     * from downloading a python-build-standalone interpreter over a bare
+     * github route — the rootfs system python3 is right there.
+     *
+     * This patches the extracted tree, NOT the rootfs bundle, so no
+     * ROOTFS_VERSION bump / re-extraction is needed for it to take effect.
+     */
+    private static void installGuestMirrors(Context ctx) {
+        File rootfs = Constants.rootfsDir(ctx);
+        if (!rootfs.isDirectory()) return;
+        writeGuestFile(new File(rootfs, "etc/uv/uv.toml"),
+                "python-preference = \"system\"\n"
+                + "\n[[index]]\n"
+                + "url = \"https://pypi.tuna.tsinghua.edu.cn/simple\"\n"
+                + "default = true\n");
+        writeGuestFile(new File(rootfs, "etc/pip.conf"),
+                "[global]\nindex-url = https://pypi.tuna.tsinghua.edu.cn/simple\n");
+        writeGuestFile(new File(rootfs, "root/.npmrc"),
+                "registry=https://registry.npmmirror.com\n");
+    }
+
+    private static void writeGuestFile(File f, String content) {
+        try {
+            if (f.getParentFile() != null) f.getParentFile().mkdirs();
+            try (java.io.FileOutputStream o = new java.io.FileOutputStream(f)) {
+                o.write(content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            }
+        } catch (Exception ignored) {
+            // A read-only rootfs costs the user mirror speed, not function.
         }
     }
 
