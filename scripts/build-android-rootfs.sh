@@ -53,7 +53,12 @@ echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
 APT="apt-get -o APT::Sandbox::User=root"
 \$APT update -qq
 \$APT install -y -qq --no-install-recommends \\
-  python3 python3-venv python3-pip git ca-certificates curl nodejs npm
+  python3 python3-venv python3-pip git ca-certificates curl
+# Node 22 via NodeSource (Ubuntu 24.04 ships node 18, too old for current
+# MCP servers like chrome-devtools-mcp which require node >= 20.19).
+curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/node22.sh
+bash /tmp/node22.sh
+\$APT install -y -qq nodejs
 CHROOT
 
 echo "==> provisioning ziva source + venv"
@@ -70,7 +75,7 @@ python3 -m venv /opt/ziva-venv
   'pyyaml>=6.0.1' 'openai>=1.30.0' 'mcp>=1.0.0' 'anthropic>=0.30.0' \
   'httpx>=0.27.0' 'rich>=13.0.0' 'aiohttp>=3.9.0'
 /opt/ziva-venv/bin/python -c 'import aiohttp, mcp, anthropic, openai, httpx, rich, yaml; print("rootfs deps OK")'
-# Node runtime + pre-installed global MCP servers so `npx <server>` works
+# Node runtime + pre-installed global MCP servers so npx-based servers work
 # offline on device. chrome-devtools-mcp carries no Chrome binary (there is
 # no linux-arm64 Chrome) — on device it must be pointed at a reachable
 # browser via --browser-url (e.g. a LAN machine's --remote-debugging-port).
