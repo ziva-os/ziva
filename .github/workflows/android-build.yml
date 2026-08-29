@@ -90,7 +90,7 @@ jobs:
       # Runner-side publish to a draft release: machine-room bandwidth up,
       # and downloaders can use any GitHub mirror for the asset.
       - name: Publish APK to draft release (android-latest)
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/android'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
