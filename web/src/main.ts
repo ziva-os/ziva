@@ -2707,7 +2707,7 @@ function appendToolCard(
       // tools summary survives a restart instead of vanishing with the
       // non-persisted event metadata.
       const outText = (typeof output === "object" && output !== null && (output as any)._text)
-        ? String((output as any)._text)
+        ? contentToText((output as any)._text)
         : (typeof output === "string" ? output : "");
       if (outText) {
         body += `<div class="section-label">${i18n.t("tool.output")}</div>`;
@@ -2722,7 +2722,7 @@ function appendToolCard(
       // rendering the page URL as <img> produced a broken-image icon
       // instead of the fetched markdown (which lives in `_text`).
       const imgUrl = (output as any).image_url || "";
-      const outText = (output as any)._text ? String((output as any)._text) : "";
+      const outText = (output as any)._text ? contentToText((output as any)._text) : "";
       if (outText || imgUrl) {
         body += `<div class="section-label">${i18n.t("tool.output")}</div>`;
       }
@@ -2740,7 +2740,7 @@ function appendToolCard(
       // full metadata dict that SSE carries for structured data.
       let outStr: string;
       if (typeof output === "object" && output !== null && (output as any)._text) {
-        outStr = String((output as any)._text);
+        outStr = contentToText((output as any)._text);
         body += `<div class="section-label">${i18n.t("tool.output")}</div>`;
         body += `<div class="section-content"><pre>${esc(outStr)}</pre></div>`;
       } else {
