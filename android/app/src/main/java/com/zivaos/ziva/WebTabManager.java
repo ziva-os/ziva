@@ -172,6 +172,11 @@ public class WebTabManager {
         s.setAllowFileAccess(false);
         s.setAllowContentAccess(false);
         s.setSupportMultipleWindows(false); // target=_blank navigates in-tab
+        // Desktop layout on a tablet: stock mobile UA + default viewport get
+        // phone-layout pages rendered at ~1/3 width with dead whitespace.
+        s.setUserAgentString(Constants.DESKTOP_UA);
+        s.setUseWideViewPort(true);
+        s.setLoadWithOverviewMode(true);
         w.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {

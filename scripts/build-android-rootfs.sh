@@ -78,8 +78,14 @@ $PROOT /bin/bash -eux <<CHROOT
 python3 -m venv /opt/ziva-venv
 /opt/ziva-venv/bin/pip install -q -i https://pypi.tuna.tsinghua.edu.cn/simple \
   'pyyaml>=6.0.1' 'openai>=1.30.0' 'mcp>=1.0.0' 'anthropic>=0.30.0' \
-  'httpx>=0.27.0' 'rich>=13.0.0' 'aiohttp>=3.9.0'
+  'httpx>=0.27.0' 'rich>=13.0.0' 'aiohttp>=3.9.0' 'uv>=0.5.0'
 /opt/ziva-venv/bin/python -c 'import aiohttp, mcp, anthropic, openai, httpx, rich, yaml; print("rootfs deps OK")'
+# uvx must be on the guest PATH — the backend spawns MCP servers with the
+# env -i PATH from ProotBootstrap (no /opt/ziva-venv/bin in it), and user
+# MCP configs routinely use `uvx ...` as the command (spawn uvx ENOENT).
+ln -sf /opt/ziva-venv/bin/uv /usr/local/bin/uv
+ln -sf /opt/ziva-venv/bin/uvx /usr/local/bin/uvx
+command -v uvx && uvx --version
 # Node runtime + pre-installed global MCP servers so npx-based servers work
 # offline on device. chrome-devtools-mcp carries no Chrome binary (there is
 # no linux-arm64 Chrome) — on device it must be pointed at a reachable

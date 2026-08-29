@@ -175,6 +175,15 @@ export function addCopyButtons(container: HTMLElement): void {
 
 // Extract thinking content between <think tags
 export function extractThinking(content: string): { thinking: string; main: string } {
+  // Defensive: block arrays / objects occasionally reach this path (e.g.
+  // persisted assistant content). Calling .matchAll on them would throw
+  // and kill the whole SSE render.
+  if (typeof content !== "string") {
+    if (content == null) content = "";
+    else if (Array.isArray(content))
+      content = content.map((p: any) => (typeof p === "string" ? p : p?.type === "text" && typeof p?.text === "string" ? p.text : JSON.stringify(p))).join("");
+    else content = typeof (content as any)?.text === "string" ? (content as any).text : JSON.stringify(content);
+  }
   const thinkRegex = /<think[^>]*>([\s\S]*?)<\/think[^>]*>/gi;
   const thinkMatches = [...content.matchAll(thinkRegex)];
   const thinking = thinkMatches.map(m => m[1].trim()).join("\n\n---\n\n");

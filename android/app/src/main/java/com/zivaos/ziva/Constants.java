@@ -20,8 +20,14 @@ public final class Constants {
 
     /** Marker files — the extraction marker embeds ROOTFS_VERSION so an
      *  upgraded APK whose bundled rootfs changed re-extracts over the old one. */
-    public static final int ROOTFS_VERSION = 1;
+    public static final int ROOTFS_VERSION = 2;
     public static final String MARKER_EXTRACTED = ".offline-extracted.v" + ROOTFS_VERSION;
+
+    /** Desktop-Chrome UA: sites (Baidu, Weibo...) serve their mobile layout
+     *  to the stock Android WebView UA, which renders broken on tablet. */
+    public static final String DESKTOP_UA =
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                    + "Chrome/120.0.0.0 Safari/537.36";
 
     public static File rootfsDir(Context ctx) {
         return new File(ctx.getFilesDir(), "linux/ubuntu");

@@ -86,6 +86,30 @@ function previewText(content: unknown): string {
   return String(content).slice(0, 60);
 }
 
+// Coerce any SSE/persisted content payload into display text. Deltas and
+// assistant messages are usually strings, but block arrays
+// ([{type:"text",text:"..."}]) and stray objects do reach these paths —
+// `"" + obj` would paint "[object Object]" into the bubble.
+function contentToText(content: unknown): string {
+  if (content == null) return "";
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((c) => {
+      if (typeof c === "string") return c;
+      const o = c as any;
+      if (o?.type === "text" && typeof o.text === "string") return o.text;
+      if (o?.type === "image_url" || o?.image_url) return " [image] ";
+      try { return JSON.stringify(c); } catch { return String(c); }
+    }).join("");
+  }
+  if (typeof content === "object") {
+    const o = content as any;
+    if (typeof o.text === "string") return o.text;
+    try { return JSON.stringify(content); } catch { return String(content); }
+  }
+  return String(content);
+}
+
 // ---- State ----
 
 // ---- Per-session state helpers ----
@@ -2512,6 +2536,8 @@ function mergeThinking(reasoning: string | undefined, content: string): string {
 }
 
 function appendAssistantMsg(text: string, target: HTMLElement = (getLiveStreamTarget() || $("messages")), reasoning: string = "") {
+  text = contentToText(text);
+  reasoning = contentToText(reasoning);
   const div = document.createElement("div");
   div.className = "msg assistant";
   const thinking = mergeThinking(reasoning || undefined, text);
@@ -3763,7 +3789,7 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
     clearPaneEmptyPlaceholder(target!);
     if (target === $("messages")) showEmptyState(false);
     const el = getOrCreateAssistantEl(sid, target!);
-    const content = (ev.content as string) || "";
+    const content = contentToText(ev.content);
     (el as any)._main += content;
     // Throttle expensive DOM operations during streaming
     if (!(el as any)._renderTimer) {
@@ -3784,7 +3810,7 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
     clearPaneEmptyPlaceholder(target!);
     if (target === $("messages")) showEmptyState(false);
     const el = getOrCreateAssistantEl(sid, target!);
-    const content = (ev.content as string) || "";
+    const content = contentToText(ev.content);
     (el as any)._reasoning += content;
     if (!(el as any)._renderTimer) {
       (el as any)._renderTimer = setTimeout(() => {
@@ -3804,7 +3830,7 @@ function handleSessionEvent(sid: string, ev: api.Event, updateScroll: boolean = 
       clearTimeout((el as any)._renderTimer);
       (el as any)._renderTimer = null;
     }
-    const content = (ev.content as string) || "";
+    const content = contentToText(ev.content);
     (el as any)._main = content;
     // The runtime currently doesn't include `reasoning_content` in the
     // model_response payload — we keep the value accumulated from the
@@ -4095,7 +4121,28 @@ function updateContextProgress(pct: number, tokens: number, sid?: string) {
   const circumference = 69.12; // 2 * π * 11
   arc.setAttribute("stroke-dashoffset", String(circumference * (1 - normalizedPct)));
   arc.setAttribute("stroke", stroke);
-  pctLabel.textContent = pctText;
+  // A fresh session reads "2%" like a glitch (3-5k tokens / 200k window).
+  // Tap the ring to flip between % and a short token count; remember the
+  // preferred mode across updates.
+  const label = pctLabel as any;
+  label._tokens = tokens;
+  if (!label._toggleBound) {
+    label._toggleBound = true;
+    pctLabel.style.cursor = "pointer";
+    pctLabel.addEventListener("click", () => {
+      pctLabel.dataset.mode = pctLabel.dataset.mode === "tokens" ? "pct" : "tokens";
+      const tk = (pctLabel as any)._tokens || 0;
+      const cur = parseFloat(pctLabel.dataset.pct || "0");
+      pctLabel.textContent = pctLabel.dataset.mode === "tokens"
+        ? (tk >= 1000 ? (tk / 1000).toFixed(1) + "k" : String(tk))
+        : Math.round(cur * 100) + "%";
+    });
+  }
+  pctLabel.dataset.pct = String(normalizedPct);
+  pctLabel.textContent = pctLabel.dataset.mode === "tokens"
+    ? (tokens >= 1000 ? (tokens / 1000).toFixed(1) + "k" : String(tokens))
+    : pctText;
+  pctLabel.title = `${tokens.toLocaleString()} tokens in context`;
 }
 
 // ---- Queue (Codex-style) ----
@@ -4785,7 +4832,23 @@ function fitSelectWidth(sel: HTMLSelectElement | null) {
   (sel.parentElement || document.body).appendChild(probe);
   const w = probe.offsetWidth;
   probe.remove();
+  // A hidden ancestor (collapsed pane, not-yet-laid-out webview) measures
+  // 0 — writing that would freeze the select at "0px" forever. Skip and
+  // let the refit listeners below re-measure once it becomes visible.
+  if (!w) { sel.style.width = ""; return; }
   sel.style.width = w + "px";
+}
+
+// Re-measure after layout-affecting changes: Android WebView hydrates
+// before fonts/layout settle, so widths measured once at startup go stale
+// (chips stuck ellipsized on a wide tablet). Cheap: probe per select.
+function refitComposerSelects() {
+  document.querySelectorAll(".composer-toolbar select").forEach((s) => fitSelectWidth(s as HTMLSelectElement));
+}
+if (typeof window !== "undefined") {
+  window.addEventListener("resize", refitComposerSelects);
+  window.addEventListener("orientationchange", refitComposerSelects);
+  try { (document as any).fonts?.ready.then(() => refitComposerSelects()); } catch { /* older webview */ }
 }
 
 function hydrateComposer(sid: string) {

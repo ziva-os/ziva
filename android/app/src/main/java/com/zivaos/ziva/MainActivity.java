@@ -122,6 +122,10 @@ public class MainActivity extends Activity {
         webview.getSettings().setDomStorageEnabled(true);
         webview.getSettings().setAllowFileAccess(false);
         webview.getSettings().setAllowContentAccess(false);
+        // Desktop layout on a tablet (see Constants.DESKTOP_UA).
+        webview.getSettings().setUserAgentString(Constants.DESKTOP_UA);
+        webview.getSettings().setUseWideViewPort(true);
+        webview.getSettings().setLoadWithOverviewMode(true);
         webview.setWebChromeClient(new WebChromeClient() {
             @Override public boolean onConsoleMessage(android.webkit.ConsoleMessage m) {
                 if (m.messageLevel() != android.webkit.ConsoleMessage.MessageLevel.DEBUG)
