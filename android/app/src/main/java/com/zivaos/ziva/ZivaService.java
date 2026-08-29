@@ -83,6 +83,11 @@ public class ZivaService extends Service {
 
     private Notification buildNotification() {
         Intent open = new Intent(this, MainActivity.class);
+        // Deep link: the in-page ⋮ hides once the UI is up (it overlapped the
+        // composer), so the notification is the standing entry to the device
+        // menu (diagnostics / restart / backup).
+        open.putExtra("open_menu", true);
+        open.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
         PendingIntent pi = PendingIntent.getActivity(this, 0, open,
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         return new NotificationCompat.Builder(this, CHANNEL_ID)

@@ -1273,6 +1273,11 @@ webview.browser-frame {
   max-width: 160px;
   flex: 0 1 auto;
 }
+/* Effort values are short ("low"…"xhigh"); shrinking them truncates to an
+   unreadable chip on narrow (phone/pane) composers. Keep them at fit size. */
+.pane-composer select.pane-effort {
+  flex-shrink: 0;
+}
 .pane-composer .char-count {
   font-size: 10px;
   color: var(--muted);

@@ -1775,7 +1775,16 @@ class Runtime:
                     config=ctx.config,
                     metadata={**ctx.metadata, "_tool_call_id": tc.id},
                 )
+                # Stdout lifecycle log (PYTHONUNBUFFERED=1): the Android shell
+                # pipes backend stdout into ziva-android.log. A "start" with no
+                # matching "done" pinpoints a tool hanging (e.g. proot+FUSE
+                # IO) instead of a transport/SSE drop.
+                import time as _time
+                _t0 = _time.monotonic()
+                print(f"[tool] {tc.name} start (call {tc.id})", flush=True)
                 tool_output = await self._execute_tool(ToolCall(name=tc.name, arguments=tc.arguments), call_ctx)
+                print(f"[tool] {tc.name} done in {_time.monotonic() - _t0:.1f}s"
+                      f"{' ERROR' if tool_output.error else ''}", flush=True)
                 return tool_output, tc
 
             try:

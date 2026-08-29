@@ -62,6 +62,13 @@ public class MainActivity extends Activity {
         bootStatus.setText("正在启动 Ziva 后端…");
         maybeRequestAllFiles();
         waitForBackend(0);
+        if (getIntent().getBooleanExtra("open_menu", false)) showMenu();
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        if (intent.getBooleanExtra("open_menu", false)) showMenu();
     }
 
     /**
@@ -126,6 +133,10 @@ public class MainActivity extends Activity {
             public void onPageFinished(WebView view, String url) {
                 injectShim(view);
                 ZivaController.instance().appendLog(MainActivity.this, "[web] page finished: " + url);
+                // The floating ⋮ overlaps the composer's send area on phones
+                // once the real UI is up — get it out of the way. The failure
+                // banner below brings it back when it's actually needed.
+                findViewById(R.id.menuButton).setVisibility(View.GONE);
                 view.evaluateJavascript("(window.electronAPI ? 'ok' : 'missing')", v -> {
                     if ("\"missing\"".equals(v) && !shimRetried) {
                         shimRetried = true;
@@ -211,6 +222,7 @@ public class MainActivity extends Activity {
                     // comes up — cold start, watchdog restart, manual restart —
                     // the UI recovers by itself.
                     if (failedFast || attempt >= maxAttempts) {
+                        findViewById(R.id.menuButton).setVisibility(View.VISIBLE);
                         bootStatus.setText("后端启动失败 [" + BuildConfig.VERSION_NAME + "]："
                                 + ZivaController.instance().lastError
                                 + "\n菜单 → 重启后端 可重试");

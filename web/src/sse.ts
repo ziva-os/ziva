@@ -134,6 +134,11 @@ export class SSEPool {
 
       const retries = this.retryCount + 1;
       this.retryCount = retries;
+      // Events emitted while disconnected are lost forever (no replay) —
+      // make the gap visible: the Android shell pipes console errors into
+      // ziva-android.log, which is how mid-tool "silent interruptions"
+      // were traced to SSE gaps.
+      console.error(`SSE: connection lost (attempt ${retries}), reconnecting in ${Math.min(this.BASE_DELAY * Math.pow(2, retries - 1), this.MAX_DELAY)}ms — events during the gap are lost`);
 
       if (retries > this.MAX_RETRIES) {
         this.permanentlyDisconnected = true;
