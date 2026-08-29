@@ -34,6 +34,7 @@ public class MainActivity extends Activity {
     private WebView webview;
     private TextView bootStatus;
     private WebTabManager webTabs;
+    private boolean shimRetried = false;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
     @Override
@@ -63,18 +64,53 @@ public class MainActivity extends Activity {
     }
 
     private void setupWebview() {
-        WebView.setWebContentsDebuggingEnabled(false);
+        // Keep remote debugging available: chrome://inspect lets us look at
+        // the frontend when the on-device screen stays black.
+        WebView.setWebContentsDebuggingEnabled(true);
         webview.getSettings().setJavaScriptEnabled(true);
         webview.getSettings().setDomStorageEnabled(true);
         webview.getSettings().setAllowFileAccess(false);
         webview.getSettings().setAllowContentAccess(false);
-        webview.setWebChromeClient(new WebChromeClient());
+        webview.setWebChromeClient(new WebChromeClient() {
+            @Override public boolean onConsoleMessage(android.webkit.ConsoleMessage m) {
+                if (m.messageLevel() != android.webkit.ConsoleMessage.MessageLevel.DEBUG)
+                    ZivaController.instance().appendLog(MainActivity.this,
+                            "[web:" + m.messageLevel() + "] " + m.message()
+                                    + " @" + m.sourceId() + ":" + m.lineNumber());
+                return true;
+            }
+        });
         webview.setWebViewClient(new WebViewClient() {
             // onPageStarted runs before the page's deferred module scripts, so
             // the shim is in place before browser-shell.ts reads electronAPI.
             @Override
             public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
                 injectShim(view);
+            }
+            // The early injection may be dropped if no JS context exists yet
+            // (observed as a black page: HTML loaded, frontend died on the
+            // missing electronAPI). Re-inject — the shim is idempotent — and
+            // if it is STILL missing, reload once: after reload the injection
+            // lands with a live JS context before the frontend boots.
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                injectShim(view);
+                ZivaController.instance().appendLog(MainActivity.this, "[web] page finished: " + url);
+                view.evaluateJavascript("(window.electronAPI ? 'ok' : 'missing')", v -> {
+                    if ("\"missing\"".equals(v) && !shimRetried) {
+                        shimRetried = true;
+                        ZivaController.instance().appendLog(MainActivity.this,
+                                "[web] electronAPI missing after load — reloading once");
+                        view.reload();
+                    }
+                });
+            }
+            @Override
+            public void onReceivedError(WebView view, android.webkit.WebResourceRequest req,
+                                        android.webkit.WebResourceError err) {
+                if (req.isForMainFrame())
+                    ZivaController.instance().appendLog(MainActivity.this,
+                            "[web] main-frame error: " + req.getUrl() + " " + err.getDescription());
             }
         });
         webview.addJavascriptInterface(new AndroidBridge(), "ZivaAndroid");

@@ -206,6 +206,27 @@ public final class ZivaController {
         return new File("/sdcard/Documents/zivadata/ziva-android.log");
     }
 
+    /** Append a line (webview events/console) to the same on-disk log + tail. */
+    public void appendLog(Context ctx, String line) {
+        synchronized (logTail) {
+            logTail.addLast(line);
+            while (logTail.size() > 40) logTail.removeFirst();
+        }
+        try {
+            File log = logFile();
+            if (log.getParentFile() != null) log.getParentFile().mkdirs();
+        } catch (Exception ignored) {}
+        try (java.io.BufferedWriter bw = new java.io.BufferedWriter(
+                new java.io.FileWriter(logFile(), true))) {
+            bw.write(line); bw.newLine();
+        } catch (Exception ignored) {
+            try (java.io.BufferedWriter bw = new java.io.BufferedWriter(
+                    new java.io.FileWriter(new File(ctx.getFilesDir(), "ziva-android.log"), true))) {
+                bw.write(line); bw.newLine();
+            } catch (Exception ignored2) {}
+        }
+    }
+
     private static void deleteTree(File f) {
         File[] kids = f.listFiles();
         if (kids != null) for (File k : kids) deleteTree(k);
