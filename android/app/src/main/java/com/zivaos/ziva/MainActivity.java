@@ -60,7 +60,37 @@ public class MainActivity extends Activity {
 
         bootStatus.setVisibility(View.VISIBLE);
         bootStatus.setText("正在启动 Ziva 后端…");
+        maybeRequestAllFiles();
         waitForBackend(0);
+    }
+
+    /**
+     * MANAGE_EXTERNAL_STORAGE cannot be requested via the runtime-permission
+     * dialog — the system only offers a jump to the settings toggle. Ask
+     * once, up front, with the trade-off spelled out (no grant = app-private
+     * data dir, wiped on uninstall); the backend boots either way.
+     */
+    private void maybeRequestAllFiles() {
+        if (android.os.Build.VERSION.SDK_INT < 30
+                || android.os.Environment.isExternalStorageManager()) return;
+        if (getSharedPreferences("ziva", MODE_PRIVATE).getBoolean("all_files_asked", false)) return;
+        getSharedPreferences("ziva", MODE_PRIVATE).edit().putBoolean("all_files_asked", true).apply();
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("授权「所有文件访问」")
+                .setMessage("开启后，会话数据保存在 /sdcard/Documents/zivadata，卸载重装不丢失。\n\n"
+                        + "不开启也能正常使用，数据将保存在应用私有目录（卸载即清除）。\n\n"
+                        + "该权限需在系统设置中手动开启。")
+                .setPositiveButton("去设置", (d, w) -> {
+                    try {
+                        startActivity(new Intent(
+                                android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                android.net.Uri.parse("package:" + getPackageName())));
+                    } catch (Exception e) {
+                        startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                    }
+                })
+                .setNegativeButton("暂不", null)
+                .show();
     }
 
     private void setupWebview() {
