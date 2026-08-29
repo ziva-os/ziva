@@ -77,7 +77,7 @@ public class MainActivity extends Activity {
         if (requestCode == 1002) {  // composer file chooser
             if (fileChooserCb != null) {
                 fileChooserCb.onReceiveValue(
-                        WebChromeClient.FileChooserParams.parseResult(resultCode, data));
+                        android.webkit.WebChromeClient.FileChooserParams.parseResult(resultCode, data));
                 fileChooserCb = null;
             }
             return;
