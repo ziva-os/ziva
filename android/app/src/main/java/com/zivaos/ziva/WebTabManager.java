@@ -14,7 +14,6 @@ import android.widget.FrameLayout;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -38,9 +37,9 @@ public class WebTabManager {
     private final FrameLayout container;   // webContainer overlay
     private final WebView zivaView;        // for dispatching events into the page
 
-    private final Map<String, WebView> tabs = new LinkedHashMap<>();
-    private final Map<String, String> urls = new LinkedHashMap<>();
-    private final Map<String, String> titles = new LinkedHashMap<>();
+    private final Map<String, WebView> tabs = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, String> urls = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, String> titles = new java.util.concurrent.ConcurrentHashMap<>();
     private String activeId;
     private int seq = 0;
 
@@ -56,17 +55,21 @@ public class WebTabManager {
     @JavascriptInterface
     public synchronized String createTab(String url) {
         final String id = "wt" + (++seq);
-        final WebView w = buildWebView(id);
-        tabs.put(id, w);
         urls.put(id, url == null ? "" : url);
         titles.put(id, "");
+        activeId = id;
+        // buildWebView() MUST run on the UI thread — `new WebView()` on the
+        // JS-bridge thread (no Looper) throws and crashes the whole app
+        // (this was the "+" button crash). The id is returned synchronously;
+        // the WebView reference lands in `tabs` a moment later.
         ui(() -> {
+            final WebView w = buildWebView(id);
+            tabs.put(id, w);
             container.addView(w, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             w.loadUrl(meaningful(url) ? url : "about:blank");
             showOnly(id);
         });
-        activeId = id;
         return id;
     }
 

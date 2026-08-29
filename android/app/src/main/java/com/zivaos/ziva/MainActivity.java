@@ -35,6 +35,7 @@ public class MainActivity extends Activity {
     private TextView bootStatus;
     private WebTabManager webTabs;
     private boolean shimRetried = false;
+    private android.webkit.ValueCallback<android.net.Uri[]> fileChooserCb;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
     @Override
@@ -69,6 +70,19 @@ public class MainActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         if (intent.getBooleanExtra("open_menu", false)) showMenu();
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode == 1002) {  // composer file chooser
+            if (fileChooserCb != null) {
+                fileChooserCb.onReceiveValue(
+                        WebChromeClient.FileChooserParams.parseResult(resultCode, data));
+                fileChooserCb = null;
+            }
+            return;
+        }
+        super.onActivityResult(requestCode, resultCode, data);
     }
 
     /**
@@ -115,6 +129,21 @@ public class MainActivity extends Activity {
                             "[web:" + m.messageLevel() + "] " + m.message()
                                     + " @" + m.sourceId() + ":" + m.lineNumber());
                 return true;
+            }
+            // <input type=file> in the composer (+ button): without this
+            // override the tap silently does nothing in a WebView.
+            @Override public boolean onShowFileChooser(WebView view,
+                    android.webkit.ValueCallback<android.net.Uri[]> callback,
+                    android.webkit.FileChooserParams params) {
+                if (fileChooserCb != null) fileChooserCb.onReceiveValue(null);
+                fileChooserCb = callback;
+                try {
+                    startActivityForResult(params.createIntent(), 1002);
+                    return true;
+                } catch (Exception e) {
+                    fileChooserCb = null;
+                    return false;
+                }
             }
         });
         webview.setWebViewClient(new WebViewClient() {
