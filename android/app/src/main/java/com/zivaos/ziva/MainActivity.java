@@ -126,6 +126,9 @@ public class MainActivity extends Activity {
         webview.getSettings().setUserAgentString(Constants.DESKTOP_UA);
         webview.getSettings().setUseWideViewPort(true);
         webview.getSettings().setLoadWithOverviewMode(true);
+        // Fixed text zoom: system font scale inflates measurements and
+        // diverges from the desktop UI the user compares against.
+        webview.getSettings().setTextZoom(100);
         webview.setWebChromeClient(new WebChromeClient() {
             @Override public boolean onConsoleMessage(android.webkit.ConsoleMessage m) {
                 if (m.messageLevel() != android.webkit.ConsoleMessage.MessageLevel.DEBUG)

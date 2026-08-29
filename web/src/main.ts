@@ -4822,7 +4822,7 @@ function insertSlashCommandFor(sid: string, cmd: string) {
 function fitSelectWidth(sel: HTMLSelectElement | null) {
   if (!sel) return;
   const opt = sel.selectedOptions[0] || sel.options[0];
-  if (!opt) { sel.style.width = ""; return; }
+  if (!opt) { sel.style.maxWidth = ""; return; }
   const probe = sel.cloneNode(false) as HTMLSelectElement;
   const o = document.createElement("option");
   o.textContent = opt.textContent || opt.value || "";
@@ -4832,11 +4832,12 @@ function fitSelectWidth(sel: HTMLSelectElement | null) {
   (sel.parentElement || document.body).appendChild(probe);
   const w = probe.offsetWidth;
   probe.remove();
-  // A hidden ancestor (collapsed pane, not-yet-laid-out webview) measures
-  // 0 — writing that would freeze the select at "0px" forever. Skip and
-  // let the refit listeners below re-measure once it becomes visible.
-  if (!w) { sel.style.width = ""; return; }
-  sel.style.width = w + "px";
+  // Cap, never freeze: the select's width stays auto (native sizing) and we
+  // only bound it at the selected option's natural width. A frozen width
+  // measured on a not-yet-stable Android WebView layout (fonts/text zoom
+  // settling) sticks ellipsized forever — a cap just bounds the worst case.
+  if (!w) { sel.style.maxWidth = ""; return; }
+  sel.style.maxWidth = w + "px";
 }
 
 // Re-measure after layout-affecting changes: Android WebView hydrates
@@ -4849,6 +4850,9 @@ if (typeof window !== "undefined") {
   window.addEventListener("resize", refitComposerSelects);
   window.addEventListener("orientationchange", refitComposerSelects);
   try { (document as any).fonts?.ready.then(() => refitComposerSelects()); } catch { /* older webview */ }
+  // Hydration can run before the first stable layout on Android; a one-shot
+  // measurement sticks. Sweep a few times after startup to converge.
+  [400, 1200, 3000].forEach((d) => setTimeout(refitComposerSelects, d));
 }
 
 function hydrateComposer(sid: string) {

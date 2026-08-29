@@ -123,14 +123,22 @@ public class WebTabManager {
         });
     }
 
-    /** Position the overlay over the renderer's #browserWebArea rect (CSS px == Android dp here). */
+    /**
+     * Position the overlay over the renderer's #browserWebArea rect. The
+     * renderer reports CSS px; FrameLayout.LayoutParams/margins are PHYSICAL
+     * pixels — multiply by density or the overlay lands at 1/dpr of the
+     * screen (the "picture-in-picture" browser on tablets).
+     */
     @JavascriptInterface
     public synchronized void setArea(int x, int y, int width, int height) {
         if (width <= 0 || height <= 0) return;
+        float d = activity.getResources().getDisplayMetrics().density;
+        final int px = Math.round(width * d), py = Math.round(height * d);
+        final int pxx = Math.round(x * d), pyy = Math.round(y * d);
         ui(() -> {
-            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(width, height);
-            lp.leftMargin = x;
-            lp.topMargin = y;
+            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(px, py);
+            lp.leftMargin = pxx;
+            lp.topMargin = pyy;
             container.setLayoutParams(lp);
             container.setVisibility(View.VISIBLE);
         });
@@ -177,6 +185,10 @@ public class WebTabManager {
         s.setUserAgentString(Constants.DESKTOP_UA);
         s.setUseWideViewPort(true);
         s.setLoadWithOverviewMode(true);
+        // Ignore the system font scale: it inflates text measurement inside
+        // the page (chips/toolbar layouts go stale) and diverges from the
+        // desktop rendering users compare against.
+        s.setTextZoom(100);
         w.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
