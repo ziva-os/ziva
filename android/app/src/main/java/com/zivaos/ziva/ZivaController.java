@@ -59,6 +59,17 @@ public final class ZivaController {
     /** Start the backend under proot. Idempotent. Blocking exec — worker thread. */
     public synchronized boolean startBackend(Context ctx) {
         if (backendProc != null && backendProc.isAlive()) return true;
+        // A backend from a previous app lifetime that survived the kill and
+        // still serves /status is adoptable — use it instead of re-spawning
+        // (re-spawning would die on "address already in use").
+        if (httpHealthy()) {
+            startedAt = System.currentTimeMillis();
+            lastError = "";
+            return true;
+        }
+        // Otherwise the port may be held by a zombie backend from a previous
+        // lifetime (holds 4097, never answers): clear it before binding.
+        killStrayBackends();
         try {
             List<String> cmd = ProotBootstrap.backendCommand(ctx);
             ProcessBuilder pb = new ProcessBuilder(cmd);
@@ -110,14 +121,35 @@ public final class ZivaController {
     public synchronized void stopBackend() {
         Process p = backendProc;
         backendProc = null;
-        if (p == null) return;
-        // destroy() signals the direct child (proot); its --kill-on-exit then
-        // tears the whole guest process tree down with it. Note: we cannot
-        // use java.lang.Process.pid() here — that API only exists from
-        // Android 15 (API 35), we support down to 26.
-        p.destroy();
-        try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
-            while (r.readLine() != null) { /* drain */ }
+        if (p != null) {
+            // destroy() signals the direct child (proot); its --kill-on-exit then
+            // tears the whole guest process tree down with it. Note: we cannot
+            // use java.lang.Process.pid() here — that API only exists from
+            // Android 15 (API 35), we support down to 26.
+            p.destroy();
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                while (r.readLine() != null) { /* drain */ }
+            } catch (Exception ignored) {}
+        }
+        // destroy() only reaches proot; if it already died (app kill) the
+        // guest python survives as an orphan. Make sure everything of ours
+        // is gone before the next startBackend() binds.
+        killStrayBackends();
+    }
+
+    /**
+     * Kill leftover guest backends from a previous app lifetime. They run
+     * under our uid, hold port 4097 but never answer /status (frozen by the
+     * OEM), and every restart then dies on bind. The dots are escaped so the
+     * pattern cannot match this very shell command line.
+     */
+    private static void killStrayBackends() {
+        try {
+            Process k = new ProcessBuilder("/system/bin/sh", "-c",
+                    "pkill -9 -f 'ziva\\.app\\.cli'; pkill -9 -f 'libproot\\.so'; exit 0")
+                    .redirectErrorStream(true).start();
+            k.waitFor();
+            Thread.sleep(200); // let the kernel close the held sockets
         } catch (Exception ignored) {}
     }
 
