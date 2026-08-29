@@ -24,6 +24,10 @@ public final class Diagnostics {
         List<String> out = new ArrayList<>();
         ZivaController ctl = ZivaController.instance();
 
+        // 0. Build identity — during device bring-up this settled more than
+        // one "still broken?" that was actually an older APK still installed.
+        out.add("构建版本: " + BuildConfig.VERSION_NAME);
+
         // 1. Storage permission for the public data dir.
         boolean allFiles = Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager();
         out.add((allFiles ? "✓" : "✗") + " 「所有文件访问」权限" + (allFiles ? "" : "（缺失 → 会话数据只能留在应用私有目录，卸载即丢。设置 → 应用 → Ziva → 权限）"));

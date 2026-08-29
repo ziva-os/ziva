@@ -199,7 +199,8 @@ public class MainActivity extends Activity {
                     bootStatus.setVisibility(View.GONE);
                     webview.loadUrl("http://127.0.0.1:" + Constants.BACKEND_PORT + "/");
                 } else if (failedFast || attempt >= maxAttempts) {
-                    bootStatus.setText("后端启动失败：" + ZivaController.instance().lastError
+                    bootStatus.setText("后端启动失败 [" + BuildConfig.VERSION_NAME + "]："
+                            + ZivaController.instance().lastError
                             + "\n菜单 → 重启后端 可重试");
                 } else {
                     waitForBackend(attempt + 1);

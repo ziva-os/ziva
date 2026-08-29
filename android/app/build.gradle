@@ -3,9 +3,15 @@ plugins {
 }
 
 // versionCode must only ever increase — Android refuses to install a lower
-// one over a higher one. Bump versionCode together with versionName.
-def vName = "0.1.0"
-def vCode = 1
+// one over the higher one. Epoch-seconds auto-increments per build; the
+// versionName carries the git sha so on-device builds are identifiable
+// (Diagnostics shows it — during device bring-up several rounds shipped
+// while the user unknowingly kept an older APK installed).
+def gitSha = providers.exec {
+    commandLine 'git', 'rev-parse', '--short', 'HEAD'
+}.standardOutput.asText.get().trim()
+def vName = "0.1.0+" + gitSha
+def vCode = (int) (System.currentTimeMillis() / 1000)
 
 android {
     namespace "com.zivaos.ziva"
@@ -18,6 +24,10 @@ android {
         targetSdk 34
         versionCode vCode
         versionName vName
+    }
+
+    buildFeatures {
+        buildConfig true
     }
 
     // The offline rootfs is not committed — CI generates it (see
