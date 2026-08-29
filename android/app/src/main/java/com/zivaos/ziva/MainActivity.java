@@ -134,7 +134,7 @@ public class MainActivity extends Activity {
             // override the tap silently does nothing in a WebView.
             @Override public boolean onShowFileChooser(WebView view,
                     android.webkit.ValueCallback<android.net.Uri[]> callback,
-                    android.webkit.FileChooserParams params) {
+                    WebChromeClient.FileChooserParams params) {
                 if (fileChooserCb != null) fileChooserCb.onReceiveValue(null);
                 fileChooserCb = callback;
                 try {
