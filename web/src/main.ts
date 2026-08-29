@@ -4837,7 +4837,10 @@ function fitSelectWidth(sel: HTMLSelectElement | null) {
   // measured on a not-yet-stable Android WebView layout (fonts/text zoom
   // settling) sticks ellipsized forever — a cap just bounds the worst case.
   if (!w) { sel.style.maxWidth = ""; return; }
-  sel.style.maxWidth = w + "px";
+  // +6px headroom: Android WebView measures cloneNode probes a hair narrow
+  // (sub-pixel roundoff + font metric drift vs. the live control), and a cap
+  // that tight ellipsises the last characters ("Full Access" → "Full Acc…").
+  sel.style.maxWidth = (w + 6) + "px";
 }
 
 // Re-measure after layout-affecting changes: Android WebView hydrates

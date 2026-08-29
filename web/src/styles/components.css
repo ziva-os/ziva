@@ -1219,7 +1219,8 @@ webview.browser-frame {
   align-items: center;
   justify-content: space-between;
   gap: 4px;
-  flex-wrap: nowrap;
+  /* Same wrap-safety valve as the main composer toolbar (see below). */
+  flex-wrap: wrap;
   min-width: 0;
 }
 .pane-composer .toolbar-left,
@@ -1276,6 +1277,12 @@ webview.browser-frame {
 /* Effort values are short ("low"…"xhigh"); shrinking them truncates to an
    unreadable chip on narrow (phone/pane) composers. Keep them at fit size. */
 .pane-composer select.pane-effort {
+  flex-shrink: 0;
+}
+/* Same for the approval policy ("Suggest" / "Full Access"): squeezing it
+ * mid-turn reads as a UI bug. The wrap on .composer-toolbar absorbs the
+ * overflow instead. */
+.pane-composer select.pane-approval {
   flex-shrink: 0;
 }
 .pane-composer .char-count {
@@ -1834,6 +1841,11 @@ webview.browser-frame {
 .composer-toolbar {
   display: flex; align-items: center; gap: 6px;
   padding: 6px 10px 10px;
+  /* Wrap instead of squeeze: when the toolbar runs out of width (narrow
+   * pane, Android split-screen) chips drop to a second line rather than
+   * being flex-shrunk into unreadable ellipsised slivers. On roomy layouts
+   * nothing wraps, so desktop visuals are unchanged. */
+  flex-wrap: wrap;
 }
 .composer-toolbar select {
   padding: 4px 8px; border: none; border-radius: 14px;
@@ -1844,7 +1856,14 @@ webview.browser-frame {
   display: flex;
   align-items: center;
   gap: 4px;
+  /* Bound very long model names; fitSelectWidth's per-selection cap can
+   * otherwise run to hundreds of px and starve the rest of the toolbar. */
+  max-width: 200px;
 }
+/* Short policy/effort labels never read well truncated; let them hold their
+ * fit width and rely on toolbar wrap when space runs out. */
+.composer-toolbar select.pane-approval,
+.composer-toolbar select.pane-effort { flex-shrink: 0; }
 .composer-toolbar select:hover { background: var(--surface-hover); }
 .composer-toolbar select::after { content: "▾"; font-size: 8px; margin-left: 2px; }
 .composer-toolbar select:hover { background: var(--surface-hover); }

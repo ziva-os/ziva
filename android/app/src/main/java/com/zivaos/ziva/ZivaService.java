@@ -28,21 +28,33 @@ public class ZivaService extends Service {
     private boolean watchdogArmed = false;
     private long startTimestamp = 0;
     private int restartBurst = 0;
+    private int unhealthyStreak = 0;
 
     private final Runnable watchdog = new Runnable() {
         @Override public void run() {
             try {
                 boolean healthy = ZivaController.instance().httpHealthy();
                 boolean procAlive = ZivaController.instance().isAlive();
-                if (!healthy) {
+                if (healthy) {
+                    unhealthyStreak = 0;
+                    restartBurst = 0;
+                } else {
+                    unhealthyStreak++;
                     boolean withinGrace = System.currentTimeMillis() - startTimestamp < STARTUP_GRACE_MS;
-                    if (!procAlive || (!withinGrace && restartBurst < 3)) {
+                    // Restart only when the process is actually gone, or when a
+                    // LIVE process has been unreachable for a sustained stretch
+                    // (streak ≥ 4 ≈ 60s). A busy event loop — tool execution,
+                    // LLM streaming, MCP connect retries — can push a single
+                    // /status probe past its 1.5s budget; killing a live-but-
+                    // busy backend on that alone severed SSE mid-turn and was
+                    // the r19 "tool call keeps getting interrupted" bug.
+                    boolean sustainedUnreachable = unhealthyStreak >= 4;
+                    if (!procAlive || (sustainedUnreachable && !withinGrace && restartBurst < 3)) {
                         restartBurst++;
+                        unhealthyStreak = 0;
                         ZivaController.instance().stopBackend();
                         ZivaController.instance().startBackend(getApplicationContext());
                     }
-                } else {
-                    restartBurst = 0;
                 }
             } finally {
                 handler.postDelayed(this, WATCHDOG_MS);
