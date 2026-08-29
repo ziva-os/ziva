@@ -220,6 +220,53 @@ public final class ZivaController {
                 "[global]\nindex-url = https://pypi.tuna.tsinghua.edu.cn/simple\n");
         writeGuestFile(new File(rootfs, "root/.npmrc"),
                 "registry=https://registry.npmmirror.com\n");
+        installChromiumHelper(rootfs);
+    }
+
+    /**
+     * The user's MCP config points chrome-devtools at /opt/ensure-chromium.sh.
+     * First connects fail fast (exit 1) while the script downloads Playwright's
+     * linux-arm64 Chromium in the background via the npmmirror playwright
+     * mirror — chrome-for-testing (puppeteer's default) simply has no arm64
+     * build, which is the only reason this browser ever needed the Mac's 9222.
+     * A stale-lock + timestamp guard keeps parallel MCP connect retries from
+     * forking dueling downloads.
+     */
+    private static void installChromiumHelper(File rootfs) {
+        writeGuestFile(new File(rootfs, "opt/ensure-chromium.sh"),
+            "#!/bin/sh\n"
+            + "CHROME=/opt/chromium/chrome\n"
+            + "LOCK=/opt/chromium/.downloading\n"
+            + "mkdir -p /opt/chromium /root/.cache/ms-playwright\n"
+            + "if [ ! -x \"$CHROME\" ]; then\n"
+            + "  if [ -f \"$LOCK\" ]; then\n"
+            + "    pid=$(cat \"$LOCK\" 2>/dev/null)\n"
+            + "    if [ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null; then exit 1; fi\n"
+            + "    started=$(cut -d' ' -f2 \"$LOCK\" 2>/dev/null)\n"
+            + "    now=$(date +%s)\n"
+            + "    if [ -n \"$started\" ] && [ $((now - started)) -lt 1800 ]; then exit 1; fi\n"
+            + "    rm -f \"$LOCK\"\n"
+            + "  fi\n"
+            + "  echo \"$$ $(date +%s)\" > \"$LOCK\"\n"
+            + "  (\n"
+            + "    export PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright\n"
+            + "    export PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright\n"
+            + "    export DEBIAN_FRONTEND=noninteractive\n"
+            + "    npx -y playwright@1.49.1 install --with-deps chromium --no-shell\n"
+            + "    SRC=$(ls -d /root/.cache/ms-playwright/chromium-*/chrome-linux 2>/dev/null | head -n 1)\n"
+            + "    if [ -n \"$SRC\" ] && [ -x \"$SRC/chrome\" ]; then\n"
+            + "      ln -sf \"$SRC/chrome\" \"$CHROME\" && rm -f \"$LOCK\"\n"
+            + "    fi\n"
+            + "  ) >/opt/chromium/download.log 2>&1 &\n"
+            + "  exit 1\n"
+            + "fi\n"
+            + "exec /usr/local/bin/chrome-devtools-mcp --executablePath \"$CHROME\" --headless \"$@\"\n");
+        // Best effort: the helper needs +x for direct exec via /bin/sh anyway,
+        // but a shebang'd exec keeps the config one-liner clean.
+        try {
+            Runtime.getRuntime().exec(new String[]{"chmod", "755",
+                    new File(rootfs, "opt/ensure-chromium.sh").getAbsolutePath()});
+        } catch (Exception ignored) {}
     }
 
     private static void writeGuestFile(File f, String content) {
