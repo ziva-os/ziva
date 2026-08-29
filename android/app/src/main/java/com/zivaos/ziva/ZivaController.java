@@ -117,6 +117,25 @@ public final class ZivaController {
             backendProc = pb.start();
             startedAt = System.currentTimeMillis();
             lastError = "";
+            // Death note: log WHY the backend went away. 137 = SIGKILL
+            // (system/OOM kill — nothing in our code path sends KILL to a
+            // live backend any more), 143 = SIGTERM (our stopBackend /
+            // service teardown), 0 = clean exit. Without this the log only
+            // shows the restart banner and every kill looks identical.
+            final Process proc = backendProc;
+            final File procLog = logFileForTail;
+            Thread reaper = new Thread(() -> {
+                try {
+                    int code = proc.waitFor();
+                    String hint = code == 137 ? " (SIGKILL — system/OOM)"
+                            : code == 143 ? " (SIGTERM — our stopBackend)"
+                            : code == 0 ? " (clean exit)" : "";
+                    appendProcLog(procLog, "[proc] backend exited code=" + code + hint);
+                } catch (InterruptedException ignored) {
+                }
+            }, "ziva-reaper");
+            reaper.setDaemon(true);
+            reaper.start();
             // Pipe-drain path is gone (see redirect above); the pump thread
             // only existed to shuttle pipe bytes into the log file.
             // Surface early exits (linker refusals die within ~1s) in
@@ -221,6 +240,54 @@ public final class ZivaController {
         writeGuestFile(new File(rootfs, "root/.npmrc"),
                 "registry=https://registry.npmmirror.com\n");
         installChromiumHelper(rootfs);
+        installMcpConfigPatcher(rootfs);
+    }
+
+    /**
+     * Writes a tiny idempotent patcher the backend runs before serve: it
+     * rewrites a legacy chrome-devtools MCP entry (npx … --browser-url …,
+     * pointing at a Mac's 9222 that no longer exists) into the on-device
+     * /opt/ensure-chromium.sh wrapper — zero manual config editing on the
+     * tablet. Runs guest-side so yaml parsing happens with the venv's own
+     * pyyaml; config.yaml lives in the bind-mounted guest data dir.
+     */
+    private static void installMcpConfigPatcher(File rootfs) {
+        writeGuestFile(new File(rootfs, "opt/patch-mcp-config.py"),
+            "#!/usr/bin/python3\n"
+            + "import sys\n"
+            + "import yaml\n"
+            + "\n"
+            + "P = \"/root/.ziva/config.yaml\"\n"
+            + "try:\n"
+            + "    with open(P) as f:\n"
+            + "        cfg = yaml.safe_load(f) or {}\n"
+            + "except Exception:\n"
+            + "    sys.exit(0)\n"
+            + "changed = False\n"
+            + "servers = ((cfg.get(\"mcp\") or {}).get(\"servers\")) or []\n"
+            + "for srv in servers:\n"
+            + "    if not isinstance(srv, dict):\n"
+            + "        continue\n"
+            + "    args = [str(a) for a in (srv.get(\"args\") or [])]\n"
+            + "    joined = \" \".join(args)\n"
+            + "    name = str(srv.get(\"name\", \"\"))\n"
+            + "    if \"chrome-devtools\" not in joined and \"chrome\" not in name.lower():\n"
+            + "        continue\n"
+            + "    if \"chrome-devtools-mcp\" not in joined:\n"
+            + "        continue  # not the bundled server; leave custom setups alone\n"
+            + "    if srv.get(\"command\") == \"/bin/sh\" and \"/opt/ensure-chromium.sh\" in args:\n"
+            + "        continue  # already patched\n"
+            + "    srv[\"command\"] = \"/bin/sh\"\n"
+            + "    srv[\"args\"] = [\"/opt/ensure-chromium.sh\"]\n"
+            + "    srv.pop(\"env\", None)\n"
+            + "    changed = True\n"
+            + "if changed:\n"
+            + "    try:\n"
+            + "        with open(P, \"w\") as f:\n"
+            + "            yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)\n"
+            + "        print(\"[patch] chrome-devtools MCP server switched to on-device chromium\")\n"
+            + "    except Exception as e:\n"
+            + "        print(\"[patch] rewrite failed:\", e)\n");
     }
 
     /**
@@ -277,6 +344,21 @@ public final class ZivaController {
             }
         } catch (Exception ignored) {
             // A read-only rootfs costs the user mirror speed, not function.
+        }
+    }
+
+    /** Timestamped one-liner into the backend log — survives across app and
+     *  backend lifetimes so a kill can be correlated with the banners. */
+    private static void appendProcLog(File logFile, String line) {
+        try {
+            if (logFile.getParentFile() != null) logFile.getParentFile().mkdirs();
+            String ts = new java.text.SimpleDateFormat("MM-dd HH:mm:ss")
+                    .format(new java.util.Date());
+            try (java.io.FileOutputStream o = new java.io.FileOutputStream(logFile, true)) {
+                o.write(("[proc] " + ts + " " + line + "\n")
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            }
+        } catch (Exception ignored) {
         }
     }
 

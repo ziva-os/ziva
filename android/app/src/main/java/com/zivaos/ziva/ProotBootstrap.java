@@ -61,7 +61,12 @@ public final class ProotBootstrap {
         // ZivaController into proot's HOST environment — see startBackend.
         cmd.add("/bin/bash");
         cmd.add("-c");
-        cmd.add("exec /usr/bin/python3 -m ziva.app.cli desktop serve"
+        // Patch the guest MCP config before serving: rewrites a legacy
+        // chrome-devtools entry (--browser-url to the Mac's 9222) into the
+        // on-device /opt/ensure-chromium.sh wrapper. Idempotent, best-effort;
+        // serve starts regardless of its exit code.
+        cmd.add("/usr/bin/python3 /opt/patch-mcp-config.py >/dev/null 2>&1; "
+                + "exec /usr/bin/python3 -m ziva.app.cli desktop serve"
                 + " --host 127.0.0.1 --port " + Constants.BACKEND_PORT
                 + " --workspace " + Constants.GUEST_WORKSPACE);
         return cmd;
