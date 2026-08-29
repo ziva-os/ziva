@@ -74,6 +74,18 @@ cp -r "$REPO_DIR/src" "$ROOTFS/opt/ziva-src/src"
 cp "$REPO_DIR/pyproject.toml" "$ROOTFS/opt/ziva-src/"
 cp "$REPO_DIR/README.md" "$ROOTFS/opt/ziva-src/" 2>/dev/null || true
 
+# Pre-install chrome-devtools-mcp with the HOST npm: `npm install -g` under
+# proot deterministically dies with glibc "double free or corruption" on the
+# arm runner (host npm is fine). Copy the installed tree into the rootfs in
+# npm's global layout; a relative bin shim puts it on the guest PATH.
+echo "==> pre-installing chrome-devtools-mcp (host npm)"
+mkdir -p "$WORK/mcp" "$ROOTFS/usr/local/lib/node_modules" "$ROOTFS/usr/local/bin"
+npm install --prefix "$WORK/mcp" --no-audit --no-fund --loglevel=error chrome-devtools-mcp
+cp -a "$WORK/mcp/node_modules/." "$ROOTFS/usr/local/lib/node_modules/"
+BINREL=$(node -p "const p=require('$WORK/mcp/node_modules/chrome-devtools-mcp/package.json'); const b=p.bin&&(p.bin['chrome-devtools-mcp']||Object.values(p.bin)[0]); if(!b)process.exit(1); b")
+chmod +x "$ROOTFS/usr/local/lib/node_modules/chrome-devtools-mcp/$BINREL"
+ln -sf "../lib/node_modules/chrome-devtools-mcp/$BINREL" "$ROOTFS/usr/local/bin/chrome-devtools-mcp"
+
 $PROOT /bin/bash -eux <<CHROOT
 python3 -m venv /opt/ziva-venv
 /opt/ziva-venv/bin/pip install -q -i https://pypi.tuna.tsinghua.edu.cn/simple \
@@ -90,9 +102,7 @@ command -v uvx && uvx --version
 # offline on device. chrome-devtools-mcp carries no Chrome binary (there is
 # no linux-arm64 Chrome) — on device it must be pointed at a reachable
 # browser via --browser-url (e.g. a LAN machine's --remote-debugging-port).
-npm config set update-notifier false
-npm install -g --no-audit --no-fund chrome-devtools-mcp
-command -v node && node --version && npx --yes chrome-devtools-mcp --help >/dev/null 2>&1 && echo "node+mcp OK"
+command -v node && node --version && chrome-devtools-mcp --version >/dev/null 2>&1 && echo "node+mcp OK"
 # Smoke: the backend must at least import and start under the rootfs python.
 cd /opt/ziva-src && PYTHONPATH=/opt/ziva-src/src timeout 15 /opt/ziva-venv/bin/python -m ziva.app.cli desktop serve --host 127.0.0.1 --port 4097 &
 SRV=\$!
