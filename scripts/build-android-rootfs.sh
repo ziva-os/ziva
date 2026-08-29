@@ -54,12 +54,17 @@ APT="apt-get -o APT::Sandbox::User=root"
 \$APT update -qq
 \$APT install -y -qq --no-install-recommends \\
   python3 python3-venv python3-pip git ca-certificates curl
-# Node 22 via NodeSource (Ubuntu 24.04 ships node 18, too old for current
-# MCP servers like chrome-devtools-mcp which require node >= 20.19).
-curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/node22.sh
-bash /tmp/node22.sh
-\$APT install -y -qq nodejs
 CHROOT
+
+# Node 22 from the official arm64 tarball. Ubuntu 24.04 ships node 18 (too
+# old for current MCP servers like chrome-devtools-mcp), and NodeSource's
+# apt repo can't import its GPG key under proot — a plain tarball avoids
+# both. Untarred into /usr/local so node/npm land on the guest PATH.
+echo "==> installing node 22 (official linux-arm64 tarball)"
+NODE_V=v22.14.0
+curl -fsSL "https://nodejs.org/dist/${NODE_V}/node-${NODE_V}-linux-arm64.tar.xz" -o "$WORK/node.tar.xz"
+mkdir -p "$ROOTFS/usr/local"
+tar -xJf "$WORK/node.tar.xz" -C "$ROOTFS/usr/local" --strip-components=1
 
 echo "==> provisioning ziva source + venv"
 mkdir -p "$ROOTFS/opt/ziva-src"
