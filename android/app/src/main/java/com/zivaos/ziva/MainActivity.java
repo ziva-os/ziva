@@ -187,8 +187,15 @@ public class MainActivity extends Activity {
         "})();";
 
     private void waitForBackend(final int attempt) {
-        final int maxAttempts = 120; // 120 × 500ms = 60s; proot cold start can be slow
+        // REAL wall-clock budget: ~120 × (750ms sleep + probe) ≈ 2.5 min.
+        // Without the sleep the "attempts" burned through in seconds (a
+        // refused connect returns in ~1ms), the failure banner showed long
+        // BEFORE the proot backend finished its 10–30s cold start, and the
+        // UI never recovered even though the backend came up healthy.
+        final int maxAttempts = 120;
         new Thread(() -> {
+            if (isDestroyed() || isFinishing()) return;
+            try { Thread.sleep(750); } catch (InterruptedException e) { return; }
             boolean ok = ZivaController.instance().httpHealthy();
             // Early-exit detection fills lastError within ~2.5s of launch;
             // don't keep polling a backend that already died.
@@ -198,11 +205,16 @@ public class MainActivity extends Activity {
                 if (ok) {
                     bootStatus.setVisibility(View.GONE);
                     webview.loadUrl("http://127.0.0.1:" + Constants.BACKEND_PORT + "/");
-                } else if (failedFast || attempt >= maxAttempts) {
-                    bootStatus.setText("后端启动失败 [" + BuildConfig.VERSION_NAME + "]："
-                            + ZivaController.instance().lastError
-                            + "\n菜单 → 重启后端 可重试");
                 } else {
+                    // Show the banner (once the budget is spent or the process
+                    // died fast) but KEEP polling: when the backend eventually
+                    // comes up — cold start, watchdog restart, manual restart —
+                    // the UI recovers by itself.
+                    if (failedFast || attempt >= maxAttempts) {
+                        bootStatus.setText("后端启动失败 [" + BuildConfig.VERSION_NAME + "]："
+                                + ZivaController.instance().lastError
+                                + "\n菜单 → 重启后端 可重试");
+                    }
                     waitForBackend(attempt + 1);
                 }
             });
