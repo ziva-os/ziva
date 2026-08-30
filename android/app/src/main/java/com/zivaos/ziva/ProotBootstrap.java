@@ -61,11 +61,18 @@ public final class ProotBootstrap {
         // ZivaController into proot's HOST environment — see startBackend.
         cmd.add("/bin/bash");
         cmd.add("-c");
-        // Patch the guest MCP config before serving: rewrites a legacy
-        // chrome-devtools entry (--browser-url to the Mac's 9222) into the
-        // on-device /opt/ensure-chromium.sh wrapper. Idempotent, best-effort;
-        // serve starts regardless of its exit code.
-        cmd.add("/usr/bin/python3 /opt/patch-mcp-config.py >/dev/null 2>&1; "
+        // Two prep steps before serve, both best-effort:
+        //  1. patch-mcp-config.py rewrites a legacy chrome-devtools entry
+        //     (--browser-url to the Mac's 9222) into the on-device wrapper;
+        //     its output goes to the backend log so patching is observable.
+        //  2. ensure-chromium --download-only pre-fetches the arm64 Chromium
+        //     in the BACKGROUND, right as the Linux environment boots — so
+        //     by the time the first browser tool runs, the MCP connect can
+        //     succeed and stay CONNECTED. Every failed MCP turn re-spawns a
+        //     300-500MB node process, and that churn was getting the whole
+        //     backend OOM-killed (r3 log: exit code 137).
+        cmd.add("/usr/bin/python3 /opt/patch-mcp-config.py 2>&1; "
+                + "/bin/sh /opt/ensure-chromium.sh --download-only >> /root/.ziva/chromium-download.log 2>&1 & "
                 + "exec /usr/bin/python3 -m ziva.app.cli desktop serve"
                 + " --host 127.0.0.1 --port " + Constants.BACKEND_PORT
                 + " --workspace " + Constants.GUEST_WORKSPACE);
