@@ -261,20 +261,34 @@ public final class ZivaController {
             + "try:\n"
             + "    with open(P) as f:\n"
             + "        cfg = yaml.safe_load(f) or {}\n"
-            + "except Exception:\n"
+            + "except FileNotFoundError:\n"
+            + "    print(\"[patch] no config.yaml yet; nothing to do\")\n"
+            + "    sys.exit(0)\n"
+            + "except Exception as e:\n"
+            // A silent except here is how the r25 device kept its legacy
+            // 9222 entry with nobody noticing — always say what happened.
+            + "    print(\"[patch] config unreadable:\", e)\n"
             + "    sys.exit(0)\n"
             + "changed = False\n"
+            + "matched = 0\n"
             + "servers = ((cfg.get(\"mcp\") or {}).get(\"servers\")) or []\n"
             + "for srv in servers:\n"
             + "    if not isinstance(srv, dict):\n"
             + "        continue\n"
-            + "    args = [str(a) for a in (srv.get(\"args\") or [])]\n"
+            // args may be a plain string in hand-written configs; iterating a
+            // string yields chars and the matcher below then never fires.
+            + "    raw = srv.get(\"args\") or []\n"
+            + "    if isinstance(raw, str):\n"
+            + "        raw = raw.split()\n"
+            + "    args = [str(a) for a in raw]\n"
             + "    joined = \" \".join(args)\n"
             + "    name = str(srv.get(\"name\", \"\"))\n"
-            + "    if \"chrome-devtools\" not in joined and \"chrome\" not in name.lower():\n"
+            // On this device a chrome server pointing at ANY --browser-url is
+            // the legacy Mac bridge — there is no local GUI chrome to bridge
+            // to, so patch it even if the package name differs.
+            + "    if \"chrome-devtools-mcp\" not in joined and \"--browser-url\" not in joined and \"/opt/ensure-chromium.sh\" not in joined:\n"
             + "        continue\n"
-            + "    if \"chrome-devtools-mcp\" not in joined:\n"
-            + "        continue  # not the bundled server; leave custom setups alone\n"
+            + "    matched += 1\n"
             + "    if srv.get(\"command\") == \"/bin/sh\" and \"/opt/ensure-chromium.sh\" in args:\n"
             + "        continue  # already patched\n"
             + "    srv[\"command\"] = \"/bin/sh\"\n"
@@ -287,7 +301,9 @@ public final class ZivaController {
             + "            yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)\n"
             + "        print(\"[patch] chrome-devtools MCP server switched to on-device chromium\")\n"
             + "    except Exception as e:\n"
-            + "        print(\"[patch] rewrite failed:\", e)\n");
+            + "        print(\"[patch] rewrite failed:\", e)\n"
+            + "else:\n"
+            + "    print(\"[patch] ok: chrome server already on-device\" if matched else \"[patch] no chrome server entry in config\")\n");
     }
 
     /**
@@ -322,10 +338,18 @@ public final class ZivaController {
             + "  rm -f \"$LOCK\"\n"
             + "}\n"
             + "\n"
+            // A lock whose writer PID is gone is stale no matter how fresh the
+            // timestamp is — the r25 \"Cannot fork\" crash left exactly such a
+            // lock and every retry within the freshness window then skipped
+            // (\"already running/fresh\") while nothing was downloading.
             + "fresh_or_running() {\n"
             + "  if [ -f \"$LOCK\" ]; then\n"
             + "    pid=$(cut -d' ' -f1 \"$LOCK\" 2>/dev/null)\n"
-            + "    if [ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null; then return 0; fi\n"
+            + "    if [ -n \"$pid\" ]; then\n"
+            + "      if kill -0 \"$pid\" 2>/dev/null; then return 0; fi\n"
+            + "      rm -f \"$LOCK\"\n"
+            + "      return 1\n"
+            + "    fi\n"
             + "    started=$(cut -d' ' -f2 \"$LOCK\" 2>/dev/null)\n"
             + "    now=$(date +%s)\n"
             + "    if [ -n \"$started\" ] && [ $((now - started)) -lt 600 ]; then return 0; fi\n"
@@ -338,6 +362,9 @@ public final class ZivaController {
             + "  if [ -x \"$CHROME\" ]; then echo \"$TAG chromium already present\"; exit 0; fi\n"
             + "  if fresh_or_running; then echo \"$TAG download already running/fresh\"; exit 0; fi\n"
             + "  echo \"$$ $(date +%s)\" > \"$LOCK\"\n"
+            // Foreground download: clean the lock even if the script is
+            // killed mid-download (the crash that poisoned r25).
+            + "  trap 'rm -f \"$LOCK\"' EXIT\n"
             + "  echo \"$TAG downloading linux-arm64 chromium (~250MB, domestic mirror)...\"\n"
             + "  download\n"
             + "  exit 0\n"
@@ -345,8 +372,11 @@ public final class ZivaController {
             + "\n"
             + "if [ ! -x \"$CHROME\" ]; then\n"
             + "  if fresh_or_running; then exit 1; fi\n"
-            + "  echo \"$$ $(date +%s)\" > \"$LOCK\"\n"
+            // Background download: the lock must name the SUBSHELL's pid
+            // ($!); \"$$\" here is the parent, which exits immediately and
+            // would make a live download look stale.
             + "  download >/opt/chromium/download.log 2>&1 &\n"
+            + "  echo \"$! $(date +%s)\" > \"$LOCK\"\n"
             + "  exit 1\n"
             + "fi\n"
             + "exec /usr/local/bin/chrome-devtools-mcp --executablePath \"$CHROME\" --headless \"$@\"\n");

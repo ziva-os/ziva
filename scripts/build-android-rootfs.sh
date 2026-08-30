@@ -73,6 +73,11 @@ mkdir -p "$ROOTFS/opt/ziva-src"
 cp -r "$REPO_DIR/src" "$ROOTFS/opt/ziva-src/src"
 cp "$REPO_DIR/pyproject.toml" "$ROOTFS/opt/ziva-src/"
 cp "$REPO_DIR/README.md" "$ROOTFS/opt/ziva-src/" 2>/dev/null || true
+# Core tools/hooks (list/read_file/shell/grep/...) live in the repo's
+# plugins/ tree. Runtime.create's bundled fallback looks for
+# <parents[2] of runtime.py>/plugins = /opt/ziva-src/plugins — without this
+# the guest registers ZERO core tools and only MCP tools show up.
+cp -r "$REPO_DIR/plugins" "$ROOTFS/opt/ziva-src/plugins"
 
 # Pre-install chrome-devtools-mcp with the HOST npm: `npm install -g` under
 # proot deterministically dies with glibc "double free or corruption" on the
@@ -85,6 +90,27 @@ cp -a "$WORK/mcp/node_modules/." "$ROOTFS/usr/local/lib/node_modules/"
 BINREL=$(node -p "const p=require('$WORK/mcp/node_modules/chrome-devtools-mcp/package.json'); const b=p.bin&&(p.bin['chrome-devtools-mcp']||Object.values(p.bin)[0]); if(!b)process.exit(1); b")
 chmod +x "$ROOTFS/usr/local/lib/node_modules/chrome-devtools-mcp/$BINREL"
 ln -sf "../lib/node_modules/chrome-devtools-mcp/$BINREL" "$ROOTFS/usr/local/bin/chrome-devtools-mcp"
+
+# Bake Playwright's linux-arm64 Chromium + its system libraries into the
+# rootfs. This MUST happen here, on a real kernel: on-device `apt` under
+# proot dies mid-transaction because Android's seccomp returns ENOSYS for
+# syscalls noble's dpkg/coreutils rely on (statx et al. — seen in the
+# device's chromium-download.log: unpack aborted halfway, lock poisoned).
+echo "==> baking Playwright chromium (linux-arm64) + deps into rootfs"
+$PROOT /bin/bash -eux <<CHROOT
+export DEBIAN_FRONTEND=noninteractive
+# playwright's --with-deps drives apt-get itself; persist the _apt sandbox
+# bypass (the base-image round passed it per-invocation).
+echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/99proot-root
+export PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright
+export PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+npx -y playwright@1.49.1 install --with-deps chromium --no-shell
+mkdir -p /opt/chromium
+ln -sf "\$(ls -d /opt/ms-playwright/chromium-*/chrome-linux/chrome | head -n1)" /opt/chromium/chrome
+/opt/chromium/chrome --version
+apt-get clean
+rm -rf /var/lib/apt/lists/* /root/.npm
+CHROOT
 
 $PROOT /bin/bash -eux <<CHROOT
 python3 -m venv /opt/ziva-venv

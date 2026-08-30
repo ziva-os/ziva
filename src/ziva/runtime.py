@@ -1015,14 +1015,21 @@ class Runtime:
         for p in config.get("plugin", {}).get("paths", ["./plugins"]):
             pp = Path(p).expanduser()
             plugin_paths.append(pp if pp.is_absolute() else workspace_root / pp)
-        # Packaged app (PyInstaller): the workspace won't have a plugins/
-        # dir, so also load the plugins bundled into the app bundle (shipped
-        # via PyInstaller datas to _MEIPASS/plugins).
+        # Bundled plugins fallback: the workspace usually has no plugins/
+        # dir of its own. PyInstaller bundles one at _MEIPASS/plugins; a
+        # source layout (repo checkout, the Android rootfs, which ships
+        # /opt/ziva-src/plugins next to src/) keeps it at <repo>/plugins,
+        # i.e. three levels up from this file. Without the non-frozen
+        # fallback such a backend registers ZERO core tools
+        # (list/read_file/shell/...) — first seen on Android, where only
+        # the MCP browser tools showed up.
         import sys as _sys
         if getattr(_sys, "frozen", False):
             _bundled = Path(getattr(_sys, "_MEIPASS", Path(__file__).resolve().parent)) / "plugins"
-            if _bundled.is_dir() and _bundled not in plugin_paths:
-                plugin_paths.append(_bundled)
+        else:
+            _bundled = Path(__file__).resolve().parents[2] / "plugins"
+        if _bundled.is_dir() and _bundled not in plugin_paths:
+            plugin_paths.append(_bundled)
         load_plugins(plugin_paths, registry, config)
 
         # Skills live under their own `skill:` block. Scan
