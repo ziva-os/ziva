@@ -254,6 +254,7 @@ public final class ZivaController {
     private static void installMcpConfigPatcher(File rootfs) {
         writeGuestFile(new File(rootfs, "opt/patch-mcp-config.py"),
             "#!/usr/bin/python3\n"
+            + "import shlex\n"
             + "import sys\n"
             + "import yaml\n"
             + "\n"
@@ -269,41 +270,98 @@ public final class ZivaController {
             // 9222 entry with nobody noticing — always say what happened.
             + "    print(\"[patch] config unreadable:\", e)\n"
             + "    sys.exit(0)\n"
-            + "changed = False\n"
-            + "matched = 0\n"
-            + "servers = ((cfg.get(\"mcp\") or {}).get(\"servers\")) or []\n"
-            + "for srv in servers:\n"
-            + "    if not isinstance(srv, dict):\n"
-            + "        continue\n"
-            // args may be a plain string in hand-written configs; iterating a
-            // string yields chars and the matcher below then never fires.
+            + "\n"
+            + "def tokens(srv):\n"
+            // Effective argv: command may itself be a list or a shlex string
+            // (the runtime's _mcp_server_from_mapping accepts all three), so
+            // a 9222 hiding inside a string command must not slip past.
+            + "    cmd = srv.get(\"command\")\n"
+            + "    out = []\n"
+            + "    if isinstance(cmd, list):\n"
+            + "        out += [str(c) for c in cmd]\n"
+            + "    elif isinstance(cmd, str):\n"
+            + "        try:\n"
+            + "            out += shlex.split(cmd)\n"
+            + "        except ValueError:\n"
+            + "            out += cmd.split()\n"
             + "    raw = srv.get(\"args\") or []\n"
             + "    if isinstance(raw, str):\n"
-            + "        raw = raw.split()\n"
-            + "    args = [str(a) for a in raw]\n"
-            + "    joined = \" \".join(args)\n"
-            + "    name = str(srv.get(\"name\", \"\"))\n"
-            // On this device a chrome server pointing at ANY --browser-url is
-            // the legacy Mac bridge — there is no local GUI chrome to bridge
-            // to, so patch it even if the package name differs.
-            + "    if \"chrome-devtools-mcp\" not in joined and \"--browser-url\" not in joined and \"/opt/ensure-chromium.sh\" not in joined:\n"
+            + "        try:\n"
+            + "            raw = shlex.split(raw)\n"
+            + "        except ValueError:\n"
+            + "            raw = raw.split()\n"
+            + "    out += [str(a) for a in raw]\n"
+            + "    out.append(str(srv.get(\"url\") or srv.get(\"server_url\") or \"\"))\n"
+            + "    return out\n"
+            + "\n"
+            + "changed = False\n"
+            + "matched = 0\n"
+            + "\n"
+            // Chrome entries can hide in any shape the runtime accepts:
+            // mcp.servers (list OR {name: {...}} dict) and top-level
+            // mcpServers / mcp_servers (claude-style dict). Scanning only
+            // mcp.servers-as-list is how a dict-form 9222 entry survived
+            // every patch round.
+            + "candidates = []\n"
+            + "mcp = cfg.get(\"mcp\")\n"
+            + "if isinstance(mcp, dict):\n"
+            + "    servers = mcp.get(\"servers\")\n"
+            + "    if isinstance(servers, list):\n"
+            + "        candidates += [s for s in servers if isinstance(s, dict)]\n"
+            + "    elif isinstance(servers, dict):\n"
+            + "        candidates += [s for s in servers.values() if isinstance(s, dict)]\n"
+            + "for key in (\"mcpServers\", \"mcp_servers\"):\n"
+            + "    d = cfg.get(key)\n"
+            + "    if isinstance(d, dict):\n"
+            + "        candidates += [s for s in d.values() if isinstance(s, dict)]\n"
+            + "\n"
+            + "for srv in candidates:\n"
+            + "    joined = \" \".join(tokens(srv))\n"
+            // On this device any --browser-url / 127.0.0.1:9222 entry is the
+            // legacy Mac bridge — there is no local GUI chrome to bridge to.
+            + "    if (\"chrome-devtools-mcp\" not in joined\n"
+            + "            and \"--browser-url\" not in joined\n"
+            + "            and \"127.0.0.1:9222\" not in joined\n"
+            + "            and \"/opt/ensure-chromium.sh\" not in joined):\n"
             + "        continue\n"
             + "    matched += 1\n"
-            + "    if srv.get(\"command\") == \"/bin/sh\" and \"/opt/ensure-chromium.sh\" in args:\n"
-            + "        continue  # already patched\n"
+            + "    if srv.get(\"command\") == \"/bin/sh\" and srv.get(\"args\") == [\"/opt/ensure-chromium.sh\"]:\n"
+            + "        continue  # already on-device\n"
+            + "    for k in (\"env\", \"environment\", \"url\", \"server_url\", \"transport\", \"type\", \"disabled\"):\n"
+            + "        srv.pop(k, None)\n"
             + "    srv[\"command\"] = \"/bin/sh\"\n"
             + "    srv[\"args\"] = [\"/opt/ensure-chromium.sh\"]\n"
-            + "    srv.pop(\"env\", None)\n"
+            + "    srv[\"enabled\"] = True\n"
             + "    changed = True\n"
+            + "\n"
+            + "if matched == 0:\n"
+            // No chrome entry anywhere: add the on-device one so browser
+            // tools exist out of the box. Put it where the user's other
+            // servers live — adding mcp.servers would SHADOW a populated
+            // mcpServers dict (parse_mcp_config only falls back when
+            // mcp.servers is empty).
+            + "    entry = {\"command\": \"/bin/sh\", \"args\": [\"/opt/ensure-chromium.sh\"]}\n"
+            + "    if isinstance(cfg.get(\"mcpServers\"), dict):\n"
+            + "        cfg[\"mcpServers\"][\"chrome-devtools\"] = entry\n"
+            + "    elif isinstance(cfg.get(\"mcp_servers\"), dict):\n"
+            + "        cfg[\"mcp_servers\"][\"chrome-devtools\"] = entry\n"
+            + "    else:\n"
+            + "        m = cfg.setdefault(\"mcp\", {})\n"
+            + "        if not isinstance(m.get(\"servers\"), list):\n"
+            + "            m[\"servers\"] = []\n"
+            + "        m[\"servers\"].append(dict(entry, name=\"chrome-devtools\"))\n"
+            + "    print(\"[patch] added on-device chrome-devtools server entry\")\n"
+            + "    changed = True\n"
+            + "\n"
             + "if changed:\n"
             + "    try:\n"
             + "        with open(P, \"w\") as f:\n"
             + "            yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)\n"
-            + "        print(\"[patch] chrome-devtools MCP server switched to on-device chromium\")\n"
+            + "        print(\"[patch] config saved\")\n"
             + "    except Exception as e:\n"
             + "        print(\"[patch] rewrite failed:\", e)\n"
             + "else:\n"
-            + "    print(\"[patch] ok: chrome server already on-device\" if matched else \"[patch] no chrome server entry in config\")\n");
+            + "    print(\"[patch] ok: chrome server already on-device\")\n");
     }
 
     /**
