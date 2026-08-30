@@ -488,6 +488,11 @@ class Runtime:
     _mcp_shared_client: Any = field(default=None)
     _mcp_shared_status: MCPConnectStatus = field(default=MCPConnectStatus.DISCONNECTED)
     _mcp_shared_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    # Config generation guard: bumped by invalidate_mcp() whenever the mcp
+    # config section changes. In-flight connects capture the epoch and are
+    # discarded if it moved, so a stale connect can never resurrect itself
+    # after a config edit.
+    _mcp_epoch: int = field(default=0)
 
     def __post_init__(self) -> None:
         if self._agent_concurrency is None:
@@ -1986,6 +1991,7 @@ class Runtime:
             return self._mcp_shared_status
         self._mcp_shared_status = MCPConnectStatus.CONNECTING
         self._mcp_shared_event.clear()
+        epoch = self._mcp_epoch
         try:
             from ziva.adapters.mcp.client import MCPClient, parse_mcp_config
 
@@ -1997,6 +2003,17 @@ class Runtime:
             try:
                 client = MCPClient(mcp_configs)
                 tools = await client.connect_all()
+                if self._mcp_epoch != epoch:
+                    # The config changed while we were connecting — this
+                    # process tree is already obsolete. Discard it (cleanup,
+                    # not leak) and report DISCONNECTED so the next connect
+                    # starts fresh against the new config.
+                    try:
+                        await client.cleanup()
+                    except Exception:
+                        pass
+                    self._mcp_shared_status = MCPConnectStatus.DISCONNECTED
+                    return self._mcp_shared_status
                 # Register MCP tools in the registry (only once, route-through)
                 for tool in tools:
                     cap_id = f"mcp.{tool._name}"
@@ -2043,6 +2060,41 @@ class Runtime:
             await self._connect_mcp_shared()
         except Exception as e:  # pragma: no cover - defensive
             logger.debug("MCP prewarm failed (will retry on first use): %s", e)
+
+    def invalidate_mcp(self) -> None:
+        """Drop the shared MCP connection because the mcp config changed.
+
+        Called from save_config_json when the mcp section of the config was
+        edited. The shared client is detached immediately (no new session
+        adopts a stale connection), per-session references are reset so the
+        next turn reconnects against the new config, and the obsolete
+        subprocess trees are cleaned up in the background. An epoch bump
+        makes any in-flight connect throw away its result instead of
+        resurrecting a connection built from the old config.
+        """
+        self._mcp_epoch += 1
+        old = self._mcp_shared_client
+        self._mcp_shared_client = None
+        self._mcp_shared_status = MCPConnectStatus.DISCONNECTED
+        # Release anything waiting on either the shared or a per-session
+        # event; waiters re-run the connect path and pick up the new config.
+        self._mcp_shared_event.set()
+        for session in list(self._sessions.values()):
+            session.mcp_client = None
+            session.mcp_status = MCPConnectStatus.DISCONNECTED
+            session.mcp_connected_event.set()
+        if old is not None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:  # pragma: no cover - no loop = nothing to schedule on
+                loop = None
+            if loop is not None:
+                async def _cleanup_old() -> None:
+                    try:
+                        await old.cleanup()
+                    except Exception:
+                        pass
+                loop.create_task(_cleanup_old())
 
     def _build_tools_param(self, ctx: RuntimeContext | None = None) -> list[dict]:
         """Build OpenAI-format tools list from registered tools, filtered by context."""

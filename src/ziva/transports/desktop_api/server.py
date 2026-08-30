@@ -2118,8 +2118,17 @@ class DesktopAPIServer:
         merged = _strip_none_values(merged)
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(yaml.dump(merged, default_flow_style=False, allow_unicode=True, sort_keys=False), encoding="utf-8")
-        # Hot-reload the in-memory config
+        # Hot-reload the in-memory config. If the MCP topology changed,
+        # drop the runtime-shared connection: sessions reconnect on their
+        # next turn against the new config (any in-flight connect is
+        # discarded via the epoch guard). Only invalidating on actual mcp
+        # changes keeps unrelated saves (theme, model prefs, …) from
+        # killing live server processes.
+        mcp_keys = ("mcp", "mcpServers", "mcp_servers")
+        mcp_changed = any(disk_config.get(k) != merged.get(k) for k in mcp_keys)
         self.runtime.config = merged
+        if mcp_changed:
+            self.runtime.invalidate_mcp()
         return web.json_response({"ok": True})
     async def choose_folder(self, _request: web.Request) -> web.Response:
         """Use osascript to open a native folder selection dialog."""
