@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Ziva launcher background: the deep-navy radial gradient of the Mac icon
+     (tmp/ziva_icon_minimal.svg, #212c60 @ 36% height → #060818) plus the
+     purple glow rising from the bottom edge. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:type="radial"
+                android:centerX="0.5" android:centerY="0.36"
+                android:gradientRadius="90dp"
+                android:startColor="#212c60"
+                android:centerColor="#141a42"
+                android:endColor="#060818" />
+        </shape>
+    </item>
+    <item
+        android:width="340dp" android:height="170dp"
+        android:gravity="bottom|center_horizontal"
+        android:bottom="-85dp">
+        <shape android:shape="oval">
+            <gradient
+                android:type="radial"
+                android:gradientRadius="85dp"
+                android:startColor="#4d6d28d9"
+                android:centerColor="#1e6d28d9"
+                android:endColor="#006d28d9" />
+        </shape>
+    </item>
+</layer-list>

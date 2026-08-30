@@ -453,6 +453,10 @@ class DesktopAPIServer:
         self._load_persisted_automations()
         self._schedule_enabled_automations()
         await self._im_bridge.start()
+        # Prewarm MCP in the background: spawn the configured servers now so
+        # the first message of the first session doesn't stall on the connect
+        # (uvx/npm spawn + handshake — tens of seconds on a cold proot guest).
+        asyncio.get_running_loop().create_task(self.runtime.prewarm_mcp())
 
     async def _on_cleanup(self, _app: web.Application) -> None:
         await self._cancel_automation_tasks()

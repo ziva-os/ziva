@@ -133,16 +133,18 @@ APT="apt-get -o APT::Sandbox::User=root"
   libavahi-client3 libcairo2 libcups2t64 libdbus-1-3 libdrm2 libfontconfig1 \\
   libgbm1 libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 \\
   libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 \\
+  ripgrep \\
   x11-xkb-utils xfonts-cyrillic xfonts-encodings xfonts-scalable xvfb
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 /opt/chromium/chrome --version
+command -v rg && rg --version | head -n1
 CHROOT
 
 $PROOT /bin/bash -eux <<CHROOT
 python3 -m venv /opt/ziva-venv
 /opt/ziva-venv/bin/pip install -q -i https://pypi.tuna.tsinghua.edu.cn/simple \
-  'pyyaml>=6.0.1' 'openai>=1.30.0' 'mcp>=1.0.0,<2' 'anthropic>=0.30.0' \
+  'pyyaml>=6.0.1' 'openai>=1.30.0' 'mcp>=2.1.1,<3' 'anthropic>=0.30.0' \
   'httpx>=0.27.0' 'rich>=13.0.0' 'aiohttp>=3.9.0' 'uv>=0.5.0'
 /opt/ziva-venv/bin/python -c 'import aiohttp, mcp, anthropic, openai, httpx, rich, yaml; print("rootfs deps OK")'
 # uvx must be on the guest PATH — the backend spawns MCP servers with the
@@ -151,6 +153,14 @@ python3 -m venv /opt/ziva-venv
 ln -sf /opt/ziva-venv/bin/uv /usr/local/bin/uv
 ln -sf /opt/ziva-venv/bin/uvx /usr/local/bin/uvx
 command -v uvx && uvx --version
+# Pre-install minimax-coding-plan-mcp into uv's tool cache (same cache
+# `uvx` reads) so the device's `uvx minimax-coding-plan-mcp` MCP entry
+# starts with zero network — first-boot uvx would otherwise download the
+# package + mcp 2.x on-device and stall the prewarm/MCP connect for a
+# minute. Pinned like every other baked dependency.
+UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple \\
+  /opt/ziva-venv/bin/uv tool install 'minimax-coding-plan-mcp==0.0.5'
+/opt/ziva-venv/bin/uv tool list | grep minimax-coding-plan-mcp
 # Node runtime + pre-installed global MCP servers so npx-based servers work
 # offline on device. chrome-devtools-mcp carries no Chrome binary (there is
 # no linux-arm64 Chrome) — on device it must be pointed at a reachable

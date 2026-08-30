@@ -32,6 +32,7 @@ import java.util.List;
  */
 public class MainActivity extends Activity {
     private WebView webview;
+    private android.view.View bootOverlay;
     private TextView bootStatus;
     private WebTabManager webTabs;
     private boolean shimRetried = false;
@@ -48,6 +49,7 @@ public class MainActivity extends Activity {
         }
         setContentView(R.layout.activity_main);
         webview = findViewById(R.id.webview);
+        bootOverlay = findViewById(R.id.bootOverlay);
         bootStatus = findViewById(R.id.bootStatus);
         findViewById(R.id.menuButton).setOnClickListener(v -> showMenu());
         webTabs = new WebTabManager(this, findViewById(R.id.webContainer), webview);
@@ -59,7 +61,7 @@ public class MainActivity extends Activity {
         else startService(svc);
         getSharedPreferences("ziva", MODE_PRIVATE).edit().putBoolean("run_on_boot", true).apply();
 
-        bootStatus.setVisibility(View.VISIBLE);
+        bootOverlay.setVisibility(View.VISIBLE);
         bootStatus.setText("正在启动 Ziva 后端…");
         maybeRequestAllFiles();
         waitForBackend(0);
@@ -250,7 +252,7 @@ public class MainActivity extends Activity {
                     && !ZivaController.instance().lastError.isEmpty();
             handler.post(() -> {
                 if (ok) {
-                    bootStatus.setVisibility(View.GONE);
+                    bootOverlay.setVisibility(View.GONE);
                     webview.loadUrl("http://127.0.0.1:" + Constants.BACKEND_PORT + "/");
                 } else {
                     // Show the banner (once the budget is spent or the process
@@ -265,7 +267,7 @@ public class MainActivity extends Activity {
                                 + ZivaController.instance().lastError
                                 + "\n菜单 → 重启后端 可重试");
                     } else {
-                        bootStatus.setVisibility(View.VISIBLE);
+                        bootOverlay.setVisibility(View.VISIBLE);
                         String prep = "首次准备中…（" + attempt * 3 / 4 + "s）";
                         File dlLog = new File(Constants.publicDataDir(), "chromium-download.log");
                         if (dlLog.exists()) {
@@ -352,7 +354,7 @@ public class MainActivity extends Activity {
             // failure banner stays forever even after a successful restart
             // (backend healthy per Diagnostics, but the webview never loads).
             runOnUiThread(() -> {
-                bootStatus.setVisibility(View.VISIBLE);
+                bootOverlay.setVisibility(View.VISIBLE);
                 bootStatus.setText("正在重启 Ziva 后端…");
             });
             new Thread(() -> {

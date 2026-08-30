@@ -478,6 +478,16 @@ class Runtime:
     # 每次 build_skill_index 返回新 list 时，这里也会刷新，
     # 与 sig 缓存同步：sig 不变只会跳过 SSE 但仍然走 build → 重建 list。
     _skill_by_name: dict[str, dict] | None = field(default=None)
+    # Runtime-level shared MCP connection (see _connect_mcp_shared). The MCP
+    # config is runtime-global, so the subprocess tree behind a connect
+    # (uvx/npm spawn + handshake — seconds on a cold proot guest) should be
+    # paid ONCE per process, not once per session. Prewarmed at server
+    # startup via prewarm_mcp(); every session then adopts the shared client
+    # instantly, which is what keeps the first message of a new conversation
+    # as fast as subsequent ones.
+    _mcp_shared_client: Any = field(default=None)
+    _mcp_shared_status: MCPConnectStatus = field(default=MCPConnectStatus.DISCONNECTED)
+    _mcp_shared_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
 
     def __post_init__(self) -> None:
         if self._agent_concurrency is None:
@@ -1922,6 +1932,24 @@ class Runtime:
         # session would otherwise permanently reject the call.
         if session.mcp_status == MCPConnectStatus.CONNECTED:
             return
+        # Shared connection already established (prewarm or a sibling
+        # session) — adopt it instead of spawning a duplicate subprocess
+        # tree. The config it was built from is runtime-global anyway.
+        if self._mcp_shared_status == MCPConnectStatus.CONNECTED:
+            session.mcp_client = self._mcp_shared_client
+            session.mcp_status = MCPConnectStatus.CONNECTED
+            return
+        # Shared connect in flight — wait for its outcome. This is also the
+        # r24 retry-storm guard: concurrent sessions never spawn concurrent
+        # connect attempts.
+        if self._mcp_shared_status == MCPConnectStatus.CONNECTING:
+            await self._mcp_shared_event.wait()
+            if self._mcp_shared_status == MCPConnectStatus.CONNECTED:
+                session.mcp_client = self._mcp_shared_client
+                session.mcp_status = MCPConnectStatus.CONNECTED
+                return
+            # else: shared attempt failed / found no config — fall through
+            # and try inline so per-call retry semantics survive.
         if session.mcp_status == MCPConnectStatus.CONNECTING:
             await session.mcp_connected_event.wait()
             return
@@ -1929,12 +1957,42 @@ class Runtime:
         session.mcp_status = MCPConnectStatus.CONNECTING
         session.mcp_connected_event.clear()
         try:
+            status = await self._connect_mcp_shared()
+            if status == MCPConnectStatus.CONNECTED:
+                session.mcp_client = self._mcp_shared_client
+                session.mcp_status = MCPConnectStatus.CONNECTED
+            else:
+                session.mcp_status = status
+        finally:
+            if session.mcp_status == MCPConnectStatus.CONNECTING:
+                # We never got past the try block — treat as FAILED so the
+                # next turn retries. Avoids the "stuck in CONNECTING" case
+                # if e.g. parse_mcp_config itself raised.
+                session.mcp_status = MCPConnectStatus.FAILED
+            session.mcp_connected_event.set()
+
+    async def _connect_mcp_shared(self) -> MCPConnectStatus:
+        """Connect all configured MCP servers once for the whole runtime.
+
+        Returns the resulting status (CONNECTED / NO_CONFIG / FAILED) and
+        stores the client in ``_mcp_shared_client`` on success. Concurrent
+        callers coalesce: while a connect is in flight the rest wait on
+        ``_mcp_shared_event`` and return its outcome. Registration of the
+        discovered tools in the registry happens here (once); per-session
+        state only carries a reference to the shared client.
+        """
+        if self._mcp_shared_status == MCPConnectStatus.CONNECTING:
+            await self._mcp_shared_event.wait()
+            return self._mcp_shared_status
+        self._mcp_shared_status = MCPConnectStatus.CONNECTING
+        self._mcp_shared_event.clear()
+        try:
             from ziva.adapters.mcp.client import MCPClient, parse_mcp_config
 
             mcp_configs = parse_mcp_config(self.config)
             if not mcp_configs:
-                session.mcp_status = MCPConnectStatus.NO_CONFIG
-                return
+                self._mcp_shared_status = MCPConnectStatus.NO_CONFIG
+                return self._mcp_shared_status
 
             try:
                 client = MCPClient(mcp_configs)
@@ -1956,22 +2014,35 @@ class Runtime:
                                 "path": "mcp",
                             },
                         )
-                session.mcp_client = client
-                session.mcp_status = MCPConnectStatus.CONNECTED
+                self._mcp_shared_client = client
+                self._mcp_shared_status = MCPConnectStatus.CONNECTED
             except Exception as e:
                 # connect_all normally swallows per-server errors, so this
                 # branch only fires for catastrophic failures (e.g. the
-                # agents.mcp import blowing up). Mark FAILED, not CONNECTED,
+                # adapters.mcp import blowing up). Mark FAILED, not CONNECTED,
                 # so the next turn retries instead of permanently skipping.
                 logger.error("MCP initialization failed: %s", e)
-                session.mcp_status = MCPConnectStatus.FAILED
+                self._mcp_shared_status = MCPConnectStatus.FAILED
         finally:
-            if session.mcp_status == MCPConnectStatus.CONNECTING:
-                # We never got past the try block — treat as FAILED so the
-                # next turn retries. Avoids the "stuck in CONNECTING" case
-                # if e.g. parse_mcp_config itself raised.
-                session.mcp_status = MCPConnectStatus.FAILED
-            session.mcp_connected_event.set()
+            if self._mcp_shared_status == MCPConnectStatus.CONNECTING:
+                self._mcp_shared_status = MCPConnectStatus.FAILED
+            self._mcp_shared_event.set()
+        return self._mcp_shared_status
+
+    async def prewarm_mcp(self) -> None:
+        """Connect MCP servers in the background at server startup.
+
+        Called fire-and-forget from the desktop API's on_startup hook: by the
+        time the user sends the first message of the first session, the
+        subprocess tree is usually already up, so the first turn doesn't
+        stall on the connect (which is exactly what made first responses on
+        device feel so slow). Never raises — failure just leaves the shared
+        status at FAILED and the next turn retries inline.
+        """
+        try:
+            await self._connect_mcp_shared()
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("MCP prewarm failed (will retry on first use): %s", e)
 
     def _build_tools_param(self, ctx: RuntimeContext | None = None) -> list[dict]:
         """Build OpenAI-format tools list from registered tools, filtered by context."""
@@ -2616,13 +2687,31 @@ class Runtime:
 
     async def shutdown(self) -> None:
         """Gracefully shutdown runtime, disconnecting MCP servers."""
+        # Sessions may share one client (the runtime-level shared connect),
+        # so clean each distinct client exactly once.
+        cleaned: set[int] = set()
+
+        def _cleanup_once(client: Any) -> bool:
+            if client is None or id(client) in cleaned:
+                return False
+            cleaned.add(id(client))
+            return True
+
         for session in list(self._sessions.values()):
-            if session.mcp_client:
+            if _cleanup_once(session.mcp_client):
                 try:
                     await session.mcp_client.cleanup()
                 except Exception:
                     pass
             session.mcp_status = MCPConnectStatus.DISCONNECTED
+        if _cleanup_once(self._mcp_shared_client):
+            try:
+                await self._mcp_shared_client.cleanup()
+            except Exception:
+                pass
+        self._mcp_shared_client = None
+        self._mcp_shared_status = MCPConnectStatus.DISCONNECTED
+        self._mcp_shared_event.set()
 
 
 def _clean_workspace_path_for_display(workspace_root) -> str:

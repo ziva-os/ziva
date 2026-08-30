@@ -268,6 +268,7 @@ class GrepTool:
                 path,
                 head_limit,
                 is_file=is_file,
+                numbered=line_number,
             )
             return ToolResult(text=text, metadata=metadata)
 
@@ -280,6 +281,7 @@ class GrepTool:
     async def _grep_search(
         self, pattern, path, is_file, head_limit, include,
         context_lines, case_insensitive, multiline, output_mode,
+        line_number=True,
     ):
         assert self._grep_path is not None, "grep not available"
         cmd = [self._grep_path]
@@ -295,8 +297,11 @@ class GrepTool:
         elif output_mode == "count":
             cmd.append("-c")  # count per file
         else:
-            # content
-            cmd.extend(["-H", "-n"])  # always show filename + line number
+            # content. -H always shows the filename; -n is gated by
+            # `line_number` (the parser is told via `numbered=`).
+            cmd.append("-H")
+            if line_number:
+                cmd.append("-n")
 
         if include:
             cmd.extend(["--include", include])
@@ -339,6 +344,7 @@ class GrepTool:
                 path,
                 head_limit,
                 is_file=is_file,
+                numbered=line_number,
             )
             return ToolResult(text=text, metadata=metadata)
 
@@ -350,7 +356,7 @@ class GrepTool:
     # ---- Python fallback ----
     async def _python_search(
         self, pattern, path, is_file, head_limit, include,
-        case_insensitive, multiline, output_mode,
+        case_insensitive, multiline, output_mode, line_number=True,
     ):
         try:
             flags = re.IGNORECASE if case_insensitive else 0
@@ -418,7 +424,10 @@ class GrepTool:
             total = len(match_lines)
             lines = [f"Found {total} matches in {len(file_hits)} files:", ""]
             for fp, ln, content in match_lines:
-                lines.append(f"{fp}:{ln}: {content}")
+                if line_number:
+                    lines.append(f"{fp}:{ln}: {content}")
+                else:
+                    lines.append(f"{fp}: {content}")
             if truncated:
                 lines.append(f"\n(Showing {len(match_lines)} of more results)")
             return ToolResult(
@@ -499,7 +508,7 @@ class GrepTool:
         return finish()
 
     # ---- helpers ----
-    def _format_output(self, output, output_mode, base_path, head_limit, is_file: bool = False):
+    def _format_output(self, output, output_mode, base_path, head_limit, is_file: bool = False, numbered: bool = True):
         """Format ripgrep/grep output according to output_mode.
 
         Returns (text, metadata) so callers can put both into the
@@ -509,7 +518,10 @@ class GrepTool:
         caller sees a stable shape regardless of whether they passed
         an absolute or relative `path` in. When `is_file=True`, the
         target file is reported by its basename instead of "." (which
-        is what `os.path.relpath(file, file)` returns).
+        is what `os.path.relpath(file, file)` returns). `numbered`
+        tells the content parser whether the tool emitted line numbers
+        (rg `--line-number` / grep `-n`) — unnumbered output is
+        "file:content" (dir search) or bare "content" (single file).
         """
         def _rel(p: str) -> str:
             if not p:
@@ -572,27 +584,40 @@ class GrepTool:
                 "truncated": False,
             }
 
-        # content: parse "file:line:content" (dir search) or just
-        # "line:content" (rg/grep with a single file target — they
-        # suppress the path prefix in that case).
+        # content: parse "file:line:content" (dir search, numbered) or
+        # "line:content" (single file, numbered). When the tool ran
+        # without line numbers (numbered=False), dir-search lines are
+        # "file:content" and single-file lines are bare content.
         matches = []
         for line in output.split("\n"):
             if not line:
                 continue
-            parts = line.split(":", 2)
-            if len(parts) >= 3:
-                # dir search: file:line:content
-                try:
-                    matches.append((_rel(parts[0]), int(parts[1]), parts[2]))
-                except ValueError:
-                    continue
-            elif len(parts) == 2:
-                # single-file search: line:content
-                try:
-                    matches.append((_rel(base_path), int(parts[0]), parts[1]))
-                except ValueError:
-                    continue
-            # else: malformed line, skip
+            if not numbered:
+                if is_file:
+                    matches.append((_rel(base_path), 0, line))
+                else:
+                    fp, sep, content = line.partition(":")
+                    if sep:
+                        matches.append((_rel(fp), 0, content))
+                    else:
+                        # A file with no ":" in its path prints as bare
+                        # content — can't distinguish; attribute it.
+                        matches.append((line, 0, line))
+            else:
+                parts = line.split(":", 2)
+                if len(parts) >= 3:
+                    # dir search: file:line:content
+                    try:
+                        matches.append((_rel(parts[0]), int(parts[1]), parts[2]))
+                    except ValueError:
+                        continue
+                elif len(parts) == 2:
+                    # single-file search: line:content
+                    try:
+                        matches.append((_rel(base_path), int(parts[0]), parts[1]))
+                    except ValueError:
+                        continue
+                # else: malformed line, skip
             if len(matches) >= head_limit:
                 break
 
@@ -600,7 +625,10 @@ class GrepTool:
         file_set = sorted({m[0] for m in matches})
         lines = [f"Found {len(matches)} matches in {len(file_set)} files:", ""]
         for fp, ln, content in matches:
-            lines.append(f"{fp}:{ln}: {content}")
+            if ln:
+                lines.append(f"{fp}:{ln}: {content}")
+            else:
+                lines.append(f"{fp}: {content}")
         if truncated:
             lines.append(f"\n(Showing {len(matches)} of more results)")
         text = "\n".join(lines)

@@ -16,12 +16,52 @@
         android:layout_height="match_parent"
         android:visibility="gone" />
 
-    <TextView
-        android:id="@+id/bootStatus"
+    <!-- Boot splash, a port of the Mac desktop's loading screen
+         (electron/main.ts): #0f0f0f backdrop, "ZivaOS" wordmark, the
+         breathing infinity mark with its traveling glow dot — and, below
+         the mark, the live Linux-install progress lines (rootfs download,
+         chromium bake, backend patch) that the Mac side never needed. -->
+    <LinearLayout
+        android:id="@+id/bootOverlay"
         android:layout_width="wrap_content" android:layout_height="wrap_content"
         android:layout_gravity="center"
-        android:textColor="#8a8a8a" android:textSize="14sp"
-        android:visibility="gone" />
+        android:orientation="vertical"
+        android:gravity="center_horizontal"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:orientation="horizontal">
+            <TextView
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="Ziva"
+                android:textColor="#e8e8f0"
+                android:textSize="34sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.01" />
+            <TextView
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="OS"
+                android:textColor="#8ab4f8"
+                android:textSize="34sp"
+                android:layout_marginStart="1dp" />
+        </LinearLayout>
+
+        <com.zivaos.ziva.InfinityMarkView
+            android:id="@+id/bootMark"
+            android:layout_width="87dp" android:layout_height="36dp"
+            android:layout_marginTop="26dp" />
+
+        <TextView
+            android:id="@+id/bootStatus"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="32dp"
+            android:maxWidth="520dp"
+            android:gravity="center"
+            android:fontFamily="monospace"
+            android:textColor="#9aa0b4" android:textSize="12sp"
+            android:lineSpacingExtra="3dp" />
+    </LinearLayout>
 
     <TextView
         android:id="@+id/menuButton"
