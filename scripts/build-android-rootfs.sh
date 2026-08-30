@@ -91,25 +91,40 @@ BINREL=$(node -p "const p=require('$WORK/mcp/node_modules/chrome-devtools-mcp/pa
 chmod +x "$ROOTFS/usr/local/lib/node_modules/chrome-devtools-mcp/$BINREL"
 ln -sf "../lib/node_modules/chrome-devtools-mcp/$BINREL" "$ROOTFS/usr/local/bin/chrome-devtools-mcp"
 
-# Bake Playwright's linux-arm64 Chromium + its system libraries into the
-# rootfs. This MUST happen here, on a real kernel: on-device `apt` under
-# proot dies mid-transaction because Android's seccomp returns ENOSYS for
-# syscalls noble's dpkg/coreutils rely on (statx et al. — seen in the
-# device's chromium-download.log: unpack aborted halfway, lock poisoned).
-echo "==> baking Playwright chromium (linux-arm64) + deps into rootfs"
+# Bake Playwright's linux-arm64 Chromium into the rootfs. Two kernels of
+# trouble shaped this: (1) on-device `apt` under proot dies mid-transaction
+# because Android's seccomp returns ENOSYS for syscalls noble's dpkg needs
+# (statx et al. — the device's chromium-download.log shows the unpack
+# aborting halfway), and (2) node under CI proot double-frees (same glibc
+# issue as `npm install -g` above), which kills playwright's download
+# child. So: download the browser with HOST node straight into the rootfs
+# tree, and install the (stable, pinned-playwright-on-noble) dependency
+# list inside the chroot. The chrome --version smoke at the end fails the
+# build loudly if the list ever drifts.
+echo "==> baking Playwright chromium (linux-arm64) into rootfs"
+export PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright
+export PLAYWRIGHT_BROWSERS_PATH="$ROOTFS/opt/ms-playwright"
+mkdir -p "$PLAYWRIGHT_BROWSERS_PATH" "$ROOTFS/opt/chromium"
+npx -y playwright@1.49.1 install chromium --no-shell
+ln -sf "$(ls -d "$ROOTFS"/opt/ms-playwright/chromium-*/chrome-linux/chrome | head -n1)" "$ROOTFS/opt/chromium/chrome"
 $PROOT /bin/bash -eux <<CHROOT
 export DEBIAN_FRONTEND=noninteractive
-# playwright's --with-deps drives apt-get itself; persist the _apt sandbox
-# bypass (the base-image round passed it per-invocation).
+# Persist the _apt sandbox bypass for any future in-guest apt (playwright's
+# --with-deps used to need it; the base-image round passed it per-command).
 echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/99proot-root
-export PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright
-export PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
-npx -y playwright@1.49.1 install --with-deps chromium --no-shell
-mkdir -p /opt/chromium
-ln -sf "\$(ls -d /opt/ms-playwright/chromium-*/chrome-linux/chrome | head -n1)" /opt/chromium/chrome
-/opt/chromium/chrome --version
+APT="apt-get -o APT::Sandbox::User=root"
+\$APT update -qq
+\$APT install -y -qq --no-install-recommends \\
+  fonts-freefont-ttf fonts-ipafont-gothic fonts-liberation \\
+  fonts-noto-color-emoji fonts-tlwg-loma-otf fonts-unifont fonts-wqy-zenhei \\
+  libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 \\
+  libavahi-client3 libcairo2 libcups2t64 libdbus-1-3 libdrm2 libfontconfig1 \\
+  libgbm1 libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 \\
+  libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 \\
+  x11-xkb-utils xfonts-cyrillic xfonts-encodings xfonts-scalable xvfb
 apt-get clean
-rm -rf /var/lib/apt/lists/* /root/.npm
+rm -rf /var/lib/apt/lists/*
+/opt/chromium/chrome --version
 CHROOT
 
 $PROOT /bin/bash -eux <<CHROOT
