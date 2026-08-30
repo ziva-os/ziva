@@ -106,7 +106,19 @@ export PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright
 export PLAYWRIGHT_BROWSERS_PATH="$ROOTFS/opt/ms-playwright"
 mkdir -p "$PLAYWRIGHT_BROWSERS_PATH" "$ROOTFS/opt/chromium"
 npx -y playwright@1.49.1 install chromium --no-shell
-ln -sf "$(ls -d "$ROOTFS"/opt/ms-playwright/chromium-*/chrome-linux/chrome | head -n1)" "$ROOTFS/opt/chromium/chrome"
+# /opt/chromium/chrome is a WRAPPER, not a direct symlink: the guest runs
+# as (proot-faked) root with no user namespaces and no real /dev/shm, and
+# stock chrome refuses to start as root without --no-sandbox. Baking the
+# flags into the wrapper means every consumer gets them for free. The real
+# binary hangs off chrome-bin; chrome finds its resources via
+# /proc/self/exe, which after exec points at the real binary.
+REAL="$(ls -d "$ROOTFS"/opt/ms-playwright/chromium-*/chrome-linux/chrome | head -n1)"
+ln -sf "$REAL" "$ROOTFS/opt/chromium/chrome-bin"
+cat > "$ROOTFS/opt/chromium/chrome" <<'WRAPPER'
+#!/bin/sh
+exec /opt/chromium/chrome-bin --no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage --disable-gpu "$@"
+WRAPPER
+chmod +x "$ROOTFS/opt/chromium/chrome"
 $PROOT /bin/bash -eux <<CHROOT
 export DEBIAN_FRONTEND=noninteractive
 # Persist the _apt sandbox bypass for any future in-guest apt (playwright's

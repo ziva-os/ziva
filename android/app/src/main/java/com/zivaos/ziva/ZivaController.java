@@ -377,9 +377,28 @@ public final class ZivaController {
         writeGuestFile(new File(rootfs, "opt/ensure-chromium.sh"),
             "#!/bin/sh\n"
             + "CHROME=/opt/chromium/chrome\n"
+            + "CHROME_BIN=/opt/chromium/chrome-bin\n"
             + "LOCK=/opt/chromium/.downloading\n"
             + "TAG=\"[ensure]\"\n"
             + "mkdir -p /opt/chromium /root/.cache/ms-playwright\n"
+            + "\n"
+            // $CHROME must be the flag-wrapper script (guest runs as
+            // proot-faked root: stock chrome refuses to start as root
+            // without --no-sandbox; Android has no user namespaces and no
+            // real /dev/shm). r26 baked a DIRECT symlink to the binary —
+            // convert it in place; no ROOTFS_VERSION bump needed.
+            + "fixup_wrapper() {\n"
+            + "  if [ -L \"$CHROME\" ]; then\n"
+            + "    T=$(readlink -f \"$CHROME\" 2>/dev/null)\n"
+            + "    if [ -n \"$T\" ] && [ -x \"$T\" ]; then ln -sf \"$T\" \"$CHROME_BIN\"; fi\n"
+            + "    rm -f \"$CHROME\"\n"
+            + "  fi\n"
+            + "  if [ ! -x \"$CHROME\" ] && [ -x \"$CHROME_BIN\" ]; then\n"
+            + "    printf '#!/bin/sh\\nexec /opt/chromium/chrome-bin --no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage --disable-gpu \"$@\"\\n' > \"$CHROME\"\n"
+            + "    chmod +x \"$CHROME\"\n"
+            + "  fi\n"
+            + "}\n"
+            + "fixup_wrapper\n"
             + "\n"
             + "download() {\n"
             + "  export PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright\n"
@@ -388,7 +407,9 @@ public final class ZivaController {
             + "  npx -y playwright@1.49.1 install --with-deps chromium --no-shell\n"
             + "  SRC=$(ls -d /root/.cache/ms-playwright/chromium-*/chrome-linux 2>/dev/null | head -n 1)\n"
             + "  if [ -n \"$SRC\" ] && [ -x \"$SRC/chrome\" ]; then\n"
-            + "    ln -sf \"$SRC/chrome\" \"$CHROME\"\n"
+            + "    ln -sf \"$SRC/chrome\" \"$CHROME_BIN\"\n"
+            + "    rm -f \"$CHROME\"\n"
+            + "    fixup_wrapper\n"
             + "    echo \"$TAG chromium installed at $CHROME\"\n"
             + "  else\n"
             + "    echo \"$TAG chromium download FAILED (see npx output above)\"\n"
@@ -437,7 +458,9 @@ public final class ZivaController {
             + "  echo \"$! $(date +%s)\" > \"$LOCK\"\n"
             + "  exit 1\n"
             + "fi\n"
-            + "exec /usr/local/bin/chrome-devtools-mcp --executablePath \"$CHROME\" --headless \"$@\"\n");
+            // NOTE: this script's stdout IS the MCP stdio pipe — never echo
+            // diagnostics here; --logFile lands them in the public data dir.
+            + "exec /usr/local/bin/chrome-devtools-mcp --executablePath \"$CHROME\" --headless --logFile /root/.ziva/chrome-mcp.log \"$@\"\n");
         // Best effort: the helper needs +x for direct exec via /bin/sh anyway,
         // but a shebang'd exec keeps the config one-liner clean.
         try {
