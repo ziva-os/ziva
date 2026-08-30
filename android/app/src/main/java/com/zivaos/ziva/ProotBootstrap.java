@@ -56,7 +56,11 @@ public final class ProotBootstrap {
         // venv/bin/python, which is a chain of symlinks (python -> python3 ->
         // python3.12) that may not survive extraction on every device; the
         // interpreter itself and site-packages are plain files.
-        cmd.add("PYTHONPATH=" + Constants.GUEST_ZIVA_SRC + "/src:" + Constants.GUEST_VENV_SITE_PACKAGES);
+        // /opt/ziva-src itself must be importable too: plugin impls do
+        // `from plugins.tools._shared... import ...` (namespace packages,
+        // no __init__.py), which resolves only with the repo root on the
+        // path — on Mac that's the cwd / _MEIPASS, here it's explicit.
+        cmd.add("PYTHONPATH=" + Constants.GUEST_ZIVA_SRC + "/src:" + Constants.GUEST_ZIVA_SRC + ":" + Constants.GUEST_VENV_SITE_PACKAGES);
         // PROOT_TMP_DIR / PROOT_L2S_DIR / PROOT_LOADER are injected by
         // ZivaController into proot's HOST environment — see startBackend.
         cmd.add("/bin/bash");

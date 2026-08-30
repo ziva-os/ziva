@@ -145,7 +145,11 @@ command -v uvx && uvx --version
 # browser via --browser-url (e.g. a LAN machine's --remote-debugging-port).
 command -v node && node --version && chrome-devtools-mcp --version >/dev/null 2>&1 && echo "node+mcp OK"
 # Smoke: the backend must at least import and start under the rootfs python.
-cd /opt/ziva-src && PYTHONPATH=/opt/ziva-src/src timeout 15 /opt/ziva-venv/bin/python -m ziva.app.cli desktop serve --host 127.0.0.1 --port 4097 &
+# Mirror the device exactly: cwd=/root (NOT /opt/ziva-src — a repo-root cwd
+# puts `plugins` on sys.path implicitly and hid the namespace-package import
+# failure that killed the r26 backend on device), PYTHONPATH identical to
+# ProotBootstrap's (src + repo root + venv site-packages).
+cd /root && PYTHONPATH=/opt/ziva-src/src:/opt/ziva-src:/opt/ziva-venv/lib/python3.12/site-packages timeout 15 /usr/bin/python3 -m ziva.app.cli desktop serve --host 127.0.0.1 --port 4097 &
 SRV=\$!
 for i in \$(seq 1 25); do
   sleep 1
