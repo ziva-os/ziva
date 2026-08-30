@@ -328,7 +328,7 @@ public final class ZivaController {
             + "    if [ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null; then return 0; fi\n"
             + "    started=$(cut -d' ' -f2 \"$LOCK\" 2>/dev/null)\n"
             + "    now=$(date +%s)\n"
-            + "    if [ -n \"$started\" ] && [ $((now - started)) -lt 1800 ]; then return 0; fi\n"
+            + "    if [ -n \"$started\" ] && [ $((now - started)) -lt 600 ]; then return 0; fi\n"
             + "    rm -f \"$LOCK\"\n"
             + "  fi\n"
             + "  return 1\n"

@@ -234,12 +234,12 @@ public class MainActivity extends Activity {
         "})();";
 
     private void waitForBackend(final int attempt) {
-        // REAL wall-clock budget: ~120 × (750ms sleep + probe) ≈ 2.5 min.
-        // Without the sleep the "attempts" burned through in seconds (a
-        // refused connect returns in ~1ms), the failure banner showed long
-        // BEFORE the proot backend finished its 10–30s cold start, and the
-        // UI never recovered even though the backend came up healthy.
-        final int maxAttempts = 120;
+        // REAL wall-clock budget. First boot includes the SYNCHRONOUS
+        // chromium download + apt dependency install (several minutes on
+        // purpose — chat stays locked out until the box is fully ready),
+        // so the budget is generous; the banner still self-recovers when
+        // the backend eventually answers.
+        final int maxAttempts = 900; // ~11 min of 750ms polls
         new Thread(() -> {
             if (isDestroyed() || isFinishing()) return;
             try { Thread.sleep(750); } catch (InterruptedException e) { return; }
@@ -256,12 +256,23 @@ public class MainActivity extends Activity {
                     // Show the banner (once the budget is spent or the process
                     // died fast) but KEEP polling: when the backend eventually
                     // comes up — cold start, watchdog restart, manual restart —
-                    // the UI recovers by itself.
+                    // the UI recovers by itself. While the process is alive and
+                    // within budget, show live first-boot prep progress
+                    // (extraction → chromium download) instead of silence.
                     if (failedFast || attempt >= maxAttempts) {
                         findViewById(R.id.menuButton).setVisibility(View.VISIBLE);
                         bootStatus.setText("后端启动失败 [" + BuildConfig.VERSION_NAME + "]："
                                 + ZivaController.instance().lastError
                                 + "\n菜单 → 重启后端 可重试");
+                    } else {
+                        bootStatus.setVisibility(View.VISIBLE);
+                        String prep = "首次准备中…（" + attempt * 3 / 4 + "s）";
+                        File dlLog = new File(Constants.publicDataDir(), "chromium-download.log");
+                        if (dlLog.exists()) {
+                            long n = dlLog.length();
+                            if (n > 0) prep = "首次准备中：浏览器组件下载中…（日志 " + n / 1024 + " KB）";
+                        }
+                        bootStatus.setText(prep);
                     }
                     waitForBackend(attempt + 1);
                 }

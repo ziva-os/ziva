@@ -22,7 +22,12 @@ public class ZivaService extends Service {
     private static final String CHANNEL_ID = "ziva-running";
     private static final int NOTIF_ID = 42;
     private static final long WATCHDOG_MS = 15_000;
-    private static final long STARTUP_GRACE_MS = 40_000;
+    // Covers the first-boot prep phase: rootfs extraction, then the
+    // SYNCHRONOUS chromium download + apt dependency install (several
+    // minutes). During all of it the backend process is alive but /status
+    // doesn't answer — sustainedUnreachable must not fire here (r24: it
+    // killed the backend mid-download and the boot restarted from zero).
+    private static final long STARTUP_GRACE_MS = 600_000;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private boolean watchdogArmed = false;
