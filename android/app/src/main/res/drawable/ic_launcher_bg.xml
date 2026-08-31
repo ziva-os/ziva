@@ -14,14 +14,18 @@
                 android:endColor="#060818" />
         </shape>
     </item>
+    <!-- The glow must be SQUARE: a layer-list's intrinsic size is the max of
+         its children, and a 2:1 intrinsic ratio makes installer UIs that
+         rasterize by intrinsic size squash/stretch the whole icon. A circle
+         whose center sits on the bottom edge reads as the same rising glow. -->
     <item
-        android:width="340dp" android:height="170dp"
+        android:width="240dp" android:height="240dp"
         android:gravity="bottom|center_horizontal"
-        android:bottom="-85dp">
+        android:bottom="-120dp">
         <shape android:shape="oval">
             <gradient
                 android:type="radial"
-                android:gradientRadius="85dp"
+                android:gradientRadius="120dp"
                 android:startColor="#4d6d28d9"
                 android:centerColor="#1e6d28d9"
                 android:endColor="#006d28d9" />
