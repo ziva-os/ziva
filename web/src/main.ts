@@ -204,6 +204,7 @@ function init() {
   setRuntimeStateDeps({ updateSendStopButton });
   initLightbox();
   initMessageLinkInterceptor();
+  initMessageVirtualization();
   if ((window as any).electronAPI && navigator.platform.toLowerCase().includes("mac")) {
     document.body.classList.add("electron-darwin");
   }
@@ -1937,6 +1938,8 @@ async function loadHistory(sid: string) {
 
   const ok = await loadHistoryInto(sid, $("messages"));
   if (ok) scrollBottom();
+  // Let the initial paint settle, then reclaim off-screen message DOM.
+  schedulePrune(800);
 }
 
 async function loadHistoryInto(sid: string, target: HTMLElement): Promise<boolean> {
@@ -3521,6 +3524,8 @@ function syncBackgroundSession(sid: string, ev: api.Event) {
     if (shouldClobber) {
       flushComposerQueue(sid, t === "turn_end" ? 200 : 0);
     }
+    // The streamed tail is now settled history — eligible for pruning.
+    schedulePrune();
   }
 }
 
@@ -5349,6 +5354,133 @@ export function closeSettingsModal() {
 // ---- MCP Status ----
 
 // ---- Settings modal ----
+// ---- Message list virtualization ----
+// Long conversations (hundreds of KaTeX-heavy messages) make the message
+// list one of the biggest memory consumers on the tablet: every message
+// keeps its full layout/paint structures alive even when scrolled far off
+// screen. Two cooperating layers:
+//
+// 1. CSS: `.msg { content-visibility: auto }` (components.css) — the
+//    browser skips layout/paint for off-screen messages entirely.
+// 2. DOM pruning (here): messages beyond a margin from the viewport get
+//    their children detached into a DocumentFragment and the element left
+//    as a fixed-height placeholder; scrolling near it reattaches the
+//    fragment bit-identically (event listeners, tool cards, KaTeX markup
+//    all preserved — we never re-render, so tool-call pairing cannot
+//    break). Detached nodes lose their render tree, which is most of
+//    their cost.
+//
+// Safety rules: the streaming tail is never pruned (last TAIL_GUARD
+// messages), nothing is pruned while that session's turn is running
+// (stream handlers hold lookups into the live DOM), and placeholders keep
+// their exact measured height so the scrollbar never drifts.
+
+const PRUNE_FRAGMENTS = new WeakMap<HTMLElement, DocumentFragment>();
+const PRUNE_MARGIN_PX = 2500; // prune beyond ~3 viewport heights
+const REATTACH_MARGIN_PX = 1600; // hysteresis: reattach closer than we prune
+const TAIL_GUARD = 3; // never prune the last N messages (live stream tail)
+let pruneScheduled = false;
+
+function schedulePrune(delayMs: number = 600): void {
+  if (pruneScheduled) return;
+  pruneScheduled = true;
+  setTimeout(() => {
+    pruneScheduled = false;
+    pruneAllMessageLists();
+  }, delayMs);
+}
+
+function pruneAllMessageLists(): void {
+  document.querySelectorAll<HTMLElement>(".pane-messages").forEach(pruneContainer);
+}
+
+function messageListSid(container: HTMLElement): string {
+  return container.closest("[data-sid]")?.getAttribute("data-sid") || "";
+}
+
+function pruneContainer(container: HTMLElement): void {
+  const sid = messageListSid(container);
+  // Conservative: an unidentifiable container never gets pruned (we can't
+  // check its running state, so pruning there could break a live stream).
+  if (!sid) return;
+  // While a turn is streaming we only ever reattach — pruning could
+  // detach a node a stream handler is about to write into.
+  if (!isSessionRunning(sid)) {
+    const vp = container.getBoundingClientRect();
+    const msgs = Array.from(container.children).filter(
+      (c) => c.classList.contains("msg") && !c.hasAttribute("data-pruned"),
+    ) as HTMLElement[];
+    for (let i = 0; i < msgs.length - TAIL_GUARD; i++) {
+      const el = msgs[i];
+      const r = el.getBoundingClientRect();
+      if (r.bottom < vp.top - PRUNE_MARGIN_PX || r.top > vp.bottom + PRUNE_MARGIN_PX) {
+        // Capture the REAL height: content-visibility:auto elements report
+        // their contain-intrinsic-size estimate from offsetHeight, which
+        // would poison the placeholder and drift the scrollbar on every
+        // reattach. Forcing visible for this read lays the element out
+        // once — a one-time cost per message; after pruning it never
+        // contributes layout work again.
+        const prevCV = el.style.contentVisibility;
+        el.style.contentVisibility = "visible";
+        const h = el.offsetHeight;
+        el.style.contentVisibility = prevCV;
+        if (h <= 0) continue;
+        const frag = document.createDocumentFragment();
+        while (el.firstChild) frag.appendChild(el.firstChild);
+        el.setAttribute("data-pruned", "1");
+        el.style.height = `${h}px`;
+        el.style.overflow = "hidden";
+        PRUNE_FRAGMENTS.set(el, frag);
+      }
+    }
+  }
+  reattachNearViewport(container);
+}
+
+function reattachNearViewport(container: HTMLElement): void {
+  const vp = container.getBoundingClientRect();
+  container.querySelectorAll<HTMLElement>('.msg[data-pruned="1"]').forEach((el) => {
+    const frag = PRUNE_FRAGMENTS.get(el);
+    if (!frag) {
+      // Fragment lost (shouldn't happen — WeakMap lives as long as the
+      // el does) — drop the placeholder rather than show an empty bubble.
+      el.removeAttribute("data-pruned");
+      el.style.height = "";
+      el.style.overflow = "";
+      return;
+    }
+    const r = el.getBoundingClientRect();
+    if (r.bottom >= vp.top - REATTACH_MARGIN_PX && r.top <= vp.bottom + REATTACH_MARGIN_PX) {
+      el.removeAttribute("data-pruned");
+      el.style.height = "";
+      el.style.overflow = "";
+      el.appendChild(frag);
+      PRUNE_FRAGMENTS.delete(el);
+    }
+  });
+}
+
+function initMessageVirtualization(): void {
+  // scroll doesn't bubble, but the capture phase sees every container's
+  // scroll events. rAF-throttled; the prune pass itself is cheap (gBCR per
+  // message, empty reads for already-pruned placeholders).
+  let ticking = false;
+  document.addEventListener(
+    "scroll",
+    (e) => {
+      const t = e.target as Element | null;
+      if (!t || !(t instanceof HTMLElement) || !t.classList.contains("pane-messages")) return;
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => {
+        ticking = false;
+        schedulePrune(250);
+      });
+    },
+    { capture: true, passive: true },
+  );
+}
+
 // ---- Bootstrap ----
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", init);

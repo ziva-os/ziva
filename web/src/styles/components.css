@@ -1360,6 +1360,13 @@ webview.browser-frame {
 .session-item .split-btn.active { color: var(--accent); }
 
 .msg { margin-bottom: 4px; max-width: 100%; }
+/* Virtualization layer 1: skip layout/paint for off-screen messages.
+   Paired with the DOM pruner in main.ts (which detaches far-off-screen
+   messages entirely). `auto <length>` gives unrendered messages an
+   estimate, then the browser remembers their real height after first
+   render so the scrollbar doesn't jump. */
+.pane-messages .msg { content-visibility: auto; contain-intrinsic-size: auto 120px; }
+.pane-messages .msg[data-pruned] { content-visibility: visible; } /* placeholder: fixed height set inline, nothing to skip */
 .msg-inner { padding: 6px 0; font-size: 15px; line-height: 1.75; word-break: break-word; max-width: var(--content-max-w); margin: 0 auto; }
 .msg.user .msg-inner { background: transparent; }
 .msg.assistant .msg-inner { background: transparent; }
