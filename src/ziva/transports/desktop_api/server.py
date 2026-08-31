@@ -457,6 +457,16 @@ class DesktopAPIServer:
         # the first message of the first session doesn't stall on the connect
         # (uvx/npm spawn + handshake — tens of seconds on a cold proot guest).
         asyncio.get_running_loop().create_task(self.runtime.prewarm_mcp())
+        # Memory watchdog (Android/proot; self-disables on hosts without
+        # /proc/meminfo): under device memory pressure, kill the Chromium
+        # tree before the kernel's low-memory killer kills the BACKEND —
+        # a dead browser respawns lazily, a dead backend takes the whole
+        # app down for ~10s (this was the recurring code=137 in device logs).
+        from ziva.memwatch import run_mem_watchdog
+
+        asyncio.get_running_loop().create_task(
+            run_mem_watchdog(on_pressure=self.runtime.invalidate_mcp)
+        )
 
     async def _on_cleanup(self, _app: web.Application) -> None:
         await self._cancel_automation_tasks()
