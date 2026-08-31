@@ -82,7 +82,7 @@ mcp:
       enabled: true
     MiniMax:                     # MiniMax 搜索 + 图片理解
       type: local
-      command: uvx --with "mcp[cli]<2.0" minimax-coding-plan-mcp
+      command: uvx minimax-coding-plan-mcp
       environment:
         MINIMAX_API_KEY: sk-your-key
         MINIMAX_API_HOST: https://api.minimaxi.com

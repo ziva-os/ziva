@@ -30,7 +30,7 @@ import { refreshStatus, refreshMCPStatus, updateConnStatus, setStatusDeps } from
 import {   toggleRightPanel, initResizablePanel, updatePlanTabContent, scheduleDiffRefresh, refreshActiveReviewTabs, refreshActivePlanTab, ensurePlanSubscriber } from "./right-panel";
 import {
   isActiveRunning, getActivePending, setActivePending, setActiveRunning,
-  setSessionRunning, isSessionRunning, getSessionPending, setSessionPending,
+  setSessionRunning, isSessionRunning, getSessionPending,
   generatePendingId, enqueuePending, getPendingQueue, updatePendingItem,
   removePendingItem, clearAllPending,
   streamCtx, clearStreamCtx, invalidateLiveStreamEl, invalidateStreamCtx,
@@ -4700,13 +4700,12 @@ function editComposerPending(sid: string, itemId?: string) {
   // pulled-back text (the input event handler hasn't fired yet to keep
   // promptDrafts in sync on its own).
   setDraftText(sid, item.text);
-  const imgs = queuedImages(sid);
-  if (imgs.length > 0) {
-    setDraftImages(sid, [...draftImages(sid), ...imgs]);
-    renderComposerPreviews(sid);
-  }
-  setSessionPending(sid, null);
-  renderComposerPending(sid);
+  // NOTE: only the edited item was removed above — the rest of the queue
+  // (A when editing B) must stay queued. The pre-multi-item tail used to
+  // call setSessionPending(sid, null) here, which deleted the whole
+  // session queue, and re-read queuedImages() (by then the HEAD = another
+  // item's images) into the draft. Both relics are gone; do not
+  // reintroduce them.
   if (ta) ta.focus();
 }
 

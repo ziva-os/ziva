@@ -99,6 +99,32 @@ class MCPServer:
     def name(self) -> str:
         return self._name
 
+    def _session_timeout(self) -> Any:
+        """read_timeout_seconds for ClientSession, typed for the installed SDK.
+
+        mcp 2.x changed the parameter from ``timedelta`` to plain float
+        seconds; handing timedelta to 2.x dies inside the SDK with
+        "unsupported operand type(s) for +: 'float' and 'datetime.timedelta'"
+        (hit on the Android rootfs, which pip-installs the latest mcp), while
+        1.x calls ``.total_seconds()`` on what it's given and dies on float.
+        Probe the installed signature once and adapt.
+        """
+        import inspect
+
+        from mcp import ClientSession
+
+        try:
+            param = inspect.signature(ClientSession.__init__).parameters.get(
+                "read_timeout_seconds"
+            )
+            wants_float = param is not None and "float" in str(param.annotation)
+        except (TypeError, ValueError):  # pragma: no cover - exotic SDK builds
+            wants_float = False
+        seconds = self.client_session_timeout_seconds
+        if seconds is None:
+            return None
+        return float(seconds) if wants_float else timedelta(seconds=seconds)
+
     async def connect(self) -> None:
         from mcp import ClientSession
         try:
@@ -106,13 +132,8 @@ class MCPServer:
             # stdio/sse return (read, write); streamable-http returns
             # (read, write, get_session_id) — we ignore the trailing callback.
             read, write, *_rest = transport
-            timeout = (
-                timedelta(seconds=self.client_session_timeout_seconds)
-                if self.client_session_timeout_seconds is not None
-                else None
-            )
             session = await self.exit_stack.enter_async_context(
-                ClientSession(read, write, read_timeout_seconds=timeout)
+                ClientSession(read, write, read_timeout_seconds=self._session_timeout())
             )
             await session.initialize()
             self.session = session
