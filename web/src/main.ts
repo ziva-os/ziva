@@ -5462,8 +5462,7 @@ function reattachNearViewport(container: HTMLElement): void {
 
 function initMessageVirtualization(): void {
   // scroll doesn't bubble, but the capture phase sees every container's
-  // scroll events. rAF-throttled; the prune pass itself is cheap (gBCR per
-  // message, empty reads for already-pruned placeholders).
+  // scroll events. rAF-throttled.
   let ticking = false;
   document.addEventListener(
     "scroll",
@@ -5474,6 +5473,12 @@ function initMessageVirtualization(): void {
       ticking = true;
       requestAnimationFrame(() => {
         ticking = false;
+        // Reattach IMMEDIATELY: placeholders approaching the viewport must
+        // fill in during the scroll itself, otherwise fast scroll-back
+        // shows empty shells for the prune delay. This pass is cheap
+        // (only touches data-pruned elements).
+        reattachNearViewport(t);
+        // The expensive direction (measure + detach) stays idle-deferred.
         schedulePrune(250);
       });
     },
