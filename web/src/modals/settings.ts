@@ -934,6 +934,16 @@ export async function openSettingsModal() {
             enabled: srvEnabled,
           };
         });
+        // Explicit deletions: the backend deep-merges the payload onto the
+        // on-disk config, so a server that is merely ABSENT here is kept
+        // (absence = "the UI doesn't manage this"). Per the merge protocol,
+        // None means "delete this key" — emit it for every original server
+        // whose card is gone (covers renames too: the old key is deleted,
+        // the new one created).
+        const keptMcpNames = new Set(Object.keys(newMcpServers));
+        for (const origName of Object.keys(mcpServers)) {
+          if (!keptMcpNames.has(origName)) newMcpServers[origName] = null;
+        }
         updated.mcp = { ...updated.mcp, enabled: mcpEnabled, servers: newMcpServers };
 
         // Sandbox
@@ -983,6 +993,12 @@ export async function openSettingsModal() {
           newAgents[newName] = agentObj;
         });
 
+        // Same None-deletion protocol as MCP servers above: without it a
+        // removed agent card is resurrected by the backend's deep-merge.
+        const keptAgentNames = new Set(Object.keys(newAgents));
+        for (const origName of Object.keys(agents)) {
+          if (!keptAgentNames.has(origName)) newAgents[origName] = null;
+        }
         updated.agents = newAgents;
 
         // Hook disable list — collected from the toggles on the hooks
