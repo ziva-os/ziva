@@ -166,6 +166,13 @@ class MCPServer:
         # "not provided" matches the common intent and fixes that.
         if arguments:
             arguments = {k: v for k, v in arguments.items() if v != ""}
+        # Liveness signal for the device memory watchdog: browser tool
+        # calls keep the Chromium stack alive (it idle-exits after a
+        # window without any). Cheap no-op everywhere else.
+        if "chrome" in self._name.lower():
+            from ziva.memwatch import note_chrome_activity
+
+            note_chrome_activity()
         # Retry transient failures with exponential backoff, then map transport
         # errors to readable messages (mirrors agents.mcp _run_with_retries +
         # _raise_user_error_for_http_error).

@@ -1,13 +1,23 @@
 """Tests for the device memory watchdog (src/ziva/memwatch.py)."""
 
+import asyncio
+
 import pytest
 
+import ziva.memwatch as memwatch
 from ziva.memwatch import (
     find_chrome_pids,
     read_mem_available_mb,
     read_rss_mb,
     run_mem_watchdog,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_chrome_activity():
+    memwatch._last_chrome_use = None
+    yield
+    memwatch._last_chrome_use = None
 
 MEMINFO = b"""MemTotal:       12000000 kB
 MemFree:          300000 kB
@@ -123,6 +133,69 @@ async def test_watchdog_no_kill_when_memory_healthy():
         )
     assert killed == []
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_watchdog_idle_exits_unused_chrome_stack():
+    """Chrome resident but no browser tool call in the window → killed."""
+    fake = FakeProc(MEMINFO, {200: b"/opt/chromium/chrome-bin", -200: b"VmRSS:\t 409600 kB"})
+    killed, calls, now, ticks = [], [], [0.0], [0]
+
+    def fake_kill(pid, sig):
+        killed.append(pid)
+
+    async def fake_sleep(_s):
+        ticks[0] += 1
+        if ticks[0] >= 3:
+            raise asyncio.CancelledError
+        now[0] += 700.0  # jump past the idle window
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_mem_watchdog(
+            lambda: calls.append(1),
+            read=fake.read,
+            listdir=fake.listdir,
+            kill=fake_kill,
+            sleep=fake_sleep,
+            clock=lambda: now[0],
+            own_pid=300,
+            log=lambda m: None,
+        )
+    assert killed == [200]
+    assert calls == [1]
+
+
+@pytest.mark.asyncio
+async def test_watchdog_keeps_chrome_when_browser_active():
+    """A recent browser tool call resets the idle window → no kill."""
+    fake = FakeProc(MEMINFO, {200: b"/opt/chromium/chrome-bin"})
+    killed, calls, now, ticks = [], [], [0.0], [0]
+
+    async def fake_sleep(_s):
+        ticks[0] += 1
+        if ticks[0] >= 3:
+            raise asyncio.CancelledError
+        now[0] += 700.0
+        memwatch.note_chrome_activity(clock=lambda: now[0])  # activity in window
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_mem_watchdog(
+            lambda: calls.append(1),
+            read=fake.read,
+            listdir=fake.listdir,
+            kill=lambda pid, sig: killed.append(pid),
+            sleep=fake_sleep,
+            clock=lambda: now[0],
+            own_pid=300,
+            log=lambda m: None,
+        )
+    assert killed == []
+    assert calls == []
+
+
+def test_note_chrome_activity_roundtrip():
+    memwatch.note_chrome_activity(clock=lambda: 1234.0)
+    assert memwatch.last_chrome_activity() == 1234.0
 
 
 @pytest.mark.asyncio
