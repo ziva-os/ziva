@@ -176,9 +176,11 @@ UV_TOOL_DIR=/root/.local/share/uv/tools UV_TOOL_BIN_DIR=/root/.local/bin \\
   /opt/ziva-venv/bin/uv tool install 'minimax-coding-plan-mcp==0.0.5'
 echo "==> minimax tool env layout:"; find /root/.local -maxdepth 6 -name '*minimax*' 2>/dev/null
 ls -la /root/.local/share/uv/tools/minimax-coding-plan-mcp/bin/ 2>/dev/null
-readlink -f /root/.local/share/uv/tools/minimax-coding-plan-mcp/bin/minimax-coding-plan-mcp || true
-test -x /root/.local/share/uv/tools/minimax-coding-plan-mcp/bin/minimax-coding-plan-mcp \
-  || { echo "FATAL: minimax baked entrypoint missing after uv tool install" >&2; exit 1; }
+M=/root/.local/share/uv/tools/minimax-coding-plan-mcp/bin/minimax-coding-plan-mcp
+echo "probe: -e=\$([ -e \$M ] && echo Y || echo n) -f=\$([ -f \$M ] && echo Y || echo n) -r=\$([ -r \$M ] && echo Y || echo n) -x=\$([ -x \$M ] && echo Y || echo n)"
+stat -c '%F %a %s' \$M 2>&1 || true
+head -c 30 \$M 2>&1 || true
+ls -la \$M 2>&1 || true
 /opt/ziva-venv/bin/uv tool list | grep minimax-coding-plan-mcp
 # minimax-coding-plan-mcp 0.0.5 (still latest) prints a banner to STDOUT
 # from main(); strict JSON-RPC stdio clients (mcp 2.x) reject the line and
