@@ -63,7 +63,10 @@ public class MainActivity extends Activity {
 
         bootOverlay.setVisibility(View.VISIBLE);
         bootStatus.setText("正在启动 Ziva 后端…");
-        maybeRequestAllFiles();
+        // One dialog per pass: the all-files sheet takes priority; the
+        // battery-whitelist ask waits for the next cold start if all-files
+        // just showed.
+        if (!maybeRequestAllFiles()) maybeRequestBatteryWhitelist();
         waitForBackend(0);
         if (getIntent().getBooleanExtra("open_menu", false)) showMenu();
     }
@@ -93,10 +96,12 @@ public class MainActivity extends Activity {
      * once, up front, with the trade-off spelled out (no grant = app-private
      * data dir, wiped on uninstall); the backend boots either way.
      */
-    private void maybeRequestAllFiles() {
+    /** @return true when the all-files dialog was shown (so callers can
+     *  avoid stacking a second dialog on top of it in the same pass). */
+    private boolean maybeRequestAllFiles() {
         if (android.os.Build.VERSION.SDK_INT < 30
-                || android.os.Environment.isExternalStorageManager()) return;
-        if (getSharedPreferences("ziva", MODE_PRIVATE).getBoolean("all_files_asked", false)) return;
+                || android.os.Environment.isExternalStorageManager()) return false;
+        if (getSharedPreferences("ziva", MODE_PRIVATE).getBoolean("all_files_asked", false)) return false;
         getSharedPreferences("ziva", MODE_PRIVATE).edit().putBoolean("all_files_asked", true).apply();
         new android.app.AlertDialog.Builder(this)
                 .setTitle("授权「所有文件访问」")
@@ -110,6 +115,40 @@ public class MainActivity extends Activity {
                                 android.net.Uri.parse("package:" + getPackageName())));
                     } catch (Exception e) {
                         startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                    }
+                })
+                .setNegativeButton("暂不", null)
+                .show();
+        return true;
+    }
+
+    /**
+     * Battery-optimization exemption: without it HyperOS's background manager
+     * freezes/kills the backend whenever the app leaves the foreground — the
+     * "switch away and it's gone" half of the process-death problem (the
+     * kernel global-OOM half is separate and not addressable without root).
+     * Ask once, pref-guarded; users who deny can still grant later via
+     * Settings → 省电策略 → 无限制.
+     */
+    private void maybeRequestBatteryWhitelist() {
+        android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
+        if (pm != null && pm.isIgnoringBatteryOptimizations(getPackageName())) return;
+        if (getSharedPreferences("ziva", MODE_PRIVATE).getBoolean("battery_whitelist_asked", false)) return;
+        getSharedPreferences("ziva", MODE_PRIVATE).edit().putBoolean("battery_whitelist_asked", true).apply();
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("允许 Ziva 后台常驻？")
+                .setMessage("开启「忽略电池优化」后，系统不会在切后台/锁屏时冻结或清理 Ziva 的后端进程——长任务、自动化和会话连接不再因切出应用而中断。\n\n"
+                        + "代价是后台耗电略增，建议开启。")
+                .setPositiveButton("允许", (d, w) -> {
+                    try {
+                        @SuppressWarnings("BatteryLife")
+                        Intent i = new Intent(
+                                android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                android.net.Uri.parse("package:" + getPackageName()));
+                        startActivity(i);
+                    } catch (Exception ignored) {
+                        // Some OEM builds drop the direct-request action; the
+                        // manual path (省电策略 → 无限制) still works.
                     }
                 })
                 .setNegativeButton("暂不", null)
