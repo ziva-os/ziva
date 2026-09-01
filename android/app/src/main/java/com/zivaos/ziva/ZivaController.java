@@ -256,6 +256,8 @@ public final class ZivaController {
             "#!/usr/bin/python3\n"
             + "import shlex\n"
             + "import sys\n"
+            + "import os\n"
+            + "import glob\n"
             + "import yaml\n"
             + "\n"
             + "P = \"/root/.ziva/config.yaml\"\n"
@@ -352,11 +354,21 @@ public final class ZivaController {
             + "        continue\n"
             // The baked tool env ships in the SAME APK as this patcher and its
             // stdout banner is deleted at rootfs build time (source fix) — no
-            // fallback needed. An older shim/uvx form still in the config is
-            // rewritten (upgraded) to the direct entrypoint.
-            + "    if srv.get(\"command\") == [\"/root/.local/share/uv/tools/minimax-coding-plan-mcp/bin/minimax-coding-plan-mcp\"]:\n"
+            // fallback needed. Discovery is dynamic: proot -R binds the host's
+            // /home into the build chroot, so a build-time HOME leak can land
+            // the env under /home/<user> instead of /root. An older shim/uvx
+            // form still in the config is rewritten (upgraded) to the direct
+            // entrypoint.
+            + "    hits = [\"/root/.local/share/uv/tools/minimax-coding-plan-mcp/bin/minimax-coding-plan-mcp\"]\n"
+            + "    hits += sorted(glob.glob(\"/home/*/.local/share/uv/tools/minimax-coding-plan-mcp/bin/minimax-coding-plan-mcp\"))\n"
+            + "    hits = [p for p in hits if os.path.isfile(p)]\n"
+            + "    if not hits:\n"
+            + "        print(\"[patch] minimax baked entry missing in rootfs; entry left unchanged\")\n"
+            + "        continue\n"
+            + "    tgt = hits[0]\n"
+            + "    if srv.get(\"command\") == [tgt]:\n"
             + "        continue  # already on-device\n"
-            + "    srv[\"command\"] = [\"/root/.local/share/uv/tools/minimax-coding-plan-mcp/bin/minimax-coding-plan-mcp\"]\n"
+            + "    srv[\"command\"] = [tgt]\n"
             + "    srv.pop(\"args\", None)\n"
             + "    changed = True\n"
             + "    print(\"[patch] updated minimax-coding-plan-mcp startup (baked, banner-stripped)\")\n"

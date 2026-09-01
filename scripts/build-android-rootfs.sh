@@ -167,8 +167,15 @@ command -v uvx && uvx --version
 # starts with zero network — first-boot uvx would otherwise download the
 # package + mcp 2.x on-device and stall the prewarm/MCP connect for a
 # minute. Pinned like every other baked dependency.
-UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple \\
+ # Pin the tool env to /root: proot -R binds the HOST's /home into the
+ # chroot, so a leaked HOME=/home/runner sends the install OUTSIDE $ROOTFS
+ # (it never reached the tar — v11 shipped without the tool env at all).
+ # /root is not among proot -R's default binds, so it lands in the image.
+UV_TOOL_DIR=/root/.local/share/uv/tools UV_TOOL_BIN_DIR=/root/.local/bin \\
+  HOME=/root UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple \\
   /opt/ziva-venv/bin/uv tool install 'minimax-coding-plan-mcp==0.0.5'
+test -x /root/.local/share/uv/tools/minimax-coding-plan-mcp/bin/minimax-coding-plan-mcp \
+  || { echo "FATAL: minimax baked entrypoint missing after uv tool install" >&2; exit 1; }
 /opt/ziva-venv/bin/uv tool list | grep minimax-coding-plan-mcp
 # minimax-coding-plan-mcp 0.0.5 (still latest) prints a banner to STDOUT
 # from main(); strict JSON-RPC stdio clients (mcp 2.x) reject the line and
@@ -176,9 +183,9 @@ UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple \\
 # tool env — uv does not re-verify tool env contents at runtime, so the
  # patch persists for the device's lifetime. Assert the pattern first: if
  # upstream changes, we want the build to fail loudly, not silently unpatched.
- # HOME inside the chroot is NOT /root (the host's leaks through), so resolve
- # the tool dir via `uv tool dir` instead of hardcoding either home.
-MINIMAX_TOOL_DIR="\$(/opt/ziva-venv/bin/uv tool dir)/minimax-coding-plan-mcp"
+ # Path pinned to /root (see UV_TOOL_DIR above) — `uv tool dir` here would
+ # consult the leaked chroot HOME and point outside $ROOTFS.
+MINIMAX_TOOL_DIR=/root/.local/share/uv/tools/minimax-coding-plan-mcp
 test -d "\$MINIMAX_TOOL_DIR"
 python3 - "\$MINIMAX_TOOL_DIR" <<'PYEOF'
 import glob, sys
