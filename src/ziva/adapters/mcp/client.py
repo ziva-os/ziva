@@ -487,7 +487,13 @@ def _mcp_server_from_mapping(name: str, srv: Dict[str, Any]) -> MCPServerConfig 
         cmd, args = (cmd[0] if cmd else None), [str(a) for a in cmd[1:]]
     elif isinstance(cmd, str) and cmd:
         parts = shlex.split(cmd)
-        cmd, args = (parts[0] if parts else None), [str(a) for a in parts[1:]]
+        # Merge an explicit ``args`` list on top of tokens split from the
+        # string command. Historically the key was silently IGNORED in this
+        # branch, which broke any config written as ``command: /bin/sh`` +
+        # ``args: [script.sh]`` (the Android patcher's canonical form) —
+        # the server then launched with no arguments at all.
+        extra = [str(a) for a in srv.get("args", []) or []]
+        cmd, args = (parts[0] if parts else None), [str(p) for p in parts[1:]] + extra
     else:
         args = [str(a) for a in srv.get("args", []) or []]
     url = srv.get("url") or srv.get("server_url")

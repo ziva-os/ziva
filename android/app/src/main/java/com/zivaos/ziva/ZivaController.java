@@ -325,12 +325,16 @@ public final class ZivaController {
             + "            and \"/opt/ensure-chromium.sh\" not in joined):\n"
             + "        continue\n"
             + "    matched += 1\n"
-            + "    if srv.get(\"command\") == \"/bin/sh\" and srv.get(\"args\") == [\"/opt/ensure-chromium.sh\"]:\n"
+            + "    if srv.get(\"command\") in (\"/bin/sh\", [\"/bin/sh\", \"/opt/ensure-chromium.sh\"]):\n"
             + "        continue  # already on-device\n"
             + "    for k in (\"env\", \"environment\", \"url\", \"server_url\", \"transport\", \"type\", \"disabled\"):\n"
             + "        srv.pop(k, None)\n"
-            + "    srv[\"command\"] = \"/bin/sh\"\n"
-            + "    srv[\"args\"] = [\"/opt/ensure-chromium.sh\"]\n"
+            // List form, not string+args: a string command used to make the
+            // runtime parser IGNORE the args key entirely (silent no-arg
+            // launch). The parser now merges them, but the list form is
+            // unambiguous on every parser version.
+            + "    srv[\"command\"] = [\"/bin/sh\", \"/opt/ensure-chromium.sh\"]\n"
+            + "    srv.pop(\"args\", None)\n"
             + "    srv[\"enabled\"] = True\n"
             + "    changed = True\n"
             + "\n"
@@ -363,7 +367,7 @@ public final class ZivaController {
             // servers live — adding mcp.servers would SHADOW a populated
             // mcpServers dict (parse_mcp_config only falls back when
             // mcp.servers is empty).
-            + "    entry = {\"command\": \"/bin/sh\", \"args\": [\"/opt/ensure-chromium.sh\"]}\n"
+            + "    entry = {\"command\": [\"/bin/sh\", \"/opt/ensure-chromium.sh\"]}\n"
             + "    if isinstance(cfg.get(\"mcpServers\"), dict):\n"
             + "        cfg[\"mcpServers\"][\"chrome-devtools\"] = entry\n"
             + "    elif isinstance(cfg.get(\"mcp_servers\"), dict):\n"
