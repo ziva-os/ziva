@@ -113,7 +113,16 @@ npx -y playwright@1.49.1 install chromium --no-shell
 # binary hangs off chrome-bin; chrome finds its resources via
 # /proc/self/exe, which after exec points at the real binary.
 REAL="$(ls -d "$ROOTFS"/opt/ms-playwright/chromium-*/chrome-linux/chrome | head -n1)"
-ln -sf "$REAL" "$ROOTFS/opt/chromium/chrome-bin"
+# The link must carry the IN-GUEST absolute path. r36 shipped
+# chrome-bin -> /tmp/ziva-rootfs.5yRrCp/rootfs/opt/... (the staging dir):
+# it resolved on the build machine (so the --version smoke passed) but
+# dangled on device — chrome died at exec and every MCP call surfaced as
+# ECONNRESET / "Target closed".
+ln -sf "${REAL#"$ROOTFS"}" "$ROOTFS/opt/chromium/chrome-bin"
+case "$(readlink "$ROOTFS/opt/chromium/chrome-bin")" in
+  /opt/*) : ;;
+  *) echo "FATAL: chrome-bin link target not guest-absolute: $(readlink "$ROOTFS/opt/chromium/chrome-bin")" >&2; exit 1 ;;
+esac
 cat > "$ROOTFS/opt/chromium/chrome" <<'WRAPPER'
 #!/bin/sh
 exec /opt/chromium/chrome-bin --no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage --disable-gpu "$@"

@@ -424,6 +424,15 @@ public final class ZivaController {
             + "    printf '#!/bin/sh\\nexec /opt/chromium/chrome-bin --no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage --disable-gpu \"$@\"\\n' > \"$CHROME\"\n"
             + "    chmod +x \"$CHROME\"\n"
             + "  fi\n"
+            // r36's rootfs shipped chrome-bin as a symlink into the CI
+            // staging dir (/tmp/ziva-rootfs.*/...), dangling on device: the
+            // wrapper existed (+x) so every presence check passed while the
+            // browser died at exec (ECONNRESET / Target closed). Heal in
+            // place — no rootfs re-extraction needed.
+            + "  if [ ! -x \"$CHROME_BIN\" ]; then\n"
+            + "    T=$(ls /opt/ms-playwright/chromium-*/chrome-linux/chrome 2>/dev/null | head -n 1)\n"
+            + "    if [ -n \"$T\" ]; then ln -sf \"$T\" \"$CHROME_BIN\"; fi\n"
+            + "  fi\n"
             + "}\n"
             + "fixup_wrapper\n"
             + "\n"
