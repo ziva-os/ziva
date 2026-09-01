@@ -37,6 +37,23 @@ _CHROME_MARKERS = (
     b"ensure-chromium",
 )
 
+# Second-stage shed candidates: heavy, RESPAWNABLE tool children that are
+# not the browser stack — npm/npx skill installs, pip/uv installs, and any
+# other node-based MCP server. Killing one fails a single tool call (the
+# turn continues); letting the kernel OOM-kill the backend kills the whole
+# app for ~10s and interrupts every session.
+_TOOL_CHILD_MARKERS = (
+    b"npx",
+    b"npm exec",
+    b"npm install",
+    b"pip install",
+    b"uv pip",
+    b"uv tool",
+    # /proc cmdline is NUL-separated (no spaces) — bare substring. Matches
+    # node itself and anything under node_modules.
+    b"node",
+)
+
 # Last time a chrome MCP tool call ran (monotonic clock), or None when the
 # browser stack has never been used this process lifetime. Written by the
 # MCP layer, read by the watchdog loop.
@@ -90,6 +107,15 @@ def read_rss_mb(pid: int, read=_read_bytes) -> float:
 
 def find_chrome_pids(listdir=os.listdir, read=_read_bytes, own_pid=None) -> list[int]:
     """Pids of the Chromium browser stack (browser, node bridge, wrappers)."""
+    return _find_pids(_CHROME_MARKERS, listdir=listdir, read=read, own_pid=own_pid)
+
+
+def find_tool_child_pids(listdir=os.listdir, read=_read_bytes, own_pid=None) -> list[int]:
+    """Pids of heavy respawnable tool children (npm/npx/pip/uv/node MCP)."""
+    return _find_pids(_TOOL_CHILD_MARKERS, listdir=listdir, read=read, own_pid=own_pid)
+
+
+def _find_pids(markers, listdir=os.listdir, read=_read_bytes, own_pid=None) -> list[int]:
     pids: list[int] = []
     for name in listdir("/proc"):
         if not name.isdigit():
@@ -101,7 +127,7 @@ def find_chrome_pids(listdir=os.listdir, read=_read_bytes, own_pid=None) -> list
             cmdline = read(f"/proc/{pid}/cmdline")
         except OSError:
             continue  # permission or vanished mid-scan
-        if any(marker in cmdline for marker in _CHROME_MARKERS):
+        if any(marker in cmdline for marker in markers):
             pids.append(pid)
     return sorted(pids)
 
@@ -120,11 +146,11 @@ def _kill_tree(pids: list[int], kill=os.kill) -> int:
 async def run_mem_watchdog(
     on_pressure,
     *,
-    interval_s: float = 15.0,
+    interval_s: float = 5.0,
     idle_exit_s: float = 600.0,
-    warn_mb: float = 1000.0,
-    pressure_mb: float = 350.0,
-    kill_cooldown_s: float = 90.0,
+    warn_mb: float = 1500.0,
+    pressure_mb: float = 450.0,
+    kill_cooldown_s: float = 60.0,
     sleep=asyncio.sleep,
     read=_read_bytes,
     listdir=os.listdir,
@@ -133,18 +159,25 @@ async def run_mem_watchdog(
     own_pid=None,
     log=None,
 ) -> None:
-    """Watch device memory; idle-exit or pressure-kill the Chromium tree.
+    """Watch device memory; shed respawnable children before the kernel does.
+
+    Escalation under pressure: (1) Chromium tree (0.5-1GB, lazy respawn),
+    (2) heavy tool children — npm/npx/pip installs and node MCP servers
+    (one failed tool call, turn survives). Either is strictly better than
+    the kernel SIGKILLing the BACKEND, which takes the whole app down.
 
     ``on_pressure`` is invoked (sync or async) after any watchdog kill so
-    the caller can reset the MCP connection state — the dead browser then
-    respawns lazily on the next tool call.
+    the caller can reset the MCP connection state — the dead pieces then
+    respawn lazily on the next tool call.
     """
     global _last_chrome_use
     log = log or (lambda msg: logger.info("[mem] %s", msg))
     if own_pid is None:
         own_pid = os.getpid()
-    if read_mem_available_mb(read=read) is None:
+    avail0 = read_mem_available_mb(read=read)
+    if avail0 is None:
         return  # no /proc/meminfo (macOS/dev host) — nothing to watch
+    log(f"watchdog started, avail={avail0:.0f}MB, poll={interval_s:.0f}s")
     last_kill = -kill_cooldown_s  # allow an immediate first kill
     chrome_seen = False
     chrome_up_since = clock()
@@ -172,6 +205,7 @@ async def run_mem_watchdog(
                 f"({len(chrome_pids)} procs)"
             )
         last_use = _last_chrome_use
+        cooled = now - last_kill >= kill_cooldown_s
         if chrome_pids and (
             now - max(chrome_up_since, last_use if last_use is not None else chrome_up_since)
             >= idle_exit_s
@@ -179,7 +213,7 @@ async def run_mem_watchdog(
             # Idle exit — the primary mechanism. The stack has not served
             # a single browser tool call in the window; it is pure
             # baseline weight right now.
-            if now - last_kill >= kill_cooldown_s:
+            if cooled:
                 killed = _kill_tree(chrome_pids, kill=kill)
                 log(
                     f"IDLE-EXIT: no browser call for {idle_exit_s:.0f}s → "
@@ -191,22 +225,30 @@ async def run_mem_watchdog(
                 result = on_pressure()
                 if inspect.isawaitable(result):
                     await result
-        elif (
-            avail < pressure_mb
-            and chrome_pids
-            and now - last_kill >= kill_cooldown_s
-        ):
-            # Last resort — device is about to OOM-kill the backend.
-            killed = _kill_tree(chrome_pids, kill=kill)
-            log(
-                f"PRESSURE: avail={avail:.0f}MB → SIGKILL chrome tree "
-                f"({killed} procs, ~{chrome_mb:.0f}MB); MCP reconnects on "
-                f"next use"
-            )
-            last_kill = now
-            chrome_seen = False
-            result = on_pressure()
-            if inspect.isawaitable(result):
-                await result
+        elif avail < pressure_mb and cooled:
+            # Last resort — device is about to OOM-kill the backend. Shed
+            # the browser stack first; if it is not resident, shed heavy
+            # tool children (npm/npx installs, node MCP servers). One dead
+            # tool call beats one dead backend.
+            if chrome_pids:
+                target, kind, mb = chrome_pids, "chrome tree", chrome_mb
+            else:
+                tool_pids = find_tool_child_pids(
+                    listdir=listdir, read=read, own_pid=own_pid
+                )
+                target = tool_pids
+                kind = "tool children"
+                mb = sum(read_rss_mb(pid, read=read) for pid in tool_pids)
+            if target:
+                killed = _kill_tree(target, kill=kill)
+                log(
+                    f"PRESSURE: avail={avail:.0f}MB → SIGKILL {kind} "
+                    f"({killed} procs, ~{mb:.0f}MB); respawns on next use"
+                )
+                last_kill = now
+                chrome_seen = False
+                result = on_pressure()
+                if inspect.isawaitable(result):
+                    await result
         tick += 1
         await sleep(interval_s)

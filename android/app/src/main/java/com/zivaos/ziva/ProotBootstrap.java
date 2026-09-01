@@ -51,6 +51,13 @@ public final class ProotBootstrap {
         cmd.add("TERM=xterm-256color");
         cmd.add("LANG=C.UTF-8");
         cmd.add("PYTHONUNBUFFERED=1");
+        // Cap every node child's V8 old-space (npm/npx installs, node MCP
+        // servers). Without a cap a single npm resolution can balloon past
+        // 1GB RSS and the kernel OOM-killer answers by shooting the fattest
+        // process — usually the backend tree itself (the chronic code=137).
+        // 768MB is ample for installs + CDP traffic; exceeding it fails the
+        // node child with OOM instead, which the turn survives.
+        cmd.add("NODE_OPTIONS=--max-old-space-size=768");
         // Run the SYSTEM python3 with PYTHONPATH pointing at both the ziva
         // sources and the venv's site-packages. This deliberately avoids
         // venv/bin/python, which is a chain of symlinks (python -> python3 ->
