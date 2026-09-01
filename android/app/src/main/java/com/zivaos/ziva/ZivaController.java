@@ -254,7 +254,6 @@ public final class ZivaController {
     private static void installMcpConfigPatcher(File rootfs) {
         writeGuestFile(new File(rootfs, "opt/patch-mcp-config.py"),
             "#!/usr/bin/python3\n"
-            + "import os\n"
             + "import shlex\n"
             + "import sys\n"
             + "import yaml\n"
@@ -351,20 +350,16 @@ public final class ZivaController {
             + "    joined = \" \".join(tokens(srv))\n"
             + "    if \"minimax-coding-plan-mcp\" not in joined:\n"
             + "        continue\n"
-            + "    baked = \"/root/.local/share/uv/tools/minimax-coding-plan-mcp/bin/minimax-coding-plan-mcp\"\n"
-            + "    if srv.get(\"command\") == [baked] or \"line-buffered\" in joined:\n"
-            + "        continue  # already on-device (banned banner stripped in rootfs v11)\n"
-            + "    if os.path.exists(baked):\n"
-            + "        # Preferred: the baked tool env, whose stdout banner has been\n"
-            + "        # deleted at rootfs build time (source-level fix).\n"
-            + "        srv[\"command\"] = [baked]\n"
-            + "    else:\n"
-            + "        # Older rootfs: filter the banner through a line grep instead.\n"
-            + "        srv[\"command\"] = [\"/bin/sh\", \"-c\",\n"
-            + "            \"uvx minimax-coding-plan-mcp 2>>/root/.ziva/minimax-mcp.log | grep --line-buffered '^{'\"]\n"
+            // The baked tool env ships in the SAME APK as this patcher and its
+            // stdout banner is deleted at rootfs build time (source fix) — no
+            // fallback needed. An older shim/uvx form still in the config is
+            // rewritten (upgraded) to the direct entrypoint.
+            + "    if srv.get(\"command\") == [\"/root/.local/share/uv/tools/minimax-coding-plan-mcp/bin/minimax-coding-plan-mcp\"]:\n"
+            + "        continue  # already on-device\n"
+            + "    srv[\"command\"] = [\"/root/.local/share/uv/tools/minimax-coding-plan-mcp/bin/minimax-coding-plan-mcp\"]\n"
             + "    srv.pop(\"args\", None)\n"
             + "    changed = True\n"
-            + "    print(\"[patch] updated minimax-coding-plan-mcp startup (stdout banner)\")\n"
+            + "    print(\"[patch] updated minimax-coding-plan-mcp startup (baked, banner-stripped)\")\n"
             + "\n"
             + "if matched == 0:\n"
             // No chrome entry anywhere: add the on-device one so browser
