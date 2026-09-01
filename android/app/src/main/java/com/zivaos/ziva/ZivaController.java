@@ -338,28 +338,25 @@ public final class ZivaController {
             + "    srv[\"enabled\"] = True\n"
             + "    changed = True\n"
             + "\n"
-            // minimax-coding-plan-mcp: legacy entries pinned the SDK with
-            // --with "mcp[cli]<2.0" (needed before 0.0.5). Since 0.0.5 the
-            // package itself requires mcp>=2.0.0,<3, so that pin now forces
-            // uvx to resolve an ancient package version (or fail) — rewrite
-            // to the bare canonical command and let uvx pick current
-            // (mcp 2.1.1). Environment keys are preserved.
+            // minimax-coding-plan-mcp: two problems. (1) Legacy entries pinned
+            // the SDK with --with "mcp[cli]<2.0" — since 0.0.5 the package
+            // itself requires mcp>=2.0.0,<3, so the pin resolves to an
+            // ancient version or fails. (2) EVERY released version prints
+            // "Starting Minimax MCP server" to STDOUT, which strict JSON-RPC
+            // clients (mcp 2.x) reject outright — connect dies with
+            // 'Invalid JSON'. Route stdout through a line filter; stderr to
+            // a log. Environment keys are preserved.
             + "for srv in candidates:\n"
             + "    joined = \" \".join(tokens(srv))\n"
             + "    if \"minimax-coding-plan-mcp\" not in joined:\n"
             + "        continue\n"
-            + "    cmd = srv.get(\"command\")\n"
-            + "    if isinstance(cmd, list):\n"
-            + "        if \"--with\" not in [str(c) for c in cmd]:\n"
-            + "            continue\n"
-            + "        srv[\"command\"] = [\"uvx\", \"minimax-coding-plan-mcp\"]\n"
-            + "    else:\n"
-            + "        toks = joined.split()\n"
-            + "        if toks[:1] == [\"uvx\"] and \"--with\" not in toks:\n"
-            + "            continue\n"
-            + "        srv[\"command\"] = \"uvx minimax-coding-plan-mcp\"\n"
+            + "    if \"line-buffered\" in joined:\n"
+            + "        continue  # already shimmed\n"
+            + "    srv[\"command\"] = [\"/bin/sh\", \"-c\",\n"
+            + "        \"uvx minimax-coding-plan-mcp 2>>/root/.ziva/minimax-mcp.log | grep --line-buffered '^{'\"]\n"
+            + "    srv.pop(\"args\", None)\n"
             + "    changed = True\n"
-            + "    print(\"[patch] updated minimax-coding-plan-mcp startup (mcp 2.x)\")\n"
+            + "    print(\"[patch] updated minimax-coding-plan-mcp startup (stdout filter shim)\")\n"
             + "\n"
             + "if matched == 0:\n"
             // No chrome entry anywhere: add the on-device one so browser

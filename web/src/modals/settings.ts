@@ -76,10 +76,14 @@ export async function openSettingsModal() {
         // Show the FULL launch line: the on-disk ``args`` array is part of
         // the command. Displaying only ``command`` made e.g. the Android
         // chrome entry look like a bare "/bin/sh" and invited "fixes" that
-        // broke it. On save this round-trips to a single string command
-        // (the parser shlex-splits it) and clears the args key.
-        const cmd = Array.isArray(srv.command) ? srv.command.join(" ") : (srv.command || "");
-        const argsStr = Array.isArray(srv.args) ? srv.args.join(" ") : "";
+        // broke it. Tokens containing whitespace are double-quoted so the
+        // line round-trips losslessly (the backend shlex-splits on save).
+        const quote = (s: any) => {
+          const t = String(s);
+          return /[\s"']/.test(t) ? JSON.stringify(t) : t;
+        };
+        const cmd = Array.isArray(srv.command) ? srv.command.map(quote).join(" ") : (srv.command || "");
+        const argsStr = Array.isArray(srv.args) ? srv.args.map(quote).join(" ") : "";
         const fullCmd = [cmd, argsStr].filter(Boolean).join(" ");
         html += `
         <div class="settings-mcp-card" data-mcp-server="${esc(sname)}">
