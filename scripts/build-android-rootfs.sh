@@ -175,6 +175,8 @@ UV_TOOL_DIR=/root/.local/share/uv/tools UV_TOOL_BIN_DIR=/root/.local/bin \\
   HOME=/root UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple \\
   /opt/ziva-venv/bin/uv tool install 'minimax-coding-plan-mcp==0.0.5'
 echo "==> minimax tool env layout:"; find /root/.local -maxdepth 6 -name '*minimax*' 2>/dev/null
+ls -la /root/.local/share/uv/tools/minimax-coding-plan-mcp/bin/ 2>/dev/null
+readlink -f /root/.local/share/uv/tools/minimax-coding-plan-mcp/bin/minimax-coding-plan-mcp || true
 test -x /root/.local/share/uv/tools/minimax-coding-plan-mcp/bin/minimax-coding-plan-mcp \
   || { echo "FATAL: minimax baked entrypoint missing after uv tool install" >&2; exit 1; }
 /opt/ziva-venv/bin/uv tool list | grep minimax-coding-plan-mcp
