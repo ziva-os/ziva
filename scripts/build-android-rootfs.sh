@@ -161,6 +161,23 @@ command -v uvx && uvx --version
 UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple \\
   /opt/ziva-venv/bin/uv tool install 'minimax-coding-plan-mcp==0.0.5'
 /opt/ziva-venv/bin/uv tool list | grep minimax-coding-plan-mcp
+# minimax-coding-plan-mcp 0.0.5 (still latest) prints a banner to STDOUT
+# from main(); strict JSON-RPC stdio clients (mcp 2.x) reject the line and
+# the connect dies with 'Invalid JSON'. Delete the statement from the baked
+# tool env — uv does not re-verify tool env contents at runtime, so the
+# patch persists for the device's lifetime. Assert the pattern first: if
+# upstream changes, we want the build to fail loudly, not silently unpatched.
+python3 - <<'PYEOF'
+import glob
+hits = glob.glob('/root/.local/share/uv/tools/minimax-coding-plan-mcp/lib/python3*/site-packages/minimax_mcp/server.py')
+assert len(hits) == 1, hits
+p = hits[0]
+src = open(p).read()
+assert 'print("Starting Minimax MCP server")' in src, 'minimax banner pattern not found - upstream moved, recheck'
+src = src.replace('    print("Starting Minimax MCP server")\n', '')
+open(p, 'w').write(src)
+print('minimax stdout banner removed from baked tool env')
+PYEOF
 # Node runtime + pre-installed global MCP servers so npx-based servers work
 # offline on device. chrome-devtools-mcp carries no Chrome binary (there is
 # no linux-arm64 Chrome) — on device it must be pointed at a reachable
