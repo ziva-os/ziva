@@ -177,10 +177,12 @@ UV_TOOL_DIR=/root/.local/share/uv/tools UV_TOOL_BIN_DIR=/root/.local/bin \\
 echo "==> minimax tool env layout:"; find /root/.local -maxdepth 6 -name '*minimax*' 2>/dev/null
 ls -la /root/.local/share/uv/tools/minimax-coding-plan-mcp/bin/ 2>/dev/null
 M=/root/.local/share/uv/tools/minimax-coding-plan-mcp/bin/minimax-coding-plan-mcp
-echo "probe: -e=\$([ -e \$M ] && echo Y || echo n) -f=\$([ -f \$M ] && echo Y || echo n) -r=\$([ -r \$M ] && echo Y || echo n) -x=\$([ -x \$M ] && echo Y || echo n)"
-stat -c '%F %a %s' \$M 2>&1 || true
-head -c 30 \$M 2>&1 || true
-ls -la \$M 2>&1 || true
+ # NOTE: proot's access(2) lies here (returns EACCES for root-owned files —
+ # probe showed -e=Y -f=Y -r=n -x=n with mode 755 and readable content), so
+ # `test -x/-r` false-negatives. Same quirk is why uvx on-device reports
+ # "does not provide any executables". Assert via ls, not access().
+ls -la \$M >/dev/null 2>&1 || { echo "FATAL: minimax baked entrypoint missing after uv tool install" >&2; exit 1; }
+head -c 2 \$M | grep -q '#!' || { echo "FATAL: minimax entrypoint not a script" >&2; exit 1; }
 /opt/ziva-venv/bin/uv tool list | grep minimax-coding-plan-mcp
 # minimax-coding-plan-mcp 0.0.5 (still latest) prints a banner to STDOUT
 # from main(); strict JSON-RPC stdio clients (mcp 2.x) reject the line and
