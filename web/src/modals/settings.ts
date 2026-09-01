@@ -73,7 +73,14 @@ export async function openSettingsModal() {
       let html = "";
       for (const sname of Object.keys(servers)) {
         const srv = servers[sname] as any;
+        // Show the FULL launch line: the on-disk ``args`` array is part of
+        // the command. Displaying only ``command`` made e.g. the Android
+        // chrome entry look like a bare "/bin/sh" and invited "fixes" that
+        // broke it. On save this round-trips to a single string command
+        // (the parser shlex-splits it) and clears the args key.
         const cmd = Array.isArray(srv.command) ? srv.command.join(" ") : (srv.command || "");
+        const argsStr = Array.isArray(srv.args) ? srv.args.join(" ") : "";
+        const fullCmd = [cmd, argsStr].filter(Boolean).join(" ");
         html += `
         <div class="settings-mcp-card" data-mcp-server="${esc(sname)}">
           <div class="settings-mcp-card-header">
@@ -86,7 +93,7 @@ export async function openSettingsModal() {
               <button class="settings-hook-remove" data-mcp-remove="${esc(sname)}" title="${i18n.t("common.remove")}">×</button>
             </div>
           </div>
-          <div class="settings-row"><label class="settings-label">${i18n.t("settings.command")}</label><input class="settings-input" data-mcp-command="${esc(sname)}" value="${esc(cmd)}" /></div>
+           <div class="settings-row"><label class="settings-label">${i18n.t("settings.command")}</label><input class="settings-input" data-mcp-command="${esc(sname)}" value="${esc(fullCmd)}" /></div>
           <div class="settings-row"><label class="settings-label">${i18n.t("common.type")}</label>
             <select class="settings-select" data-mcp-type="${esc(sname)}">
               <option value="local" ${srv.type !== "remote" ? "selected" : ""}>${i18n.t("settings.mcpTypeLocal")}</option>
@@ -931,6 +938,10 @@ export async function openSettingsModal() {
             ...existing,
             type: srvType,
             command: cmdStr,
+            // The input now shows command+args as one line, so the old
+            // separate args array must go (None = explicit delete in the
+            // backend merge) or its tokens would run twice.
+            args: null,
             enabled: srvEnabled,
           };
         });
