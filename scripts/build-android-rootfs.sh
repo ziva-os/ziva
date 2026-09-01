@@ -174,11 +174,15 @@ UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple \\
 # from main(); strict JSON-RPC stdio clients (mcp 2.x) reject the line and
 # the connect dies with 'Invalid JSON'. Delete the statement from the baked
 # tool env — uv does not re-verify tool env contents at runtime, so the
-# patch persists for the device's lifetime. Assert the pattern first: if
-# upstream changes, we want the build to fail loudly, not silently unpatched.
-python3 - <<'PYEOF'
-import glob
-hits = glob.glob('/root/.local/share/uv/tools/minimax-coding-plan-mcp/lib/python3*/site-packages/minimax_mcp/server.py')
+ # patch persists for the device's lifetime. Assert the pattern first: if
+ # upstream changes, we want the build to fail loudly, not silently unpatched.
+ # HOME inside the chroot is NOT /root (the host's leaks through), so resolve
+ # the tool dir via `uv tool dir` instead of hardcoding either home.
+MINIMAX_TOOL_DIR="\$(/opt/ziva-venv/bin/uv tool dir)/minimax-coding-plan-mcp"
+test -d "\$MINIMAX_TOOL_DIR"
+python3 - "\$MINIMAX_TOOL_DIR" <<'PYEOF'
+import glob, sys
+hits = glob.glob(sys.argv[1] + '/lib/python3*/site-packages/minimax_mcp/server.py')
 assert len(hits) == 1, hits
 p = hits[0]
 src = open(p).read()
