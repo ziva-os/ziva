@@ -171,8 +171,9 @@ command -v uvx && uvx --version
  # chroot, so a leaked HOME=/home/runner sends the install OUTSIDE $ROOTFS
  # (it never reached the tar — v11 shipped without the tool env at all).
  # /root is not among proot -R's default binds, so it lands in the image.
-UV_TOOL_DIR=/root/.local/share/uv/tools UV_TOOL_BIN_DIR=/root/.local/bin \\
-  HOME=/root UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple \\
+ # Exported so every later `uv` call (tool list, uvx) sees the same dir.
+export UV_TOOL_DIR=/root/.local/share/uv/tools UV_TOOL_BIN_DIR=/root/.local/bin HOME=/root
+UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple \\
   /opt/ziva-venv/bin/uv tool install 'minimax-coding-plan-mcp==0.0.5'
 echo "==> minimax tool env layout:"; find /root/.local -maxdepth 6 -name '*minimax*' 2>/dev/null
 ls -la /root/.local/share/uv/tools/minimax-coding-plan-mcp/bin/ 2>/dev/null
