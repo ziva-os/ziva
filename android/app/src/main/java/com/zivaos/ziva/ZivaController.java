@@ -121,8 +121,7 @@ public final class ZivaController {
             // export looked identical. Every start now states its version —
             // a log without this line, or with an old sha, is an old app.
             appendProcLog(logFileForTail, "[proc] backend starting, build="
-                    + BuildConfig.VERSION_NAME
-                    + " pid=" + backendProc.pid());
+                    + BuildConfig.VERSION_NAME);
             lastError = "";
             // Death note: log WHY the backend went away. 137 = SIGKILL
             // (system/OOM kill — nothing in our code path sends KILL to a
