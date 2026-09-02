@@ -1035,7 +1035,7 @@ function composerTemplate(sid: string): string {
       <button class="pending-bar-clear" title="${i18n.t("composer.cancelQueue")}" type="button">×</button>
     </div>
     <div class="image-previews pane-previews" data-sid="${esc(sid)}" style="display:none"></div>
-    <input type="file" class="pane-image-input" data-sid="${esc(sid)}" multiple style="display:none" />
+    <input type="file" class="pane-image-input" data-sid="${esc(sid)}" multiple accept="image/*" style="display:none" />
     <textarea class="pane-prompt" data-sid="${esc(sid)}" placeholder="${i18n.t("composer.placeholder")}" rows="1"></textarea>
     <div class="slash-menu pane-slash" data-sid="${esc(sid)}" style="display:none"></div>
     <div class="composer-toolbar">

@@ -1047,7 +1047,7 @@ l0,-`+(s+144)+`c-2,-159.3,-10,-310.7,-24,-454c-53.3,-528,-210,-949.7,
       <button class="pending-bar-clear" title="${E("composer.cancelQueue")}" type="button">×</button>
     </div>
     <div class="image-previews pane-previews" data-sid="${B(t)}" style="display:none"></div>
-    <input type="file" class="pane-image-input" data-sid="${B(t)}" multiple style="display:none" />
+    <input type="file" class="pane-image-input" data-sid="${B(t)}" multiple accept="image/*" style="display:none" />
     <textarea class="pane-prompt" data-sid="${B(t)}" placeholder="${E("composer.placeholder")}" rows="1"></textarea>
     <div class="slash-menu pane-slash" data-sid="${B(t)}" style="display:none"></div>
     <div class="composer-toolbar">

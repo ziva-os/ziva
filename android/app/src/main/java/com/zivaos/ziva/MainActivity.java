@@ -81,9 +81,20 @@ public class MainActivity extends Activity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         if (requestCode == 1002) {  // composer file chooser
             if (fileChooserCb != null) {
-                fileChooserCb.onReceiveValue(
-                        android.webkit.WebChromeClient.FileChooserParams.parseResult(resultCode, data));
+                android.net.Uri[] parsed =
+                        android.webkit.WebChromeClient.FileChooserParams.parseResult(resultCode, data);
+                ZivaController.instance().appendLog(this,
+                        "[attach] picker result code=" + resultCode + " files="
+                                + (parsed == null ? 0 : parsed.length));
+                fileChooserCb.onReceiveValue(parsed);
                 fileChooserCb = null;
+            } else {
+                // Result arrived but our WebView callback is gone — the
+                // activity was recreated (or the page reloaded) mid-pick.
+                // The picked image is silently lost; log loudly.
+                ZivaController.instance().appendLog(this,
+                        "[attach] picker result code=" + resultCode
+                                + " DROPPED: no callback (activity recreated mid-pick?)");
             }
             return;
         }
@@ -186,9 +197,14 @@ public class MainActivity extends Activity {
                 if (fileChooserCb != null) fileChooserCb.onReceiveValue(null);
                 fileChooserCb = callback;
                 try {
+                    ZivaController.instance().appendLog(MainActivity.this,
+                            "[attach] chooser open, intent=" + params.createIntent().getAction()
+                                    + " type=" + params.createIntent().getType());
                     startActivityForResult(params.createIntent(), 1002);
                     return true;
                 } catch (Exception e) {
+                    ZivaController.instance().appendLog(MainActivity.this,
+                            "[attach] chooser start FAILED: " + e);
                     fileChooserCb = null;
                     return false;
                 }
