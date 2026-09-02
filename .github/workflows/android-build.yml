@@ -99,3 +99,19 @@ jobs:
             --prerelease --title "Android build (auto)" \
             --notes "Automated build from $GITHUB_SHA. Debug-signed unless release secrets are configured." \
             android/app/build/outputs/apk/release/*.apk
+
+      # Split the APK into 20MB volumes with a per-volume sha256 manifest.
+      # Big single-file downloads get corrupted on flaky links; small
+      # volumes can be verified (and re-downloaded) individually.
+      - name: Upload APK split volumes to release
+        if: github.ref == 'refs/heads/android'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK=$(ls android/app/build/outputs/apk/release/*.apk | head -1)
+          mkdir -p apk-parts && cd apk-parts
+          split -b 20M -d -a 2 "$APK" part.
+          sha256sum part.* > SHA256SUMS
+          sha256sum "$APK"
+          cd ..
+          gh release upload android-latest apk-parts/* --clobber
