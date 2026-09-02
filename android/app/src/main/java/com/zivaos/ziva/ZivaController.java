@@ -116,6 +116,13 @@ public final class ZivaController {
             env.put("PROOT_LOADER", new File(Constants.nativeLibDir(ctx), "libloader.so").getAbsolutePath());
             backendProc = pb.start();
             startedAt = System.currentTimeMillis();
+            // Self-identifying build stamp: several rounds shipped while the
+            // user unknowingly kept an older APK installed, and every log
+            // export looked identical. Every start now states its version —
+            // a log without this line, or with an old sha, is an old app.
+            appendProcLog(logFileForTail, "[proc] backend starting, build="
+                    + BuildConfig.VERSION_NAME
+                    + " pid=" + backendProc.pid());
             lastError = "";
             // Death note: log WHY the backend went away. 137 = SIGKILL
             // (system/OOM kill — nothing in our code path sends KILL to a
