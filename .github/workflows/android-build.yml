@@ -108,7 +108,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          APK=$(ls android/app/build/outputs/apk/release/*.apk | head -1)
+          APK="$GITHUB_WORKSPACE/$(ls android/app/build/outputs/apk/release/*.apk | head -1)"
           mkdir -p apk-parts && cd apk-parts
           split -b 20M -d -a 2 "$APK" part.
           sha256sum part.* > SHA256SUMS
