@@ -48,6 +48,9 @@ public class MainActivity extends Activity {
             return;
         }
         setContentView(R.layout.activity_main);
+        // CDP bridge for chrome-devtools-mcp — before any WebView exists so
+        // the debugging switch covers every WebView this process creates.
+        DevtoolsBridge.start();
         webview = findViewById(R.id.webview);
         bootOverlay = findViewById(R.id.bootOverlay);
         bootStatus = findViewById(R.id.bootStatus);

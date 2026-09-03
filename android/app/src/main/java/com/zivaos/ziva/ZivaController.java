@@ -515,11 +515,14 @@ public final class ZivaController {
             // NOTE: this script's stdout IS the MCP stdio pipe — never echo
             // diagnostics here; --logFile lands them in the public data dir.
             //
-            // Live screen: run chromium HEADLESS-NO-MORE on a virtual X
-            // display, screen-cast it via x11vnc+websockify, and let the
-            // user watch in a noVNC tab (http://127.0.0.1:6080/vnc.html).
-            // The X stack lazy-starts here and is idempotent (pid files +
-            // socket existence; no pgrep — procps isn't in the base image).
+            // Mode 1 (desktop parity): the app's DevtoolsBridge exposes the
+            // USER'S ACTUAL TABS on 127.0.0.1:9222 — attach with the same
+            // --browser-url architecture as the Electron cdp-bridge.
+            // Mode 2 (fallback): standalone chromium on Xvfb :99, watchable
+            // via noVNC at http://127.0.0.1:6080/vnc.html?autoconnect=1.
+            + "if curl -s --max-time 2 http://127.0.0.1:9222/json/version | grep -q webSocketDebuggerUrl; then\n"
+            + "  exec /usr/local/bin/chrome-devtools-mcp --browser-url http://127.0.0.1:9222 --logFile /root/.ziva/chrome-mcp.log \"$@\"\n"
+            + "fi\n"
             + "XLOG=/root/.ziva/x11.log\n"
             + "if [ ! -e /tmp/.X11-unix/X99 ]; then\n"
             + "  mkdir -p /tmp/.X11-unix\n"
@@ -560,7 +563,7 @@ public final class ZivaController {
 
     /** Timestamped one-liner into the backend log — survives across app and
      *  backend lifetimes so a kill can be correlated with the banners. */
-    private static void appendProcLog(File logFile, String line) {
+    static void appendProcLog(File logFile, String line) {
         try {
             if (logFile.getParentFile() != null) logFile.getParentFile().mkdirs();
             String ts = new java.text.SimpleDateFormat("MM-dd HH:mm:ss")
