@@ -191,22 +191,46 @@ public class MainActivity extends Activity {
             }
             // <input type=file> in the composer (+ button): without this
             // override the tap silently does nothing in a WebView.
+            //
+            // We deliberately do NOT use params.createIntent(): with no
+            // accept attribute it emits ACTION_GET_CONTENT, which on HyperOS
+            // resolves to the vendor file manager whose content:// URIs the
+            // WebView fails to materialize — silently (no JS change event,
+            // no error). ACTION_OPEN_DOCUMENT forces the standard SAF
+            // DocumentsUI whose URIs WebView handles reliably, and it lets
+            // the user pick ANY file type.
             @Override public boolean onShowFileChooser(WebView view,
                     android.webkit.ValueCallback<android.net.Uri[]> callback,
                     WebChromeClient.FileChooserParams params) {
                 if (fileChooserCb != null) fileChooserCb.onReceiveValue(null);
                 fileChooserCb = callback;
                 try {
+                    Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    intent.setType("*/*");
+                    if ((params.getMode() & WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE) != 0)
+                        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                    // Cloud files materializing inside WebView never finishes;
+                    // restrict to locally-available documents.
+                    intent.putExtra(Intent.EXTRA_LOCAL_ONLY, true);
                     ZivaController.instance().appendLog(MainActivity.this,
-                            "[attach] chooser open, intent=" + params.createIntent().getAction()
-                                    + " type=" + params.createIntent().getType());
-                    startActivityForResult(params.createIntent(), 1002);
+                            "[attach] chooser open (ACTION_OPEN_DOCUMENT */*)");
+                    startActivityForResult(intent, 1002);
                     return true;
                 } catch (Exception e) {
-                    ZivaController.instance().appendLog(MainActivity.this,
-                            "[attach] chooser start FAILED: " + e);
-                    fileChooserCb = null;
-                    return false;
+                    // No SAF resolver on this device — fall back to whatever
+                    // the WebView built for us.
+                    try {
+                        ZivaController.instance().appendLog(MainActivity.this,
+                                "[attach] OPEN_DOCUMENT failed (" + e + "), falling back to createIntent");
+                        startActivityForResult(params.createIntent(), 1002);
+                        return true;
+                    } catch (Exception e2) {
+                        ZivaController.instance().appendLog(MainActivity.this,
+                                "[attach] chooser start FAILED: " + e2);
+                        fileChooserCb = null;
+                        return false;
+                    }
                 }
             }
         });
