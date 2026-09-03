@@ -53,7 +53,8 @@ echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
 APT="apt-get -o APT::Sandbox::User=root"
 \$APT update -qq
 \$APT install -y -qq --no-install-recommends \\
-  python3 python3-venv python3-pip git ca-certificates curl
+  python3 python3-venv python3-pip git ca-certificates curl \\
+  xvfb x11vnc websockify novnc
 CHROOT
 
 # Node 22 from the official arm64 tarball. Ubuntu 24.04 ships node 18 (too
@@ -231,6 +232,13 @@ CHROOT
 rm -rf "$ROOTFS/root/.ziva" "$ROOTFS/root/workspace"
 
 echo "==> packaging"
+# Live-screen stack (xvfb+x11vnc+websockify+novnc) — the on-device
+# ensure-chromium.sh lazy-starts them; a missing piece breaks the
+# "watch the agent browse" feature with only a runtime error.
+for BIN in Xvfb x11vnc websockify; do
+  [ -e "$ROOTFS/usr/bin/$BIN" ] || { echo "FATAL: $BIN missing from rootfs"; exit 1; }
+done
+[ -f "$ROOTFS/usr/share/novnc/vnc.html" ] || { echo "FATAL: novnc vnc.html missing"; exit 1; }
 # --numeric-owner: the archive is extracted as the app's uid on Android.
 tar -C "$ROOTFS" --numeric-owner -czf "$WORK/offline-rootfs.tar.gz" .
 mv "$WORK/offline-rootfs.tar.gz" "$REPO_DIR/android/app/src/main/assets/offline-rootfs.bin"

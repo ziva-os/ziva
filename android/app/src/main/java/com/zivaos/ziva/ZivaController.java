@@ -514,7 +514,31 @@ public final class ZivaController {
             + "fi\n"
             // NOTE: this script's stdout IS the MCP stdio pipe — never echo
             // diagnostics here; --logFile lands them in the public data dir.
-            + "exec /usr/local/bin/chrome-devtools-mcp --executablePath \"$CHROME\" --headless --logFile /root/.ziva/chrome-mcp.log \"$@\"\n");
+            //
+            // Live screen: run chromium HEADLESS-NO-MORE on a virtual X
+            // display, screen-cast it via x11vnc+websockify, and let the
+            // user watch in a noVNC tab (http://127.0.0.1:6080/vnc.html).
+            // The X stack lazy-starts here and is idempotent (pid files +
+            // socket existence; no pgrep — procps isn't in the base image).
+            + "XLOG=/root/.ziva/x11.log\n"
+            + "if [ ! -e /tmp/.X11-unix/X99 ]; then\n"
+            + "  mkdir -p /tmp/.X11-unix\n"
+            + "  rm -f /tmp/.X11-unix/X99\n"
+            + "  nohup Xvfb :99 -screen 0 1280x800x24 -nolisten tcp >>\"$XLOG\" 2>&1 &\n"
+            + "  echo $! > /tmp/.ziva-xvfb.pid\n"
+            + "  for i in 1 2 3 4 5 6 7 8 9 10; do [ -e /tmp/.X11-unix/X99 ] && break; sleep 1; done\n"
+            + "fi\n"
+            + "pid_alive() { [ -f \"$1\" ] && kill -0 \"$(cat \"$1\")\" 2>/dev/null; }\n"
+            + "if ! pid_alive /tmp/.ziva-x11vnc.pid; then\n"
+            + "  nohup x11vnc -display :99 -forever -shared -nopw -quiet -listen localhost >>\"$XLOG\" 2>&1 &\n"
+            + "  echo $! > /tmp/.ziva-x11vnc.pid\n"
+            + "fi\n"
+            + "if ! pid_alive /tmp/.ziva-websockify.pid; then\n"
+            + "  nohup websockify --web /usr/share/novnc 6080 localhost:5900 >>\"$XLOG\" 2>&1 &\n"
+            + "  echo $! > /tmp/.ziva-websockify.pid\n"
+            + "fi\n"
+            + "export DISPLAY=:99\n"
+            + "exec /usr/local/bin/chrome-devtools-mcp --executablePath \"$CHROME\" --logFile /root/.ziva/chrome-mcp.log \"$@\"\n");
         // Best effort: the helper needs +x for direct exec via /bin/sh anyway,
         // but a shebang'd exec keeps the config one-liner clean.
         try {
