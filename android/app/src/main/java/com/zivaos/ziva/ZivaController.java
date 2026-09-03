@@ -66,6 +66,7 @@ public final class ZivaController {
             // patcher/ensure-chromium shims are idempotent one-file writes,
             // and skipping them here kept a STALE ensure-chromium.sh (and a
             // stale config patcher) alive until the next real spawn.
+            File rootfs = Constants.rootfsDir(ctx);
             installMcpEntry(rootfs);
             installMcpConfigPatcher(rootfs);
             startedAt = System.currentTimeMillis();
