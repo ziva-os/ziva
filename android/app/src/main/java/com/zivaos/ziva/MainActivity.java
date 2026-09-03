@@ -395,6 +395,11 @@ public class MainActivity extends Activity {
         "    onBrowserNav: reg('nav')," +
         "    onBrowserTitle: reg('title')" +
         "  };" +
+        // Android WebView has no usable mic-capture pipeline for the composer
+        // voice input — hide the button (desktop keeps it).
+        "  var st = document.createElement('style');" +
+        "  st.textContent = '.pane-btn-mic{display:none !important}';" +
+        "  (document.body || document.documentElement).appendChild(st);" +
         "})();";
 
     private void waitForBackend(final int attempt) {
