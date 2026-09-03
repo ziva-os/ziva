@@ -79,26 +79,109 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        if (requestCode == 1002) {  // composer file chooser
-            if (fileChooserCb != null) {
-                android.net.Uri[] parsed =
-                        android.webkit.WebChromeClient.FileChooserParams.parseResult(resultCode, data);
-                ZivaController.instance().appendLog(this,
-                        "[attach] picker result code=" + resultCode + " files="
-                                + (parsed == null ? 0 : parsed.length));
-                fileChooserCb.onReceiveValue(parsed);
-                fileChooserCb = null;
-            } else {
-                // Result arrived but our WebView callback is gone — the
-                // activity was recreated (or the page reloaded) mid-pick.
-                // The picked image is silently lost; log loudly.
-                ZivaController.instance().appendLog(this,
-                        "[attach] picker result code=" + resultCode
-                                + " DROPPED: no callback (activity recreated mid-pick?)");
-            }
+        if (requestCode != 1002) {  // composer file chooser
+            super.onActivityResult(requestCode, resultCode, data);
             return;
         }
-        super.onActivityResult(requestCode, resultCode, data);
+        final android.webkit.ValueCallback<Uri[]> cb = fileChooserCb;
+        fileChooserCb = null;
+        if (cb == null) {
+            // Result arrived but our WebView callback is gone — the
+            // activity was recreated (or the page reloaded) mid-pick.
+            ZivaController.instance().appendLog(this,
+                    "[attach] picker result code=" + resultCode
+                            + " DROPPED: no callback (activity recreated mid-pick?)");
+            return;
+        }
+        if (resultCode != RESULT_OK || data == null) {
+            ZivaController.instance().appendLog(this, "[attach] picker canceled (code=" + resultCode + ")");
+            cb.onReceiveValue(null);
+            return;
+        }
+        // Do NOT use FileChooserParams.parseResult(): on HyperOS the picker
+        // returns RESULT_OK but parseResult sees no URIs (files=0). Parse
+        // both channels ourselves and log the raw shape.
+        Uri single = data.getData();
+        ClipData clip = data.getClipData();
+        ZivaController.instance().appendLog(this,
+                "[attach] raw result: data=" + (single == null ? "null" : single.toString())
+                        + " clipItems=" + (clip == null ? "0" : String.valueOf(clip.getItemCount())));
+        java.util.List<Uri> uris = new java.util.ArrayList<>();
+        if (single != null) uris.add(single);
+        if (clip != null) {
+            for (int i = 0; i < clip.getItemCount(); i++) {
+                Uri u = clip.getItemAt(i).getUri();
+                if (u != null) uris.add(u);
+            }
+        }
+        if (uris.isEmpty()) {
+            ZivaController.instance().appendLog(this,
+                    "[attach] picker returned OK but NO uris in data/clipData");
+            cb.onReceiveValue(null);
+            return;
+        }
+        // Materialize content:// URIs into our cache as file:// — WebView
+        // reads file:// directly, sidestepping every OEM content-URI
+        // materialization quirk. Copy off the main thread (files can be big).
+        final Uri[] picked = uris.toArray(new Uri[0]);
+        new Thread(() -> {
+            StringBuilder errs = new StringBuilder();
+            Uri[] out = materializeToCache(picked, errs);
+            final String errLine = errs.length() == 0 ? null : errs.toString();
+            runOnUiThread(() -> {
+                ZivaController.instance().appendLog(this,
+                        "[attach] delivering " + out.length + " file(s) to webview"
+                                + (errLine == null ? "" : " (errors: " + errLine + ")"));
+                cb.onReceiveValue(out);
+            });
+        }, "attach-materialize").start();
+    }
+
+    /** Copy content:// URIs into cache/attach/, return file:// URIs. */
+    private Uri[] materializeToCache(Uri[] uris, StringBuilder errs) {
+        File dir = new File(getCacheDir(), "attach");
+        if (!dir.exists()) dir.mkdirs();
+        Uri[] out = new Uri[uris.length];
+        for (int i = 0; i < uris.length; i++) {
+            Uri u = uris[i];
+            if ("file".equals(u.getScheme())) { out[i] = u; continue; }
+            try {
+                String name = queryDisplayName(u);
+                if (name == null || name.isEmpty()) name = "attach-" + System.currentTimeMillis() + "-" + i;
+                name = name.replaceAll("[/\\\\]", "_");
+                File dst = new File(dir, name);
+                java.io.InputStream in = getContentResolver().openInputStream(u);
+                java.io.OutputStream os = new java.io.FileOutputStream(dst);
+                byte[] buf = new byte[65536];
+                int r;
+                long total = 0;
+                while ((r = in.read(buf)) > 0) { os.write(buf, 0, r); total += r; }
+                in.close();
+                os.close();
+                out[i] = Uri.fromFile(dst);
+                if (uris.length == 1)
+                    ZivaController.instance().appendLog(this,
+                            "[attach] materialized " + name + " (" + total + " bytes)");
+            } catch (Exception e) {
+                errs.append(u.getLastPathSegment()).append(": ").append(e.getMessage());
+                out[i] = u; // fall back to the content URI; WebView may still cope
+            }
+        }
+        return out;
+    }
+
+    private String queryDisplayName(Uri uri) {
+        try (android.database.Cursor c = getContentResolver().query(uri, null, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                int idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
+                if (idx >= 0) {
+                    String n = c.getString(idx);
+                    if (n != null && !n.isEmpty()) return n;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
     }
 
     /**
