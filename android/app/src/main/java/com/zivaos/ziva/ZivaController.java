@@ -346,10 +346,16 @@ public final class ZivaController {
             // --browser-url=127.0.0.1:9222 from an older config silently
             // made the mcp attach to a bridge that did not exist
             // ("Failed to fetch browser WebSocket URL") instead of ever
-            // launching chromium.
-            + "        if srv.pop(\"args\", None) is not None:\n"
+            // launching chromium. Normalize to the unambiguous list form in
+            // the same pass: a string command "/bin/sh" with args=[script,
+            // ...] must not merely lose its args (that would exec a naked
+            // interactive /bin/sh).
+            + "        stale = srv.pop(\"args\", None)\n"
+            + "        if srv.get(\"command\") != [\"/bin/sh\", \"/opt/ensure-chromium.sh\"] or stale is not None:\n"
+            + "            srv[\"command\"] = [\"/bin/sh\", \"/opt/ensure-chromium.sh\"]\n"
+            + "            srv[\"enabled\"] = True\n"
             + "            changed = True\n"
-            + "            print(\"[patch] dropped stale args from on-device chrome entry\")\n"
+            + "            print(\"[patch] normalized on-device chrome entry\")\n"
             + "        continue\n"
             + "    for k in (\"env\", \"environment\", \"url\", \"server_url\", \"transport\", \"type\", \"disabled\"):\n"
             + "        srv.pop(k, None)\n"
