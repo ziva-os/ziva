@@ -456,7 +456,27 @@ class DesktopAPIServer:
         # Prewarm MCP in the background: spawn the configured servers now so
         # the first message of the first session doesn't stall on the connect
         # (uvx/npm spawn + handshake — tens of seconds on a cold proot guest).
-        asyncio.get_running_loop().create_task(self.runtime.prewarm_mcp())
+        # Skip it when memory is already tight: the resident node MCP process
+        # (~200MB) pushed the r39 test device into an LMK kill loop — backend
+        # OOM-killed every ~60s (code=137), taking every session with it.
+        # Lazy connect on first turn costs a few seconds; a dead backend
+        # costs the whole app. macOS/dev hosts have no /proc/meminfo and
+        # always prewarm.
+        mem_mb = None
+        try:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        mem_mb = int(line.split()[1]) // 1024
+                        break
+        except OSError:
+            mem_mb = None
+        if mem_mb is not None and mem_mb < 2500:
+            logging.getLogger(__name__).info(
+                "skipping MCP prewarm: MemAvailable=%sMB — first turn connects lazily", mem_mb
+            )
+        else:
+            asyncio.get_running_loop().create_task(self.runtime.prewarm_mcp())
         # Memory watchdog (Android/proot; self-disables on hosts without
         # /proc/meminfo): under device memory pressure, kill the Chromium
         # tree before the kernel's low-memory killer kills the BACKEND —
