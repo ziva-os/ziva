@@ -48,9 +48,6 @@ public class MainActivity extends Activity {
             return;
         }
         setContentView(R.layout.activity_main);
-        // CDP bridge for chrome-devtools-mcp — before any WebView exists so
-        // the debugging switch covers every WebView this process creates.
-        DevtoolsBridge.start();
         webview = findViewById(R.id.webview);
         bootOverlay = findViewById(R.id.bootOverlay);
         bootStatus = findViewById(R.id.bootStatus);
@@ -253,9 +250,8 @@ public class MainActivity extends Activity {
     }
 
     private void setupWebview() {
-        // Keep remote debugging available: chrome://inspect lets us look at
-        // the frontend when the on-device screen stays black.
-        WebView.setWebContentsDebuggingEnabled(true);
+        // Debug switch lives in ZivaApp.onCreate — it must precede WebView
+        // creation for the devtools socket to exist.
         webview.getSettings().setJavaScriptEnabled(true);
         webview.getSettings().setDomStorageEnabled(true);
         webview.getSettings().setAllowFileAccess(false);

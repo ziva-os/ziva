@@ -62,6 +62,12 @@ public final class ZivaController {
         // still serves /status is adoptable — use it instead of re-spawning
         // (re-spawning would die on "address already in use").
         if (httpHealthy()) {
+            // Adopted backends still deserve current helper scripts: the
+            // patcher/ensure-chromium shims are idempotent one-file writes,
+            // and skipping them here kept a STALE ensure-chromium.sh (and a
+            // stale config patcher) alive until the next real spawn.
+            installMcpEntry(rootfs);
+            installMcpConfigPatcher(rootfs);
             startedAt = System.currentTimeMillis();
             lastError = "";
             return true;
@@ -334,7 +340,16 @@ public final class ZivaController {
             + "        continue\n"
             + "    matched += 1\n"
             + "    if srv.get(\"command\") in (\"/bin/sh\", [\"/bin/sh\", \"/opt/ensure-chromium.sh\"]):\n"
-            + "        continue  # already on-device\n"
+            // On-device shape — but a stale args list must NOT survive: the
+            // script execs the mcp with "$@", so a leftover
+            // --browser-url=127.0.0.1:9222 from an older config silently
+            // made the mcp attach to a bridge that did not exist
+            // ("Failed to fetch browser WebSocket URL") instead of ever
+            // launching chromium.
+            + "        if srv.pop(\"args\", None) is not None:\n"
+            + "            changed = True\n"
+            + "            print(\"[patch] dropped stale args from on-device chrome entry\")\n"
+            + "        continue\n"
             + "    for k in (\"env\", \"environment\", \"url\", \"server_url\", \"transport\", \"type\", \"disabled\"):\n"
             + "        srv.pop(k, None)\n"
             // List form, not string+args: a string command used to make the
