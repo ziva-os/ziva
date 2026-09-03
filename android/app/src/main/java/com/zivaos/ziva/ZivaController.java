@@ -434,14 +434,110 @@ public final class ZivaController {
     /**
      * The user's MCP config points chrome-devtools at /opt/ensure-chromium.sh
      * (the patcher rewrites every chrome-devtools-mcp shape to this path).
-     * The script is now a one-liner: attach to the USER'S ACTUAL TABS through
-     * the app's DevtoolsBridge (127.0.0.1:9222 -> webview devtools socket) —
-     * the same --browser-url architecture as the Electron desktop cdp-bridge.
+     * DUAL MODE: prefer the app's DevtoolsBridge on 127.0.0.1:9222 (agent
+     * drives the USER'S actual tabs — desktop parity), but when the bridge
+     * is not answering fall back to a LOCAL HEADLESS Chromium downloaded on
+     * first use. The fallback is the pre-VNC path that was verified on real
+     * devices; on the r39 test device the bridge silently never came up
+     * (no [cdp] line at all) while the device OOM-killed the backend every
+     * 60s — a fallback keeps browser tools usable regardless.
      */
     private static void installMcpEntry(File rootfs) {
         writeGuestFile(new File(rootfs, "opt/ensure-chromium.sh"),
             "#!/bin/sh\n"
-            + "exec /usr/local/bin/chrome-devtools-mcp --browser-url http://127.0.0.1:9222 --logFile /root/.ziva/chrome-mcp.log \"$@\"\n");
+            + "TAG=\"[ensure]\"\n"
+            + "MCP=/usr/local/bin/chrome-devtools-mcp\n"
+            + "LOGF=/root/.ziva/chrome-mcp.log\n"
+            + "CHROME=/opt/chromium/chrome\n"
+            + "CHROME_BIN=/opt/chromium/chrome-bin\n"
+            + "LOCK=/opt/chromium/.downloading\n"
+            + "mkdir -p /opt/chromium /root/.cache/ms-playwright\n"
+            + "\n"
+            + "fixup_wrapper() {\n"
+            + "  if [ -L \"$CHROME\" ]; then\n"
+            + "    T=$(readlink -f \"$CHROME\" 2>/dev/null)\n"
+            + "    if [ -n \"$T\" ] && [ -x \"$T\" ]; then ln -sf \"$T\" \"$CHROME_BIN\"; fi\n"
+            + "    rm -f \"$CHROME\"\n"
+            + "  fi\n"
+            + "  if [ ! -x \"$CHROME\" ] && [ -x \"$CHROME_BIN\" ]; then\n"
+            + "    printf '#!/bin/sh\\nexec /opt/chromium/chrome-bin --no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage --disable-gpu \"$@\"\\n' > \"$CHROME\"\n"
+            + "    chmod +x \"$CHROME\"\n"
+            + "  fi\n"
+            + "  if [ ! -x \"$CHROME_BIN\" ]; then\n"
+            + "    T=$(ls /opt/ms-playwright/chromium-*/chrome-linux/chrome 2>/dev/null | head -n 1)\n"
+            + "    if [ -n \"$T\" ]; then ln -sf \"$T\" \"$CHROME_BIN\"; fi\n"
+            + "  fi\n"
+            + "}\n"
+            + "\n"
+            + "download() {\n"
+            + "  export PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright\n"
+            + "  export PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright\n"
+            + "  export DEBIAN_FRONTEND=noninteractive\n"
+            + "  npx -y playwright@1.49.1 install --with-deps chromium --no-shell\n"
+            + "  SRC=$(ls -d /root/.cache/ms-playwright/chromium-*/chrome-linux 2>/dev/null | head -n 1)\n"
+            + "  if [ -n \"$SRC\" ] && [ -x \"$SRC/chrome\" ]; then\n"
+            + "    ln -sf \"$SRC/chrome\" \"$CHROME_BIN\"\n"
+            + "    rm -f \"$CHROME\"\n"
+            + "    fixup_wrapper\n"
+            + "    echo \"$TAG chromium installed at $CHROME\"\n"
+            + "  else\n"
+            + "    echo \"$TAG chromium download FAILED (see npx output above)\"\n"
+            + "  fi\n"
+            + "  rm -f \"$LOCK\"\n"
+            + "}\n"
+            + "\n"
+            + "fresh_or_running() {\n"
+            + "  if [ -f \"$LOCK\" ]; then\n"
+            + "    pid=$(cut -d' ' -f1 \"$LOCK\" 2>/dev/null)\n"
+            + "    if [ -n \"$pid\" ]; then\n"
+            + "      if kill -0 \"$pid\" 2>/dev/null; then return 0; fi\n"
+            + "      rm -f \"$LOCK\"\n"
+            + "      return 1\n"
+            + "    fi\n"
+            + "    started=$(cut -d' ' -f2 \"$LOCK\" 2>/dev/null)\n"
+            + "    now=$(date +%s)\n"
+            + "    if [ -n \"$started\" ] && [ $((now - started)) -lt 600 ]; then return 0; fi\n"
+            + "    rm -f \"$LOCK\"\n"
+            + "  fi\n"
+            + "  return 1\n"
+            + "}\n"
+            + "\n"
+            // Pre-download directive: must NEVER fall through into the mcp
+            // exec (the launcher argv would then reach mcp as unknown args).
+            + "if [ \"$1\" = \"--download-only\" ]; then\n"
+            + "  if [ -x \"$CHROME\" ]; then echo \"$TAG chromium already present\"; exit 0; fi\n"
+            + "  if fresh_or_running; then echo \"$TAG download already running/fresh\"; exit 0; fi\n"
+            + "  echo \"$$ $(date +%s)\" > \"$LOCK\"\n"
+            + "  trap 'rm -f \"$LOCK\"' EXIT\n"
+            + "  echo \"$TAG downloading linux-arm64 chromium (~250MB, domestic mirror)...\"\n"
+            + "  download\n"
+            + "  exit 0\n"
+            + "fi\n"
+            + "\n"
+            // Mode 1 — the CDP bridge: drive the user's real tabs. curl has
+            // a hard 2s cap so a half-dead bridge (listening but upstream
+            // dead) falls through to the local chromium instead of hanging
+            // the MCP handshake. Diagnostics go to STDERR: stdout IS the
+            // MCP stdio pipe.
+            + "if curl -sf -m 2 http://127.0.0.1:9222/json/version >/dev/null 2>&1; then\n"
+            + "  echo \"$TAG cdp bridge up on 9222 — direct connect\" >&2\n"
+            + "  exec $MCP --browser-url http://127.0.0.1:9222 --logFile $LOGF \"$@\"\n"
+            + "fi\n"
+            + "echo \"$TAG bridge not answering — local headless chromium\" >&2\n"
+            + "\n"
+            + "fixup_wrapper\n"
+            + "if [ ! -x \"$CHROME\" ]; then\n"
+            + "  if fresh_or_running; then exit 1; fi\n"
+            // Background download: the lock must name the SUBSHELL's pid
+            // ($!); \"$$\" here is the parent, which exits immediately and
+            // would make a live download look stale.
+            + "  download >/opt/chromium/download.log 2>&1 &\n"
+            + "  echo \"$! $(date +%s)\" > \"$LOCK\"\n"
+            + "  exit 1\n"
+            + "fi\n"
+            // NOTE: this script's stdout IS the MCP stdio pipe — never echo
+            // diagnostics here; --logFile lands them in the public data dir.
+            + "exec $MCP --executablePath \"$CHROME\" --headless --logFile $LOGF \"$@\"\n");
         // Best effort: the helper needs +x for direct exec via /bin/sh anyway,
         // but a shebang'd exec keeps the config one-liner clean.
         try {
