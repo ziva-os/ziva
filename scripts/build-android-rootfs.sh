@@ -53,8 +53,7 @@ echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
 APT="apt-get -o APT::Sandbox::User=root"
 \$APT update -qq
 \$APT install -y -qq --no-install-recommends \\
-  python3 python3-venv python3-pip git ca-certificates curl \\
-  xvfb x11vnc websockify novnc
+  python3 python3-venv python3-pip git ca-certificates curl
 CHROOT
 
 # Node 22 from the official arm64 tarball. Ubuntu 24.04 ships node 18 (too
@@ -92,62 +91,20 @@ BINREL=$(node -p "const p=require('$WORK/mcp/node_modules/chrome-devtools-mcp/pa
 chmod +x "$ROOTFS/usr/local/lib/node_modules/chrome-devtools-mcp/$BINREL"
 ln -sf "../lib/node_modules/chrome-devtools-mcp/$BINREL" "$ROOTFS/usr/local/bin/chrome-devtools-mcp"
 
-# Bake Playwright's linux-arm64 Chromium into the rootfs. Two kernels of
-# trouble shaped this: (1) on-device `apt` under proot dies mid-transaction
-# because Android's seccomp returns ENOSYS for syscalls noble's dpkg needs
-# (statx et al. — the device's chromium-download.log shows the unpack
-# aborting halfway), and (2) node under CI proot double-frees (same glibc
-# issue as `npm install -g` above), which kills playwright's download
-# child. So: download the browser with HOST node straight into the rootfs
-# tree, and install the (stable, pinned-playwright-on-noble) dependency
-# list inside the chroot. The chrome --version smoke at the end fails the
-# build loudly if the list ever drifts.
-echo "==> baking Playwright chromium (linux-arm64) into rootfs"
-export PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright
-export PLAYWRIGHT_BROWSERS_PATH="$ROOTFS/opt/ms-playwright"
-mkdir -p "$PLAYWRIGHT_BROWSERS_PATH" "$ROOTFS/opt/chromium"
-npx -y playwright@1.49.1 install chromium --no-shell
-# /opt/chromium/chrome is a WRAPPER, not a direct symlink: the guest runs
-# as (proot-faked) root with no user namespaces and no real /dev/shm, and
-# stock chrome refuses to start as root without --no-sandbox. Baking the
-# flags into the wrapper means every consumer gets them for free. The real
-# binary hangs off chrome-bin; chrome finds its resources via
-# /proc/self/exe, which after exec points at the real binary.
-REAL="$(ls -d "$ROOTFS"/opt/ms-playwright/chromium-*/chrome-linux/chrome | head -n1)"
-# The link must carry the IN-GUEST absolute path. r36 shipped
-# chrome-bin -> /tmp/ziva-rootfs.5yRrCp/rootfs/opt/... (the staging dir):
-# it resolved on the build machine (so the --version smoke passed) but
-# dangled on device — chrome died at exec and every MCP call surfaced as
-# ECONNRESET / "Target closed".
-ln -sf "${REAL#"$ROOTFS"}" "$ROOTFS/opt/chromium/chrome-bin"
-case "$(readlink "$ROOTFS/opt/chromium/chrome-bin")" in
-  /opt/*) : ;;
-  *) echo "FATAL: chrome-bin link target not guest-absolute: $(readlink "$ROOTFS/opt/chromium/chrome-bin")" >&2; exit 1 ;;
-esac
-cat > "$ROOTFS/opt/chromium/chrome" <<'WRAPPER'
-#!/bin/sh
-exec /opt/chromium/chrome-bin --no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage --disable-gpu "$@"
-WRAPPER
-chmod +x "$ROOTFS/opt/chromium/chrome"
+# NOTE: no local Chromium is baked — chrome-devtools-mcp attaches to the
+# user's real WebView tabs via the app's DevtoolsBridge (see
+# ZivaController.installMcpEntry), so the guest never spawns a browser.
+
 $PROOT /bin/bash -eux <<CHROOT
 export DEBIAN_FRONTEND=noninteractive
-# Persist the _apt sandbox bypass for any future in-guest apt (playwright's
-# --with-deps used to need it; the base-image round passed it per-command).
+# Persist the _apt sandbox bypass for any future in-guest apt.
 echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/99proot-root
 APT="apt-get -o APT::Sandbox::User=root"
 \$APT update -qq
 \$APT install -y -qq --no-install-recommends \\
-  fonts-freefont-ttf fonts-ipafont-gothic fonts-liberation \\
-  fonts-noto-color-emoji fonts-tlwg-loma-otf fonts-unifont fonts-wqy-zenhei \\
-  libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 \\
-  libavahi-client3 libcairo2 libcups2t64 libdbus-1-3 libdrm2 libfontconfig1 \\
-  libgbm1 libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 \\
-  libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 \\
-  ripgrep \\
-  x11-xkb-utils xfonts-cyrillic xfonts-encodings xfonts-scalable xvfb
+  ripgrep
 apt-get clean
 rm -rf /var/lib/apt/lists/*
-/opt/chromium/chrome --version
 command -v rg && rg --version | head -n1
 CHROOT
 
@@ -232,13 +189,6 @@ CHROOT
 rm -rf "$ROOTFS/root/.ziva" "$ROOTFS/root/workspace"
 
 echo "==> packaging"
-# Live-screen stack (xvfb+x11vnc+websockify+novnc) — the on-device
-# ensure-chromium.sh lazy-starts them; a missing piece breaks the
-# "watch the agent browse" feature with only a runtime error.
-for BIN in Xvfb x11vnc websockify; do
-  [ -e "$ROOTFS/usr/bin/$BIN" ] || { echo "FATAL: $BIN missing from rootfs"; exit 1; }
-done
-[ -f "$ROOTFS/usr/share/novnc/vnc.html" ] || { echo "FATAL: novnc vnc.html missing"; exit 1; }
 # --numeric-owner: the archive is extracted as the app's uid on Android.
 tar -C "$ROOTFS" --numeric-owner -czf "$WORK/offline-rootfs.tar.gz" .
 mv "$WORK/offline-rootfs.tar.gz" "$REPO_DIR/android/app/src/main/assets/offline-rootfs.bin"

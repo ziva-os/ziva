@@ -245,7 +245,7 @@ public final class ZivaController {
                 "[global]\nindex-url = https://pypi.tuna.tsinghua.edu.cn/simple\n");
         writeGuestFile(new File(rootfs, "root/.npmrc"),
                 "registry=https://registry.npmmirror.com\n");
-        installChromiumHelper(rootfs);
+        installMcpEntry(rootfs);
         installMcpConfigPatcher(rootfs);
     }
 
@@ -410,138 +410,16 @@ public final class ZivaController {
     }
 
     /**
-     * The user's MCP config points chrome-devtools at /opt/ensure-chromium.sh.
-     * First connects fail fast (exit 1) while the script downloads Playwright's
-     * linux-arm64 Chromium in the background via the npmmirror playwright
-     * mirror — chrome-for-testing (puppeteer's default) simply has no arm64
-     * build, which is the only reason this browser ever needed the Mac's 9222.
-     * A stale-lock + timestamp guard keeps parallel MCP connect retries from
-     * forking dueling downloads.
+     * The user's MCP config points chrome-devtools at /opt/ensure-chromium.sh
+     * (the patcher rewrites every chrome-devtools-mcp shape to this path).
+     * The script is now a one-liner: attach to the USER'S ACTUAL TABS through
+     * the app's DevtoolsBridge (127.0.0.1:9222 -> webview devtools socket) —
+     * the same --browser-url architecture as the Electron desktop cdp-bridge.
      */
-    private static void installChromiumHelper(File rootfs) {
+    private static void installMcpEntry(File rootfs) {
         writeGuestFile(new File(rootfs, "opt/ensure-chromium.sh"),
             "#!/bin/sh\n"
-            + "CHROME=/opt/chromium/chrome\n"
-            + "CHROME_BIN=/opt/chromium/chrome-bin\n"
-            + "LOCK=/opt/chromium/.downloading\n"
-            + "TAG=\"[ensure]\"\n"
-            + "mkdir -p /opt/chromium /root/.cache/ms-playwright\n"
-            + "\n"
-            // $CHROME must be the flag-wrapper script (guest runs as
-            // proot-faked root: stock chrome refuses to start as root
-            // without --no-sandbox; Android has no user namespaces and no
-            // real /dev/shm). r26 baked a DIRECT symlink to the binary —
-            // convert it in place; no ROOTFS_VERSION bump needed.
-            + "fixup_wrapper() {\n"
-            + "  if [ -L \"$CHROME\" ]; then\n"
-            + "    T=$(readlink -f \"$CHROME\" 2>/dev/null)\n"
-            + "    if [ -n \"$T\" ] && [ -x \"$T\" ]; then ln -sf \"$T\" \"$CHROME_BIN\"; fi\n"
-            + "    rm -f \"$CHROME\"\n"
-            + "  fi\n"
-            + "  if [ ! -x \"$CHROME\" ] && [ -x \"$CHROME_BIN\" ]; then\n"
-            + "    printf '#!/bin/sh\\nexec /opt/chromium/chrome-bin --no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage --disable-gpu \"$@\"\\n' > \"$CHROME\"\n"
-            + "    chmod +x \"$CHROME\"\n"
-            + "  fi\n"
-            // r36's rootfs shipped chrome-bin as a symlink into the CI
-            // staging dir (/tmp/ziva-rootfs.*/...), dangling on device: the
-            // wrapper existed (+x) so every presence check passed while the
-            // browser died at exec (ECONNRESET / Target closed). Heal in
-            // place — no rootfs re-extraction needed.
-            + "  if [ ! -x \"$CHROME_BIN\" ]; then\n"
-            + "    T=$(ls /opt/ms-playwright/chromium-*/chrome-linux/chrome 2>/dev/null | head -n 1)\n"
-            + "    if [ -n \"$T\" ]; then ln -sf \"$T\" \"$CHROME_BIN\"; fi\n"
-            + "  fi\n"
-            + "}\n"
-            + "fixup_wrapper\n"
-            + "\n"
-            + "download() {\n"
-            + "  export PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright\n"
-            + "  export PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright\n"
-            + "  export DEBIAN_FRONTEND=noninteractive\n"
-            + "  npx -y playwright@1.49.1 install --with-deps chromium --no-shell\n"
-            + "  SRC=$(ls -d /root/.cache/ms-playwright/chromium-*/chrome-linux 2>/dev/null | head -n 1)\n"
-            + "  if [ -n \"$SRC\" ] && [ -x \"$SRC/chrome\" ]; then\n"
-            + "    ln -sf \"$SRC/chrome\" \"$CHROME_BIN\"\n"
-            + "    rm -f \"$CHROME\"\n"
-            + "    fixup_wrapper\n"
-            + "    echo \"$TAG chromium installed at $CHROME\"\n"
-            + "  else\n"
-            + "    echo \"$TAG chromium download FAILED (see npx output above)\"\n"
-            + "  fi\n"
-            + "  rm -f \"$LOCK\"\n"
-            + "}\n"
-            + "\n"
-            // A lock whose writer PID is gone is stale no matter how fresh the
-            // timestamp is — the r25 \"Cannot fork\" crash left exactly such a
-            // lock and every retry within the freshness window then skipped
-            // (\"already running/fresh\") while nothing was downloading.
-            + "fresh_or_running() {\n"
-            + "  if [ -f \"$LOCK\" ]; then\n"
-            + "    pid=$(cut -d' ' -f1 \"$LOCK\" 2>/dev/null)\n"
-            + "    if [ -n \"$pid\" ]; then\n"
-            + "      if kill -0 \"$pid\" 2>/dev/null; then return 0; fi\n"
-            + "      rm -f \"$LOCK\"\n"
-            + "      return 1\n"
-            + "    fi\n"
-            + "    started=$(cut -d' ' -f2 \"$LOCK\" 2>/dev/null)\n"
-            + "    now=$(date +%s)\n"
-            + "    if [ -n \"$started\" ] && [ $((now - started)) -lt 600 ]; then return 0; fi\n"
-            + "    rm -f \"$LOCK\"\n"
-            + "  fi\n"
-            + "  return 1\n"
-            + "}\n"
-            + "\n"
-            + "if [ \"$1\" = \"--download-only\" ]; then\n"
-            + "  if [ -x \"$CHROME\" ]; then echo \"$TAG chromium already present\"; exit 0; fi\n"
-            + "  if fresh_or_running; then echo \"$TAG download already running/fresh\"; exit 0; fi\n"
-            + "  echo \"$$ $(date +%s)\" > \"$LOCK\"\n"
-            // Foreground download: clean the lock even if the script is
-            // killed mid-download (the crash that poisoned r25).
-            + "  trap 'rm -f \"$LOCK\"' EXIT\n"
-            + "  echo \"$TAG downloading linux-arm64 chromium (~250MB, domestic mirror)...\"\n"
-            + "  download\n"
-            + "  exit 0\n"
-            + "fi\n"
-            + "\n"
-            + "if [ ! -x \"$CHROME\" ]; then\n"
-            + "  if fresh_or_running; then exit 1; fi\n"
-            // Background download: the lock must name the SUBSHELL's pid
-            // ($!); \"$$\" here is the parent, which exits immediately and
-            // would make a live download look stale.
-            + "  download >/opt/chromium/download.log 2>&1 &\n"
-            + "  echo \"$! $(date +%s)\" > \"$LOCK\"\n"
-            + "  exit 1\n"
-            + "fi\n"
-            // NOTE: this script's stdout IS the MCP stdio pipe — never echo
-            // diagnostics here; --logFile lands them in the public data dir.
-            //
-            // Mode 1 (desktop parity): the app's DevtoolsBridge exposes the
-            // USER'S ACTUAL TABS on 127.0.0.1:9222 — attach with the same
-            // --browser-url architecture as the Electron cdp-bridge.
-            // Mode 2 (fallback): standalone chromium on Xvfb :99, watchable
-            // via noVNC at http://127.0.0.1:6080/vnc.html?autoconnect=1.
-            + "if curl -s --max-time 2 http://127.0.0.1:9222/json/version | grep -q webSocketDebuggerUrl; then\n"
-            + "  exec /usr/local/bin/chrome-devtools-mcp --browser-url http://127.0.0.1:9222 --logFile /root/.ziva/chrome-mcp.log \"$@\"\n"
-            + "fi\n"
-            + "XLOG=/root/.ziva/x11.log\n"
-            + "if [ ! -e /tmp/.X11-unix/X99 ]; then\n"
-            + "  mkdir -p /tmp/.X11-unix\n"
-            + "  rm -f /tmp/.X11-unix/X99\n"
-            + "  nohup Xvfb :99 -screen 0 1280x800x24 -nolisten tcp >>\"$XLOG\" 2>&1 &\n"
-            + "  echo $! > /tmp/.ziva-xvfb.pid\n"
-            + "  for i in 1 2 3 4 5 6 7 8 9 10; do [ -e /tmp/.X11-unix/X99 ] && break; sleep 1; done\n"
-            + "fi\n"
-            + "pid_alive() { [ -f \"$1\" ] && kill -0 \"$(cat \"$1\")\" 2>/dev/null; }\n"
-            + "if ! pid_alive /tmp/.ziva-x11vnc.pid; then\n"
-            + "  nohup x11vnc -display :99 -forever -shared -nopw -quiet -listen localhost >>\"$XLOG\" 2>&1 &\n"
-            + "  echo $! > /tmp/.ziva-x11vnc.pid\n"
-            + "fi\n"
-            + "if ! pid_alive /tmp/.ziva-websockify.pid; then\n"
-            + "  nohup websockify --web /usr/share/novnc 6080 localhost:5900 >>\"$XLOG\" 2>&1 &\n"
-            + "  echo $! > /tmp/.ziva-websockify.pid\n"
-            + "fi\n"
-            + "export DISPLAY=:99\n"
-            + "exec /usr/local/bin/chrome-devtools-mcp --executablePath \"$CHROME\" --logFile /root/.ziva/chrome-mcp.log \"$@\"\n");
+            + "exec /usr/local/bin/chrome-devtools-mcp --browser-url http://127.0.0.1:9222 --logFile /root/.ziva/chrome-mcp.log \"$@\"\n");
         // Best effort: the helper needs +x for direct exec via /bin/sh anyway,
         // but a shebang'd exec keeps the config one-liner clean.
         try {
