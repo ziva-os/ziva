@@ -492,6 +492,18 @@ public final class ZivaController {
             + "  rm -f \"$LOCK\"\n"
             + "}\n"
             + "\n"
+            // Shared probe: 3 x (2s curl + 1s gap). Retries because prewarm
+            // can race the bridge by milliseconds; --noproxy because a
+            // stray http_proxy env must never redirect a loopback check.
+            + "probe_bridge() {\n"
+            + "  BRIDGE=0\n"
+            + "  for probe in 1 2 3; do\n"
+            + "    if curl -sf -m 2 --noproxy '*' http://127.0.0.1:9222/json/version >/dev/null 2>&1; then BRIDGE=1; break; fi\n"
+            + "    [ \"$probe\" -lt 3 ] && sleep 1\n"
+            + "  done\n"
+            + "  [ \"$BRIDGE\" = \"1\" ]\n"
+            + "}\n"
+            + "\n"
             + "fresh_or_running() {\n"
             + "  if [ -f \"$LOCK\" ]; then\n"
             + "    pid=$(cut -d' ' -f1 \"$LOCK\" 2>/dev/null)\n"
@@ -512,6 +524,15 @@ public final class ZivaController {
             // exec (the launcher argv would then reach mcp as unknown args).
             + "if [ \"$1\" = \"--download-only\" ]; then\n"
             + "  if [ -f \"$MODELOG\" ]; then echo \"$TAG last mcp mode: $(tail -n 3 \"$MODELOG\" | tr '\\n' '|')\"; fi\n"
+            // Direct connect drives the user's REAL WebView tabs — a local
+            // chromium is dead weight there. If the bridge answers, skip the
+            // 250MB download entirely (this runs on every backend start via
+            // ProotBootstrap, so it must stay cheap in direct mode).
+            + "  if probe_bridge; then\n"
+            + "    echo \"$(date +%s) direct (download skipped)\" >> \"$MODELOG\"\n"
+            + "    echo \"$TAG cdp bridge up — chromium not needed in direct mode\"\n"
+            + "    exit 0\n"
+            + "  fi\n"
             + "  if [ -x \"$CHROME\" ]; then echo \"$TAG chromium already present\"; exit 0; fi\n"
             + "  if fresh_or_running; then echo \"$TAG download already running/fresh\"; exit 0; fi\n"
             + "  echo \"$$ $(date +%s)\" > \"$LOCK\"\n"
@@ -531,11 +552,7 @@ public final class ZivaController {
             // the MCP handshake. Diagnostics go to STDERR: stdout IS the
             // MCP stdio pipe.
             + "BRIDGE=0\n"
-            + "for probe in 1 2 3; do\n"
-            + "  if curl -sf -m 2 --noproxy '*' http://127.0.0.1:9222/json/version >/dev/null 2>&1; then BRIDGE=1; break; fi\n"
-            + "  [ \"$probe\" -lt 3 ] && sleep 1\n"
-            + "done\n"
-            + "if [ \"$BRIDGE\" = \"1\" ]; then\n"
+            + "if probe_bridge; then\n"
             + "  echo \"$(date +%s) direct\" >> \"$MODELOG\"\n"
             + "  echo \"$TAG cdp bridge up on 9222 — direct connect\" >&2\n"
             + "  exec $MCP --browser-url http://127.0.0.1:9222 --logFile $LOGF \"$@\"\n"
