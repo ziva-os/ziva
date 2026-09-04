@@ -340,8 +340,6 @@ public final class ZivaController {
             return null;
         }
     }
-        }
-    }
 
     /** True when the HTTP surface answers; 2s budget keeps the watchdog cheap. */
     public boolean httpHealthy() {
