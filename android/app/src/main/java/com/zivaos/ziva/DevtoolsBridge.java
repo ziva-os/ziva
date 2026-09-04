@@ -39,6 +39,15 @@ import java.net.Socket;
 public final class DevtoolsBridge {
     private static final int PORT = 9222;
     private static volatile boolean started = false;
+    // Bound on the MAIN thread in start() — under the device's OOM/LMK
+    // storms a fresh daemon thread's early log writes have proven
+    // unreliable (three rounds of "listening but zero [cdp] lines" all
+    // happened while the backend was being SIGKILLed every 60s). The bind
+    // itself is microseconds, so doing it synchronously in Application
+    // onCreate puts the outcome in the log with the same reliability as
+    // the [proc] banner, and a bound socket keeps accepting even if the
+    // accept thread later dies and has to be revived.
+    private static volatile ServerSocket listener;
 
     public static synchronized void start() {
         if (started) return;
@@ -46,42 +55,54 @@ public final class DevtoolsBridge {
         // Process-wide switch; must precede WebView creation. Enables the
         // devtools socket for the main UI WebView and every tab WebView.
         WebView.setWebContentsDebuggingEnabled(true);
-        Thread t = new Thread(DevtoolsBridge::serveLoop, "devtools-bridge");
+        String sockName = "webview_devtools_remote_" + android.os.Process.myPid();
+        try {
+            // Literal IPv4 loopback — NOT getLoopbackAddress(), which
+            // returns ::1 on IPv6-capable devices, invisible to the
+            // guest's curl 127.0.0.1 probe.
+            ServerSocket ss = new ServerSocket(PORT, 50,
+                    InetAddress.getByName("127.0.0.1"));
+            listener = ss;
+            ZivaController.appendProcLog(ZivaController.logFile(),
+                    "[cdp] bridge listening on 127.0.0.1:" + PORT + " -> " + sockName);
+        } catch (Throwable t) {
+            ZivaController.appendProcLog(ZivaController.logFile(),
+                    "[cdp] bridge down: " + t.getClass().getName()
+                            + (t.getMessage() != null ? ": " + t.getMessage() : ""));
+            return;
+        }
+        Thread t = new Thread(DevtoolsBridge::acceptLoop, "devtools-bridge");
         t.setDaemon(true);
         t.start();
     }
 
     /** Accept loop with unbounded Throwable-safe retries. Never exits. */
-    private static void serveLoop() {
+    private static void acceptLoop() {
         String sockName = "webview_devtools_remote_" + android.os.Process.myPid();
-        long backoff = 2000;
         while (true) {
-            // Bind the LITERAL IPv4 loopback — NOT getLoopbackAddress(),
-            // which returns ::1 on IPv6-capable devices (all of them). A
-            // ::1 listener is invisible to the guest's curl 127.0.0.1 probe,
-            // which then silently pins the session to headless chromium
-            // while this log line still claims "127.0.0.1".
-            try (ServerSocket ss = new ServerSocket(PORT, 50,
-                    InetAddress.getByName("127.0.0.1"))) {
-                ZivaController.appendProcLog(ZivaController.logFile(),
-                        "[cdp] bridge listening on 127.0.0.1:" + PORT + " -> " + sockName);
-                backoff = 2000;
+            try {
+                ServerSocket ss = listener;
+                if (ss == null || ss.isClosed()) {
+                    ss = new ServerSocket(PORT, 50,
+                            InetAddress.getByName("127.0.0.1"));
+                    listener = ss;
+                    ZivaController.appendProcLog(ZivaController.logFile(),
+                            "[cdp] bridge re-listening on 127.0.0.1:" + PORT);
+                }
                 while (true) {
                     Socket in = ss.accept();
                     new Thread(() -> pipe(in, sockName), "cdp-conn").start();
                 }
             } catch (Throwable t) {
                 ZivaController.appendProcLog(ZivaController.logFile(),
-                        "[cdp] bridge down: " + t.getClass().getName()
-                                + (t.getMessage() != null ? ": " + t.getMessage() : "")
-                                + " — retry in " + (backoff / 1000) + "s");
+                        "[cdp] accept loop error: " + t.getClass().getName()
+                                + (t.getMessage() != null ? ": " + t.getMessage() : ""));
             }
             try {
-                Thread.sleep(backoff);
+                Thread.sleep(2000);
             } catch (InterruptedException e) {
                 return;
             }
-            backoff = Math.min(backoff * 2, 30000);
         }
     }
 

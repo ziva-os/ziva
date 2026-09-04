@@ -514,7 +514,7 @@ public final class ZivaController {
             + "    fi\n"
             + "    started=$(cut -d' ' -f2 \"$LOCK\" 2>/dev/null)\n"
             + "    now=$(date +%s)\n"
-            + "    if [ -n \"$started\" ] && [ $((now - started)) -lt 600 ]; then return 0; fi\n"
+            + "    if [ -n \"$started\" ] && [ $((now - started)) -lt 120 ]; then return 0; fi\n"
             + "    rm -f \"$LOCK\"\n"
             + "  fi\n"
             + "  return 1\n"
