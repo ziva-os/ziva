@@ -48,6 +48,13 @@ public final class DevtoolsBridge {
     // the [proc] banner, and a bound socket keeps accepting even if the
     // accept thread later dies and has to be revived.
     private static volatile ServerSocket listener;
+    // One-line human-readable state, set wherever the bridge state changes.
+    // Surfaced inside the backend-starting banner (the ONLY log line proven
+    // to always reach the exported log) — see ZivaController.startBackend.
+    private static volatile String status = "not started";
+
+    /** Current bridge state for the startup banner. */
+    public static String status() { return status; }
 
     public static synchronized void start() {
         if (started) return;
@@ -63,12 +70,14 @@ public final class DevtoolsBridge {
             ServerSocket ss = new ServerSocket(PORT, 50,
                     InetAddress.getByName("127.0.0.1"));
             listener = ss;
+            status = "listening on 127.0.0.1:" + PORT + " -> " + sockName;
             ZivaController.appendProcLog(ZivaController.logFile(),
                     "[cdp] bridge listening on 127.0.0.1:" + PORT + " -> " + sockName);
         } catch (Throwable t) {
+            status = "down: " + t.getClass().getName()
+                    + (t.getMessage() != null ? ": " + t.getMessage() : "");
             ZivaController.appendProcLog(ZivaController.logFile(),
-                    "[cdp] bridge down: " + t.getClass().getName()
-                            + (t.getMessage() != null ? ": " + t.getMessage() : ""));
+                    "[cdp] bridge down: " + status);
             return;
         }
         Thread t = new Thread(DevtoolsBridge::acceptLoop, "devtools-bridge");
@@ -86,6 +95,7 @@ public final class DevtoolsBridge {
                     ss = new ServerSocket(PORT, 50,
                             InetAddress.getByName("127.0.0.1"));
                     listener = ss;
+                    status = "re-listening on 127.0.0.1:" + PORT;
                     ZivaController.appendProcLog(ZivaController.logFile(),
                             "[cdp] bridge re-listening on 127.0.0.1:" + PORT);
                 }
@@ -94,6 +104,7 @@ public final class DevtoolsBridge {
                     new Thread(() -> pipe(in, sockName), "cdp-conn").start();
                 }
             } catch (Throwable t) {
+                status = "accept error: " + t.getClass().getName();
                 ZivaController.appendProcLog(ZivaController.logFile(),
                         "[cdp] accept loop error: " + t.getClass().getName()
                                 + (t.getMessage() != null ? ": " + t.getMessage() : ""));

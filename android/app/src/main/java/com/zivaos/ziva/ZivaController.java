@@ -128,7 +128,12 @@ public final class ZivaController {
             // export looked identical. Every start now states its version —
             // a log without this line, or with an old sha, is an old app.
             appendProcLog(logFileForTail, "[proc] backend starting, build="
-                    + BuildConfig.VERSION_NAME);
+                    + BuildConfig.VERSION_NAME
+                    // Hitch the bridge state onto the one log line proven to
+                    // always reach the export: appendProcLog into /sdcard has
+                    // silently failed before (catch-ignored), which is how
+                    // three rounds of "zero [cdp] lines" happened.
+                    + "; cdp=" + DevtoolsBridge.status());
             lastError = "";
             // Death note: log WHY the backend went away. 137 = SIGKILL
             // (system/OOM kill — nothing in our code path sends KILL to a
@@ -497,10 +502,15 @@ public final class ZivaController {
             // stray http_proxy env must never redirect a loopback check.
             + "probe_bridge() {\n"
             + "  BRIDGE=0\n"
+            + "  PROBE_ERR=\"\"\n"
             + "  for probe in 1 2 3; do\n"
-            + "    if curl -sf -m 2 --noproxy '*' http://127.0.0.1:9222/json/version >/dev/null 2>&1; then BRIDGE=1; break; fi\n"
+            + "    OUT=$(curl -s -m 2 --noproxy '*' http://127.0.0.1:9222/json/version 2>&1)\n"
+            + "    RC=$?\n"
+            + "    if [ $RC -eq 0 ]; then BRIDGE=1; break; fi\n"
+            + "    PROBE_ERR=\"rc=$RC ${OUT:-no output}\"\n"
             + "    [ \"$probe\" -lt 3 ] && sleep 1\n"
             + "  done\n"
+            + "  [ \"$BRIDGE\" = \"1\" ] || echo \"$(date +%s) probe-fail $PROBE_ERR\" >> \"$MODELOG\"\n"
             + "  [ \"$BRIDGE\" = \"1\" ]\n"
             + "}\n"
             + "\n"
@@ -535,10 +545,18 @@ public final class ZivaController {
             + "  fi\n"
             + "  if [ -x \"$CHROME\" ]; then echo \"$TAG chromium already present\"; exit 0; fi\n"
             + "  if fresh_or_running; then echo \"$TAG download already running/fresh\"; exit 0; fi\n"
-            + "  echo \"$$ $(date +%s)\" > \"$LOCK\"\n"
-            + "  trap 'rm -f \"$LOCK\"' EXIT\n"
-            + "  echo \"$TAG downloading linux-arm64 chromium (~250MB, domestic mirror)...\"\n"
-            + "  download\n"
+            // Background the download: this script runs BEFORE the backend
+            // can start (ProotBootstrap), and a synchronous 250MB fetch
+            // here blocks waitForBackend into "backend failed" — worse,
+            // each OOM kill of the backend restarted the download from
+            // zero. The lock now names the background subshell so
+            // fresh_or_running can see it across restarts.
+            + "  echo \"$TAG chromium download started in background — starting backend now\"\n"
+            + "  (\n"
+            + "    trap 'rm -f \"$LOCK\"' EXIT\n"
+            + "    download\n"
+            + "  ) >/opt/chromium/download.log 2>&1 &\n"
+            + "  echo \"$! $(date +%s)\" > \"$LOCK\"\n"
             + "  exit 0\n"
             + "fi\n"
             + "\n"
