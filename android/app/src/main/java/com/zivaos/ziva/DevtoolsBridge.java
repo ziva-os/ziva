@@ -330,7 +330,8 @@ public final class DevtoolsBridge {
 
     /** Upstream /json/list as a JSONArray with the Ziva UI target removed
      *  and ws URLs repointed at this bridge. Also refreshes mainUiTargets. */
-    private static JSONArray upstreamListFiltered() throws java.io.IOException {
+    private static JSONArray upstreamListFiltered()
+            throws java.io.IOException, org.json.JSONException {
         JSONArray arr = new JSONArray(queryUpstream("/json/list"));
         JSONArray out = new JSONArray();
         for (int i = 0; i < arr.length(); i++) {
@@ -629,7 +630,10 @@ public final class DevtoolsBridge {
         WebTabManager tabs = webTabs;
         if (tabId == null || tabs == null) return false;
         tabs.closeTab(tabId);
-        dispatchRenderer("tabClosed", new JSONObject().put("id", tabId));
+        try {
+            dispatchRenderer("tabClosed", new JSONObject().put("id", tabId));
+        } catch (Throwable ignored) {
+        }
         ZivaController.appendProcLog(ZivaController.logFile(),
                 "[cdp] closeTarget target=" + tid + " tab=" + tabId);
         return true;
