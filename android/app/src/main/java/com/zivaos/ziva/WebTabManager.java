@@ -203,15 +203,29 @@ public class WebTabManager {
         s.setAllowFileAccess(false);
         s.setAllowContentAccess(false);
         s.setSupportMultipleWindows(false); // target=_blank navigates in-tab
-        // Desktop layout on a tablet: stock mobile UA + default viewport get
-        // phone-layout pages rendered at ~1/3 width with dead whitespace.
-        s.setUserAgentString(Constants.DESKTOP_UA);
+        // Desktop UA only on TABLETS (its original motivation: a tablet with
+        // the stock mobile UA renders phone-layout pages at ~1/3 width with
+        // dead whitespace). On a PHONE the desktop UA backfires: sites like
+        // douyin/weibo serve their ~1900px desktop layout, which overview
+        // mode then scales to fit — every glyph ends up unreadably tiny.
+        // Phones keep the stock mobile UA; mobile pages carry a viewport
+        // meta that renders correctly at phone width.
+        boolean tablet = activity.getResources().getConfiguration()
+                .smallestScreenWidthDp >= 600;
+        if (tablet) {
+            s.setUserAgentString(Constants.DESKTOP_UA);
+        }
         s.setUseWideViewPort(true);
         s.setLoadWithOverviewMode(true);
-        // Ignore the system font scale: it inflates text measurement inside
-        // the page (chips/toolbar layouts go stale) and diverges from the
-        // desktop rendering users compare against.
-        s.setTextZoom(100);
+        // Desktop pages are designed for ~1440px monitors with a 12-14px
+        // base font; overview-scaled onto a tablet that font is unreadably
+        // small (douyin/weibo on Mi Pad 7 Pro). textZoom enlarges glyphs
+        // without touching the layout, and pinch-zoom stays available for
+        // site-specific fine-tuning.
+        s.setTextZoom(tablet ? 130 : 100);
+        s.setSupportZoom(true);
+        s.setBuiltInZoomControls(true);
+        s.setDisplayZoomControls(false); // pinch only — no on-screen +/-
         w.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
