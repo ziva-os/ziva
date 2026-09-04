@@ -46,8 +46,8 @@ import java.util.concurrent.ConcurrentHashMap;
  *         Target.activateTarget -> showTab
  *         Target.getTargets     -> synthesized, Ziva UI filtered
  *         everything else       -> forwarded byte-for-byte (upstream handles
- *                                  setAutoAttach/attachToTarget/Page.*/…
- *                                  — proven on device by navigate_page)
+ *                                  setAutoAttach, attachToTarget, Page and
+ *                                  Runtime traffic - proven on device)
  *         upstream->client      -> events for the Ziva UI target dropped,
  *                                  everything else forwarded untouched
  *   WS    /devtools/page/*    -> dumb pipe (upstream serves these natively)
