@@ -448,6 +448,12 @@ public final class ZivaController {
             + "TAG=\"[ensure]\"\n"
             + "MCP=/usr/local/bin/chrome-devtools-mcp\n"
             + "LOGF=/root/.ziva/chrome-mcp.log\n"
+            // Mode ledger: the backend's STDERR never reaches the Java log
+            // (two rounds of blind debugging proved it), so every mode
+            // decision also lands in this file and the NEXT backend start
+            // replays it over the one pipe that is guaranteed to reach the
+            // exported log: this script's --download-only stdout.
+            + "MODELOG=/root/.ziva/ensure-mode.log\n"
             + "CHROME=/opt/chromium/chrome\n"
             + "CHROME_BIN=/opt/chromium/chrome-bin\n"
             + "LOCK=/opt/chromium/.downloading\n"
@@ -505,6 +511,7 @@ public final class ZivaController {
             // Pre-download directive: must NEVER fall through into the mcp
             // exec (the launcher argv would then reach mcp as unknown args).
             + "if [ \"$1\" = \"--download-only\" ]; then\n"
+            + "  if [ -f \"$MODELOG\" ]; then echo \"$TAG last mcp mode: $(tail -n 3 \"$MODELOG\" | tr '\\n' '|')\"; fi\n"
             + "  if [ -x \"$CHROME\" ]; then echo \"$TAG chromium already present\"; exit 0; fi\n"
             + "  if fresh_or_running; then echo \"$TAG download already running/fresh\"; exit 0; fi\n"
             + "  echo \"$$ $(date +%s)\" > \"$LOCK\"\n"
@@ -514,15 +521,26 @@ public final class ZivaController {
             + "  exit 0\n"
             + "fi\n"
             + "\n"
-            // Mode 1 — the CDP bridge: drive the user's real tabs. curl has
-            // a hard 2s cap so a half-dead bridge (listening but upstream
-            // dead) falls through to the local chromium instead of hanging
+            // Mode 1 — the CDP bridge: drive the user's real tabs. Probed
+            // with short retries: the bridge comes up in ZivaApp.onCreate
+            // but prewarm/mcp can race it by milliseconds, and one failed
+            // probe used to pin the session to headless forever. The
+            // decision is appended to MODELOG so the next backend start
+            // replays it into the exported log. curl has a hard 2s cap per
+            // probe so a half-dead bridge falls through instead of hanging
             // the MCP handshake. Diagnostics go to STDERR: stdout IS the
             // MCP stdio pipe.
-            + "if curl -sf -m 2 http://127.0.0.1:9222/json/version >/dev/null 2>&1; then\n"
+            + "BRIDGE=0\n"
+            + "for probe in 1 2 3; do\n"
+            + "  if curl -sf -m 2 http://127.0.0.1:9222/json/version >/dev/null 2>&1; then BRIDGE=1; break; fi\n"
+            + "  [ \"$probe\" -lt 3 ] && sleep 1\n"
+            + "done\n"
+            + "if [ \"$BRIDGE\" = \"1\" ]; then\n"
+            + "  echo \"$(date +%s) direct\" >> \"$MODELOG\"\n"
             + "  echo \"$TAG cdp bridge up on 9222 — direct connect\" >&2\n"
             + "  exec $MCP --browser-url http://127.0.0.1:9222 --logFile $LOGF \"$@\"\n"
             + "fi\n"
+            + "echo \"$(date +%s) headless (bridge not answering after 3 probes)\" >> \"$MODELOG\"\n"
             + "echo \"$TAG bridge not answering — local headless chromium\" >&2\n"
             + "\n"
             + "fixup_wrapper\n"
