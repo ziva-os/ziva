@@ -48,6 +48,10 @@ public final class DevtoolsBridge {
     // the [proc] banner, and a bound socket keeps accepting even if the
     // accept thread later dies and has to be revived.
     private static volatile ServerSocket listener;
+    // Total accepted connections — surfaced in status() so the startup
+    // banner distinguishes "accept never ran" from "accepted but upstream
+    // unresponsive".
+    private static int conns = 0;
     // One-line human-readable state, set wherever the bridge state changes.
     // Surfaced inside the backend-starting banner (the ONLY log line proven
     // to always reach the exported log) — see ZivaController.startBackend.
@@ -55,6 +59,38 @@ public final class DevtoolsBridge {
 
     /** Current bridge state for the startup banner. */
     public static String status() { return status; }
+
+    /**
+     * True socket name, discovered at first use from /proc/net/unix —
+     * "webview_devtools_remote_<pid>" is a GUESS; some WebView builds
+     * name the socket differently, and a wrong name means pipe()
+     * forwards into a black hole (curl sees connect-then-timeout,
+     * rc=28, exactly what the device logs show).
+     */
+    private static volatile String discoveredSock;
+
+    private static String findDevtoolsSocket() {
+        String guessed = "webview_devtools_remote_" + android.os.Process.myPid();
+        try (java.io.BufferedReader r = new java.io.BufferedReader(
+                new java.io.FileReader("/proc/net/unix"))) {
+            String line;
+            String found = null;
+            while ((line = r.readLine()) != null) {
+                int at = line.indexOf(" devtools_remote");
+                int wv = line.indexOf(" webview_devtools_remote");
+                String name = null;
+                if (wv >= 0) name = line.substring(wv + 1).trim();
+                else if (at >= 0) name = line.substring(at + 1).trim();
+                if (name != null && !name.isEmpty()) {
+                    if (name.equals(guessed)) return name;   // exact guess wins
+                    if (found == null || name.startsWith("webview")) found = name;
+                }
+            }
+            if (found != null) return found;
+        } catch (Throwable ignored) {
+        }
+        return guessed;
+    }
 
     public static synchronized void start() {
         if (started) return;
@@ -94,14 +130,25 @@ public final class DevtoolsBridge {
                 if (ss == null || ss.isClosed()) {
                     ss = new ServerSocket(PORT, 50,
                             InetAddress.getByName("127.0.0.1"));
+                    // Wake accept() every second: the thread can never sit
+                    // wedged in a blocking accept, and status() keeps
+                    // moving even when no client is around.
+                    ss.setSoTimeout(1000);
                     listener = ss;
                     status = "re-listening on 127.0.0.1:" + PORT;
                     ZivaController.appendProcLog(ZivaController.logFile(),
                             "[cdp] bridge re-listening on 127.0.0.1:" + PORT);
                 }
                 while (true) {
-                    Socket in = ss.accept();
-                    new Thread(() -> pipe(in, sockName), "cdp-conn").start();
+                    try {
+                        Socket in = ss.accept();
+                        new Thread(() -> pipe(in, sockName), "cdp-conn").start();
+                    } catch (java.net.SocketTimeoutException ste) {
+                        // Heartbeat tick — refresh status so a banner read
+                        // shows the accept loop is alive.
+                        status = "listening (accept alive); conns=" + conns
+                                + " -> " + (discoveredSock != null ? discoveredSock : sockName);
+                    }
                 }
             } catch (Throwable t) {
                 status = "accept error: " + t.getClass().getName();
@@ -119,9 +166,21 @@ public final class DevtoolsBridge {
 
     /** One client connection: fresh LocalSocket per connection, bidirectional pump. */
     private static void pipe(Socket in, String sockName) {
+        // Re-discover per connection (cheap /proc read) and track activity
+        // in status() — the banner reports conns=N so the next log tells
+        // apart "accept never ran" (conns=0) from "accepted but upstream
+        // dead" (conns>0).
+        String target = discoveredSock != null ? discoveredSock : findDevtoolsSocket();
+        discoveredSock = target;
+        int n;
+        synchronized (DevtoolsBridge.class) {
+            conns++;
+            n = conns;
+        }
+        status = "listening; conns=" + n + " -> " + target;
         LocalSocket ls = new LocalSocket();
         try {
-            ls.connect(new LocalSocketAddress(sockName,
+            ls.connect(new LocalSocketAddress(target,
                     LocalSocketAddress.Namespace.ABSTRACT));
         } catch (Throwable t) {
             // Devtools socket not up yet (no WebView created / debugging

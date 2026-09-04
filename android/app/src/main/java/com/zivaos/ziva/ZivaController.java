@@ -510,7 +510,7 @@ public final class ZivaController {
             + "    PROBE_ERR=\"rc=$RC ${OUT:-no output}\"\n"
             + "    [ \"$probe\" -lt 3 ] && sleep 1\n"
             + "  done\n"
-            + "  [ \"$BRIDGE\" = \"1\" ] || echo \"$(date +%s) probe-fail $PROBE_ERR\" >> \"$MODELOG\"\n"
+            + "  [ \"$BRIDGE\" = \"1\" ] || { echo \"$(date +%s) probe-fail $PROBE_ERR\" >> \"$MODELOG\"; grep -o '[a-z_]*devtools_remote[a-zA-Z0-9_]*' /proc/net/unix 2>/dev/null | sort -u | head -5 | sed 's/^/socket-seen: /' >> \"$MODELOG\"; }\n"
             + "  [ \"$BRIDGE\" = \"1\" ]\n"
             + "}\n"
             + "\n"
