@@ -151,10 +151,18 @@ public final class DevtoolsBridge {
                     }
                 }
             } catch (Throwable t) {
-                status = "accept error: " + t.getClass().getName();
-                ZivaController.appendProcLog(ZivaController.logFile(),
-                        "[cdp] accept loop error: " + t.getClass().getName()
-                                + (t.getMessage() != null ? ": " + t.getMessage() : ""));
+                // NEVER let this thread die: appendProcLog itself can throw
+                // under OOM (fd/heap exhaustion), and an unguarded throw
+                // here would fly out of the loop and kill the accept thread
+                // — after which every future connection just piles up in
+                // the backlog and times out (rc=28) until the app restarts.
+                try {
+                    status = "accept error: " + t.getClass().getName();
+                    ZivaController.appendProcLog(ZivaController.logFile(),
+                            "[cdp] accept loop error: " + t.getClass().getName()
+                                    + (t.getMessage() != null ? ": " + t.getMessage() : ""));
+                } catch (Throwable ignored) {
+                }
             }
             try {
                 Thread.sleep(2000);
@@ -180,8 +188,25 @@ public final class DevtoolsBridge {
         status = "listening; conns=" + n + " -> " + target;
         LocalSocket ls = new LocalSocket();
         try {
-            ls.connect(new LocalSocketAddress(target,
-                    LocalSocketAddress.Namespace.ABSTRACT));
+            // connect with a deadline: LocalSocket.connect has no timeout
+            // parameter and can wedge indefinitely if the upstream's listen
+            // backlog is saturated — a wedged connect leaves the client
+            // hanging with no bytes, which is exactly probe rc=28.
+            final LocalSocketAddress addr = new LocalSocketAddress(target,
+                    LocalSocketAddress.Namespace.ABSTRACT);
+            final LocalSocket s = ls;
+            Thread connector = new Thread(() -> {
+                try {
+                    s.connect(addr);
+                } catch (Throwable ignored) {
+                }
+            }, "cdp-conn-upstream");
+            connector.setDaemon(true);
+            connector.start();
+            connector.join(2000);
+            if (!ls.isConnected()) {
+                throw new java.io.IOException("upstream connect timeout: " + target);
+            }
         } catch (Throwable t) {
             // Devtools socket not up yet (no WebView created / debugging
             // still initializing) — drop the probe connection quietly.
@@ -194,7 +219,11 @@ public final class DevtoolsBridge {
             final InputStream fromClient = in.getInputStream();
             final OutputStream toUpstream = ls.getOutputStream();
             final InputStream fromUpstream = ls.getInputStream();
-            final OutputStream toClient = ls.getOutputStream();
+            // THE root cause of every rc=28 to date: this used to be
+            // ls.getOutputStream(), which pumps upstream's RESPONSE back
+            // into upstream itself — a data black hole where the client
+            // gets zero bytes and times out. It must be the CLIENT side.
+            final OutputStream toClient = in.getOutputStream();
             Thread up = new Thread(() -> pump(fromClient, toUpstream));
             up.setDaemon(true);
             up.start();

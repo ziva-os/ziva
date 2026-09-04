@@ -504,7 +504,7 @@ public final class ZivaController {
             + "  BRIDGE=0\n"
             + "  PROBE_ERR=\"\"\n"
             + "  for probe in 1 2 3; do\n"
-            + "    OUT=$(curl -s -m 2 --noproxy '*' http://127.0.0.1:9222/json/version 2>&1)\n"
+                       + "    OUT=$(curl -s -m 4 --noproxy '*' http://127.0.0.1:9222/json/version 2>&1)\n"
             + "    RC=$?\n"
             + "    if [ $RC -eq 0 ]; then BRIDGE=1; break; fi\n"
             + "    PROBE_ERR=\"rc=$RC ${OUT:-no output}\"\n"
@@ -534,6 +534,12 @@ public final class ZivaController {
             // exec (the launcher argv would then reach mcp as unknown args).
             + "if [ \"$1\" = \"--download-only\" ]; then\n"
             + "  if [ -f \"$MODELOG\" ]; then echo \"$TAG last mcp mode: $(tail -n 3 \"$MODELOG\" | tr '\\n' '|')\"; fi\n"
+            // Reap orphaned mcp node processes left by killed backends: each
+            // one holds ~200MB, and on this device even ONE orphan tips
+            // memory into the OOM regime that wedges everything else. Safe
+            // timing: at --download-only the backend has not started, so no
+            // legitimate mcp can be running yet.
+            + "  if pkill -f chrome-devtools-mcp 2>/dev/null; then echo \"$TAG reaped orphaned mcp processes\"; fi\n"
             // Direct connect drives the user's REAL WebView tabs — a local
             // chromium is dead weight there. If the bridge answers, skip the
             // 250MB download entirely (this runs on every backend start via
