@@ -294,7 +294,12 @@ public final class DevtoolsBridge {
             }, "cdp-query-conn");
             connector.setDaemon(true);
             connector.start();
-            connector.join(2000);
+            try {
+                connector.join(2000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new java.io.IOException("upstream query interrupted");
+            }
             if (!s.isConnected()) {
                 throw new java.io.IOException("upstream query connect timeout");
             }
