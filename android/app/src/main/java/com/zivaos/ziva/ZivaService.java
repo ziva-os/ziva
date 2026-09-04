@@ -54,7 +54,20 @@ public class ZivaService extends Service {
                     // busy backend on that alone severed SSE mid-turn and was
                     // the r19 "tool call keeps getting interrupted" bug.
                     boolean sustainedUnreachable = unhealthyStreak >= 4;
-                    if (!procAlive || (sustainedUnreachable && !withinGrace && restartBurst < 3)) {
+                    // A LIVE backend can stay unreachable for minutes while
+                    // it works (tool runs, LLM streaming, MCP connects all
+                    // saturate the event loop past the 1.5s probe budget).
+                    // Its log keeps growing the whole time (kernel-side
+                    // O_APPEND). Killing on /status silence alone was the
+                    // "总是中断" bug: a precise 60s kill loop (streak>=4 x
+                    // 15s) that severed the agent's turn every minute via
+                    // stopBackend -> killStrayBackends -> pkill -9 (the
+                    // "137 = system/OOM" reading was wrong — that KILL is
+                    // ours). Forgive the streak while the log has a pulse.
+                    if (sustainedUnreachable
+                            && ZivaController.instance().logActiveWithin(45_000)) {
+                        unhealthyStreak = 0; // busy, not dead
+                    } else if (!procAlive || (sustainedUnreachable && !withinGrace && restartBurst < 3)) {
                         restartBurst++;
                         unhealthyStreak = 0;
                         ZivaController.instance().stopBackend();

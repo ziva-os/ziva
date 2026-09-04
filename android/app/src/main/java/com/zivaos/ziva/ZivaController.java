@@ -135,11 +135,13 @@ public final class ZivaController {
                     // three rounds of "zero [cdp] lines" happened.
                     + "; cdp=" + DevtoolsBridge.status());
             lastError = "";
-            // Death note: log WHY the backend went away. 137 = SIGKILL
-            // (system/OOM kill — nothing in our code path sends KILL to a
-            // live backend any more), 143 = SIGTERM (our stopBackend /
-            // service teardown), 0 = clean exit. Without this the log only
-            // shows the restart banner and every kill looks identical.
+            // Death note: log WHY the backend went away. 137 = SIGKILL —
+            // either the system/LMK, OR OUR OWN killStrayBackends (pkill -9)
+            // reached via stopBackend from the watchdog's sustained-
+            // unreachable path; see ZivaService for the log-heartbeat guard
+            // that keeps a busy-but-alive backend out of that path.
+            // 143 = SIGTERM (our stopBackend / service teardown),
+            // 0 = clean exit.
             final Process proc = backendProc;
             final File procLog = logFileForTail;
             Thread reaper = new Thread(() -> {
@@ -214,6 +216,33 @@ public final class ZivaController {
 
     public boolean isAlive() {
         return backendProc != null && backendProc.isAlive();
+    }
+
+    private long lastLogSize = -1;
+    private long lastLogChangeAt = 0;
+
+    /** Log heartbeat for the watchdog. A backend whose event loop is
+     *  saturated (tool runs, LLM streaming, MCP connects) legitimately
+     *  fails 1.5s /status probes for minutes — but its log (kernel-side
+     *  O_APPEND) keeps growing the whole time. True = the log moved within
+     *  the window = the backend is alive and WORKING, not wedged. This is
+     *  what breaks the 60s-precision kill loop that severed the agent's
+     *  turn every minute ("总是中断"). */
+    public boolean logActiveWithin(long windowMs) {
+        try {
+            File f = logFile();
+            long now = System.currentTimeMillis();
+            long size = f.length();
+            if (size != lastLogSize) {
+                lastLogSize = size;
+                lastLogChangeAt = now;
+                return true;
+            }
+            return now - lastLogChangeAt <= windowMs
+                    || f.lastModified() >= now - windowMs;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     /** True when the HTTP surface answers; 2s budget keeps the watchdog cheap. */
