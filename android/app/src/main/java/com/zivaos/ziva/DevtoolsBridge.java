@@ -274,36 +274,77 @@ public final class DevtoolsBridge {
         os.flush();
     }
 
-    /** Open a short-lived HTTP GET to the upstream devtools socket. */
+    /** Open a short-lived HTTP GET to the upstream devtools socket.
+     *  Reads EXACTLY Content-Length body bytes — the WebView devtools
+     *  server keeps the connection open after responding (it may ignore
+     *  Connection: close), so reading to EOF blocks forever. That was the
+     *  rc=28 regression: every probe handler wedged here, curl timed out. */
     private static String queryUpstream(String path) throws java.io.IOException {
         String target = discoveredSock != null ? discoveredSock : findDevtoolsSocket();
         LocalSocket s = new LocalSocket();
         try {
-            s.connect(new LocalSocketAddress(target,
-                    LocalSocketAddress.Namespace.ABSTRACT));
+            // Deadline connect (same lesson as the main pipe).
+            final LocalSocket qs = s;
+            Thread connector = new Thread(() -> {
+                try {
+                    qs.connect(new LocalSocketAddress(target,
+                            LocalSocketAddress.Namespace.ABSTRACT));
+                } catch (Throwable ignored) {
+                }
+            }, "cdp-query-conn");
+            connector.setDaemon(true);
+            connector.start();
+            connector.join(2000);
+            if (!s.isConnected()) {
+                throw new java.io.IOException("upstream query connect timeout");
+            }
             OutputStream os = s.getOutputStream();
             os.write(("GET " + path + " HTTP/1.1\r\nHost: localhost\r\n"
                     + "Connection: close\r\n\r\n").getBytes(StandardCharsets.UTF_8));
             os.flush();
             InputStream is = s.getInputStream();
-            ByteArrayOutputStream buf = new ByteArrayOutputStream();
-            byte[] b = new byte[16384];
-            int n;
-            while ((n = is.read(b)) > 0) buf.write(b, 0, n);
-            String raw = new String(buf.toByteArray(), StandardCharsets.UTF_8);
-            int split = raw.indexOf("\r\n\r\n");
-            String head = split >= 0 ? raw.substring(0, split) : raw;
-            String body = split >= 0 ? raw.substring(split + 4) : "";
-            // Honor Content-Length when present (chunked is not used by the
-            // WebView devtools handler, but truncate defensively anyway).
+
+            // 1) Response head: byte-by-byte until \r\n\r\n (no overshoot,
+            //    so the first body byte is never swallowed into the head).
+            ByteArrayOutputStream headBuf = new ByteArrayOutputStream();
+            int last4 = 0;
+            while (true) {
+                int b = is.read();
+                if (b < 0) break;
+                headBuf.write(b);
+                last4 = ((last4 << 8) | b) & 0xffffffff;
+                if (last4 == 0x0d0a0d0a) break;
+                if (headBuf.size() > 65536) break;
+            }
+            String head = new String(headBuf.toByteArray(), StandardCharsets.UTF_8);
+
+            // 2) Body: exactly Content-Length bytes when stated; else to EOF.
+            long len = -1;
             for (String line : head.split("\r\n")) {
-                if (line.toLowerCase().startsWith("content-length:")) {
-                    int len = Integer.parseInt(line.substring(15).trim());
-                    if (len < body.length()) body = body.substring(0, len);
+                String low = line.toLowerCase();
+                if (low.startsWith("content-length:")) {
+                    try {
+                        len = Long.parseLong(line.substring(15).trim());
+                    } catch (NumberFormatException ignored) {
+                    }
                     break;
                 }
             }
-            return body;
+            ByteArrayOutputStream body = new ByteArrayOutputStream();
+            byte[] b = new byte[8192];
+            if (len >= 0) {
+                long remaining = len;
+                while (remaining > 0) {
+                    int n = is.read(b, 0, (int) Math.min(b.length, remaining));
+                    if (n < 0) break;
+                    body.write(b, 0, n);
+                    remaining -= n;
+                }
+            } else {
+                int n;
+                while ((n = is.read(b)) > 0) body.write(b, 0, n);
+            }
+            return new String(body.toByteArray(), StandardCharsets.UTF_8);
         } finally {
             try { s.close(); } catch (Throwable ignored) {}
         }
