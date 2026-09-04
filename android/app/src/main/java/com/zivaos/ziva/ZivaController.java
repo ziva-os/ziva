@@ -532,7 +532,7 @@ public final class ZivaController {
             // MCP stdio pipe.
             + "BRIDGE=0\n"
             + "for probe in 1 2 3; do\n"
-            + "  if curl -sf -m 2 http://127.0.0.1:9222/json/version >/dev/null 2>&1; then BRIDGE=1; break; fi\n"
+            + "  if curl -sf -m 2 --noproxy '*' http://127.0.0.1:9222/json/version >/dev/null 2>&1; then BRIDGE=1; break; fi\n"
             + "  [ \"$probe\" -lt 3 ] && sleep 1\n"
             + "done\n"
             + "if [ \"$BRIDGE\" = \"1\" ]; then\n"

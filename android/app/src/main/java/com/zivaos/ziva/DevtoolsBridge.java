@@ -56,7 +56,13 @@ public final class DevtoolsBridge {
         String sockName = "webview_devtools_remote_" + android.os.Process.myPid();
         long backoff = 2000;
         while (true) {
-            try (ServerSocket ss = new ServerSocket(PORT, 50, InetAddress.getLoopbackAddress())) {
+            // Bind the LITERAL IPv4 loopback — NOT getLoopbackAddress(),
+            // which returns ::1 on IPv6-capable devices (all of them). A
+            // ::1 listener is invisible to the guest's curl 127.0.0.1 probe,
+            // which then silently pins the session to headless chromium
+            // while this log line still claims "127.0.0.1".
+            try (ServerSocket ss = new ServerSocket(PORT, 50,
+                    InetAddress.getByName("127.0.0.1"))) {
                 ZivaController.appendProcLog(ZivaController.logFile(),
                         "[cdp] bridge listening on 127.0.0.1:" + PORT + " -> " + sockName);
                 backoff = 2000;
