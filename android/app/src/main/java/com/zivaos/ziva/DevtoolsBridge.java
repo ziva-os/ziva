@@ -105,6 +105,9 @@ public final class DevtoolsBridge {
             // guest's curl 127.0.0.1 probe.
             ServerSocket ss = new ServerSocket(PORT, 50,
                     InetAddress.getByName("127.0.0.1"));
+            // Same 1s heartbeat as the rebind path in acceptLoop: keeps
+            // status() fresh (banner reads it) even while idle.
+            ss.setSoTimeout(1000);
             listener = ss;
             status = "listening on 127.0.0.1:" + PORT + " -> " + sockName;
             ZivaController.appendProcLog(ZivaController.logFile(),
@@ -187,6 +190,12 @@ public final class DevtoolsBridge {
         }
         status = "listening; conns=" + n + " -> " + target;
         LocalSocket ls = new LocalSocket();
+        // ONE try for the whole connection: the previous shape had a
+        // separate try around connect whose catch path did `return`
+        // WITHOUT closing ls — leaking one LocalSocket (plus a connector
+        // thread wedged in connect()) per failed probe. Three probes per
+        // backend start on an OOM-prone device is slow-burn fd exhaustion
+        // that would resurface as a "new" bug rounds later.
         try {
             // connect with a deadline: LocalSocket.connect has no timeout
             // parameter and can wedge indefinitely if the upstream's listen
@@ -207,15 +216,6 @@ public final class DevtoolsBridge {
             if (!ls.isConnected()) {
                 throw new java.io.IOException("upstream connect timeout: " + target);
             }
-        } catch (Throwable t) {
-            // Devtools socket not up yet (no WebView created / debugging
-            // still initializing) — drop the probe connection quietly.
-            ZivaController.appendProcLog(ZivaController.logFile(),
-                    "[cdp] upstream not ready: " + t);
-            try { in.close(); } catch (Exception ignored) {}
-            return;
-        }
-        try {
             final InputStream fromClient = in.getInputStream();
             final OutputStream toUpstream = ls.getOutputStream();
             final InputStream fromUpstream = ls.getInputStream();
@@ -229,11 +229,16 @@ public final class DevtoolsBridge {
             up.start();
             pump(fromUpstream, toClient);   // hold this side on the conn thread
         } catch (Throwable t) {
+            // Devtools socket not up yet (no WebView created / debugging
+            // still initializing) — drop the probe connection quietly.
             ZivaController.appendProcLog(ZivaController.logFile(),
-                    "[cdp] pipe error: " + t);
-            try { in.close(); } catch (Exception ignored) {}
+                    "[cdp] upstream not ready: " + t);
         } finally {
-            try { ls.close(); } catch (Exception ignored) {}
+            // Close BOTH ends on every path. Closing ls also un-wedges a
+            // connector thread still blocked in connect(); closing in
+            // always wakes the peer's blocked read with a FIN/reset.
+            try { ls.close(); } catch (Throwable ignored) {}
+            try { in.close(); } catch (Throwable ignored) {}
         }
     }
 
