@@ -222,7 +222,7 @@ public final class DevtoolsBridge {
                 answerJson(in, upstreamVersionJson());
             } else if (path.startsWith("/json/list") || path.equals("/json")
                     || path.startsWith("/json")) {
-                answerJson(in, upstreamListFiltered());
+                answerJson(in, upstreamListFiltered().toString());
             } else if (path.startsWith("/devtools/browser")) {
                 bridgeBrowserSession(in, ls, headStr);
                 return; // browser session owns both sockets until death
