@@ -53,6 +53,9 @@ public class MainActivity extends Activity {
         bootStatus = findViewById(R.id.bootStatus);
         findViewById(R.id.menuButton).setOnClickListener(v -> showMenu());
         webTabs = new WebTabManager(this, findViewById(R.id.webContainer), webview);
+        // CDP bridge needs the tab manager (Target.createTarget/closeTarget)
+        // and the activity for renderer-event hops to the UI thread.
+        DevtoolsBridge.attach(webTabs, this);
         setupWebview();
         requestNotifPermissionIfNeeded();
 

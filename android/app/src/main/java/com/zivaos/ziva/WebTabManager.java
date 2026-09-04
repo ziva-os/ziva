@@ -164,6 +164,29 @@ public class WebTabManager {
         }
     }
 
+    // -------------------------------------------------- CDP bridge support
+
+    /** Reverse lookup for the CDP bridge: the tab currently showing a URL.
+     *  Used to learn tabId<->targetId for user-opened tabs so that
+     *  Target.closeTarget works on them, exactly like the desktop bridge. */
+    synchronized String tabIdForUrl(String url) {
+        for (Map.Entry<String, String> e : urls.entrySet()) {
+            if (url.equals(e.getValue())) return e.getKey();
+        }
+        return null;
+    }
+
+    /** Evaluate JS in the Ziva page on the UI thread. The bridge's renderer
+     *  notifications (tabCreated/tabClosed) ride the same channel as emit(). */
+    void evaluateInZiva(String js) {
+        ui(() -> {
+            try {
+                zivaView.evaluateJavascript(js, null);
+            } catch (Exception ignored) {
+            }
+        });
+    }
+
     // ------------------------------------------------------------- internals
 
     /** true if url is a real navigation target (not blank). */
