@@ -225,9 +225,10 @@ public final class ZivaController {
      *  saturated (tool runs, LLM streaming, MCP connects) legitimately
      *  fails 1.5s /status probes for minutes — but its log (kernel-side
      *  O_APPEND) keeps growing the whole time. True = the log moved within
-     *  the window = the backend is alive and WORKING, not wedged. This is
-     *  what breaks the 60s-precision kill loop that severed the agent's
-     *  turn every minute ("总是中断"). */
+     *  the window = the backend is alive and WORKING, not wedged.
+     *  NOTE: this alone is NOT a sufficient liveness proof — LLM streaming
+     *  and the middle of long tool runs can be silent for minutes — so the
+     *  watchdog ALSO consults backendCpuActive(); see there. */
     public boolean logActiveWithin(long windowMs) {
         try {
             File f = logFile();
@@ -242,6 +243,103 @@ public final class ZivaController {
                     || f.lastModified() >= now - windowMs;
         } catch (Throwable t) {
             return false;
+        }
+    }
+
+    // ---------------------------------------------------------------- liveness
+
+    private int cachedProotPid = -1;
+    private long lastCpuTicks = -1;
+
+    /**
+     * KERNEL-side liveness: did the backend process tree burn CPU since the
+     * last probe? Reads /proc/&lt;pid&gt;/stat utime+stime of our direct
+     * proot child. proot is a ptracer — every guest syscall (python, node,
+     * tools) passes through it, so its CPU time advances whenever ANYTHING
+     * in the backend works. Unlike the log heartbeat this cannot be fooled
+     * by silence: a backend streaming a long LLM reply or in the middle of
+     * a 3-minute npm install writes nothing, but its CPU clock keeps
+     * ticking. A backend that is genuinely wedged (deadlocked event loop,
+     * uninterruptible stall) burns zero ticks and stays killable.
+     *
+     * Called on the watchdog's 15s cadence; each call compares against the
+     * previous call's snapshot.
+     */
+    public boolean backendCpuActive() {
+        try {
+            long t = prootCpuTicks();
+            if (t < 0) {
+                lastCpuTicks = -1;
+                return false;
+            }
+            boolean active = lastCpuTicks >= 0 && t > lastCpuTicks;
+            lastCpuTicks = t;
+            return active;
+        } catch (Throwable e) {
+            return false;
+        }
+    }
+
+    /** utime+stime of our direct proot child, or -1. Rescans /proc when the
+     *  cached pid is gone (backend restarted). */
+    private long prootCpuTicks() {
+        int pid = cachedProotPid;
+        if (pid <= 0 || !new File("/proc/" + pid).exists()) {
+            pid = cachedProotPid = findProotPid();
+        }
+        if (pid <= 0) return -1;
+        String stat = readOneLine("/proc/" + pid + "/stat");
+        if (stat == null) return -1;
+        try {
+            // comm (field 2) may contain spaces; everything after the last
+            // ')' is: state ppid ... utime stime (fields 3,4,...,14,15).
+            int close = stat.lastIndexOf(')');
+            String[] rest = stat.substring(close + 2).trim().split("\\s+");
+            // rest[0]=state(3) ... rest[11]=utime(14), rest[12]=stime(15)
+            return Long.parseLong(rest[11]) + Long.parseLong(rest[12]);
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    /** Find the direct child of this process whose cmdline mentions proot
+     *  (the backend). /proc walking is cheap: a handful of entries. */
+    private static int findProotPid() {
+        File[] dirs = new File("/proc").listFiles();
+        if (dirs == null) return -1;
+        int me = android.os.Process.myPid();
+        for (File f : dirs) {
+            String name = f.getName();
+            if (name.isEmpty() || !Character.isDigit(name.charAt(0))) continue;
+            String stat = readOneLine(new File(f, "stat").getAbsolutePath());
+            if (stat == null) continue;
+            try {
+                int close = stat.lastIndexOf(')');
+                String[] rest = stat.substring(close + 2).trim().split("\\s+");
+                if (Integer.parseInt(rest[1]) != me) continue;   // ppid
+            } catch (Throwable t) {
+                continue;
+            }
+            String cmd = readOneLine(new File(f, "cmdline").getAbsolutePath());
+            if (cmd != null && cmd.contains("proot")) {
+                try {
+                    return Integer.parseInt(name);
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+        return -1;
+    }
+
+    private static String readOneLine(String path) {
+        try (BufferedReader r = new BufferedReader(new InputStreamReader(
+                new java.io.FileInputStream(path), java.nio.charset.StandardCharsets.US_ASCII))) {
+            // cmdline is NUL-separated: one "line" covers the whole argv.
+            return r.readLine();
+        } catch (Exception e) {
+            return null;
+        }
+    }
         }
     }
 

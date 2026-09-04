@@ -57,15 +57,18 @@ public class ZivaService extends Service {
                     // A LIVE backend can stay unreachable for minutes while
                     // it works (tool runs, LLM streaming, MCP connects all
                     // saturate the event loop past the 1.5s probe budget).
-                    // Its log keeps growing the whole time (kernel-side
-                    // O_APPEND). Killing on /status silence alone was the
-                    // "总是中断" bug: a precise 60s kill loop (streak>=4 x
-                    // 15s) that severed the agent's turn every minute via
-                    // stopBackend -> killStrayBackends -> pkill -9 (the
-                    // "137 = system/OOM" reading was wrong — that KILL is
-                    // ours). Forgive the streak while the log has a pulse.
-                    if (sustainedUnreachable
-                            && ZivaController.instance().logActiveWithin(45_000)) {
+                    // "Working" is proven by EITHER kernel-side CPU activity
+                    // (the proot child's utime+stime advanced — cannot be
+                    // fooled, covers silent LLM streams and the middle of
+                    // long tool runs) OR a recent log write (covers quiet
+                    // I/O-bound phases). Killing on /status silence alone
+                    // was the "总是中断" bug: a precise 60s kill loop that
+                    // severed the agent's turn every minute via stopBackend
+                    // -> killStrayBackends -> pkill -9 (the "137 = system/
+                    // OOM" reading was wrong — that KILL is ours).
+                    boolean working = ZivaController.instance().backendCpuActive()
+                            || ZivaController.instance().logActiveWithin(45_000);
+                    if (sustainedUnreachable && working) {
                         unhealthyStreak = 0; // busy, not dead
                     } else if (!procAlive || (sustainedUnreachable && !withinGrace && restartBurst < 3)) {
                         restartBurst++;
