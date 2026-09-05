@@ -239,7 +239,14 @@ public final class ZivaController {
     private static void killStrayBackends() {
         try {
             Process k = new ProcessBuilder("/system/bin/sh", "-c",
-                    "pkill -9 -f 'ziva\\.app\\.cli'; pkill -9 -f 'libproot\\.so'; exit 0")
+                    "pkill -9 -f 'ziva\\.app\\.cli'; pkill -9 -f 'libproot\\.so';"
+                    // Orphaned MCP node bridges survive a proot SIGKILL
+                    // (their cmdline matches neither pattern above) and each
+                    // keeps burning one of Android's 32 phantom-process
+                    // slots — the exact budget the phantom killer trims on
+                    // its 10-minute cadence. Safe here: by the time this
+                    // runs, the owning backend is already dead/replaced.
+                    + " pkill -9 -f 'chrome-devtools-mcp'; exit 0")
                     .redirectErrorStream(true).start();
             k.waitFor();
             Thread.sleep(200); // let the kernel close the held sockets

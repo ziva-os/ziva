@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import errno
 import logging
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -509,9 +511,18 @@ def _suppress_anyio_cancel_scope():
     MCP SDK's stdio_client async generators get GC'd in a different task
     than they were created, causing "exit cancel scope in different task".
     This is harmless — the MCP SDK handles its own cleanup.
+
+    Also detects the orphaned-guest death spiral on Android: when the host
+    SIGKILLs proot (the ptracer — Android 12+'s phantom process killer
+    does this on a precise 10-minute cadence), this python SURVIVES as an
+    orphan but every syscall now returns ENOSYS. The aiohttp accept loop
+    then spins at ~60k log lines/s (12万行/2s in log 24) into the shared
+    log file until the Java side's pkill reaches it. A short streak of
+    ENOSYS means the tracer is gone: abort immediately instead.
     """
     loop = asyncio.get_running_loop()
     _default_handler = loop.get_exception_handler()
+    enosys_streak = [0]
 
     def _handler(loop, context):
         msg = context.get("message", "")
@@ -520,6 +531,19 @@ def _suppress_anyio_cancel_scope():
             return
         if "cancel scope" in msg:
             return
+        is_enosys = (isinstance(exc, OSError) and exc.errno == errno.ENOSYS) or (
+            exc is None and "Function not implemented" in msg
+        )
+        if is_enosys:
+            enosys_streak[0] += 1
+            if enosys_streak[0] >= 3:
+                sys.stderr.write(
+                    "[panic] ENOSYS storm (proot tracer gone — orphaned guest); aborting\n"
+                )
+                sys.stderr.flush()
+                os.abort()
+            return  # a stray ENOSYS is swallowed, not flood-logged
+        enosys_streak[0] = 0
         if _default_handler:
             _default_handler(loop, context)
         else:
