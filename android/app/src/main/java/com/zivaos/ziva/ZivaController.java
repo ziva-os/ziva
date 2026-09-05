@@ -135,22 +135,54 @@ public final class ZivaController {
                     // three rounds of "zero [cdp] lines" happened.
                     + "; cdp=" + DevtoolsBridge.status());
             lastError = "";
-            // Death note: log WHY the backend went away. 137 = SIGKILL —
-            // either the system/LMK, OR OUR OWN killStrayBackends (pkill -9)
-            // reached via stopBackend from the watchdog's sustained-
-            // unreachable path; see ZivaService for the log-heartbeat guard
-            // that keeps a busy-but-alive backend out of that path.
-            // 143 = SIGTERM (our stopBackend / service teardown),
-            // 0 = clean exit.
+            // Death note: log WHY the backend went away, and who owned the
+            // death — "OUR stop/watchdog path" (expected restart cycle) vs
+            // "EXTERNAL system/background kill" (HyperOS sweep / LMK; the
+            // reaper fast-restarts those instantly, see below). 143 = our
+            // stopBackend SIGTERM, 0 = clean exit.
             final Process proc = backendProc;
             final File procLog = logFileForTail;
             Thread reaper = new Thread(() -> {
                 try {
                     int code = proc.waitFor();
-                    String hint = code == 137 ? " (SIGKILL — system/OOM)"
-                            : code == 143 ? " (SIGTERM — our stopBackend)"
-                            : code == 0 ? " (clean exit)" : "";
+                    // Who owned this death? If backendProc still IS this proc,
+                    // nobody stopped or replaced it — the process died on its
+                    // own, i.e. the SYSTEM killed it (HyperOS background sweep
+                    // / LMK; log 23: 00:05, 03:09 and 12:11 all this pattern:
+                    // idle hours, exit 137, restart only at the NEXT 15s
+                    // watchdog tick). If backendProc is null or a NEWER proc,
+                    // stopBackend()/watchdog already took over — expected.
+                    boolean handled = backendProc != proc;
+                    long livedMs = System.currentTimeMillis() - startedAt;
+                    String lived = livedMs >= 0 ? ", lived " + (livedMs / 60000)
+                            + "m" + (livedMs % 60000) / 1000 + "s" : "";
+                    String hint;
+                    if (code == 0) hint = " (clean exit)";
+                    else if (handled) hint = code == 137
+                            ? " (SIGKILL — OUR stop/watchdog path)"
+                            : code == 143 ? " (SIGTERM — our stopBackend)" : "";
+                    else hint = code == 137
+                            ? " (SIGKILL — EXTERNAL system/background kill" + lived + ")"
+                            : " (external exit" + lived + ")";
                     appendProcLog(procLog, "[proc] backend exited code=" + code + hint);
+                    if (!handled && code != 0) {
+                        // Fast restart: an externally killed backend used to
+                        // wait for the next watchdog tick (0–15s) PLUS cold
+                        // boot before the UI healed. Restart from the reaper
+                        // the instant we learn of the death. Throttle: a
+                        // crash-looping process must not spin here — after a
+                        // restart <20s ago we leave recovery to the watchdog
+                        // (which counts restartBurst and gives up).
+                        long now = System.currentTimeMillis();
+                        if (now - lastExternalRestartAt < 20_000) {
+                            appendProcLog(procLog,
+                                    "[proc] fast-restart throttled (<20s since previous); watchdog will recover");
+                        } else {
+                            lastExternalRestartAt = now;
+                            appendProcLog(procLog, "[proc] external kill -> fast-restarting backend now");
+                            startBackend(ctx.getApplicationContext());
+                        }
+                    }
                 } catch (InterruptedException ignored) {
                 }
             }, "ziva-reaper");
@@ -217,6 +249,11 @@ public final class ZivaController {
     public boolean isAlive() {
         return backendProc != null && backendProc.isAlive();
     }
+
+    /** Last time the reaper fast-restarted an externally killed backend;
+     *  guards against crash-loop spin (re-spawn <20s apart is left to the
+     *  watchdog's restartBurst accounting). */
+    private long lastExternalRestartAt = 0;
 
     private long lastLogSize = -1;
     private long lastLogChangeAt = 0;
